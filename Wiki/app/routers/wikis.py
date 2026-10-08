@@ -80,6 +80,39 @@ async def put_schema(body: SchemaIn, wiki: dict = Depends(wiki_dep)):
     return {"ok": True}
 
 
+@router.get("/wikis/{w}/graph")
+async def graph(wiki: dict = Depends(wiki_dep)):
+    """Nodes (pages + missing link targets) and edges (wiki links) for graph views."""
+    async with get_pool().connection() as conn:
+        pages = await (
+            await conn.execute("select id, slug, title, type, summary from wiki.pages where wiki_id = %s", (wiki["id"],))
+        ).fetchall()
+        links = await (
+            await conn.execute(
+                """select p.slug as source, l.to_slug as target from wiki.links l
+                   join wiki.pages p on p.id = l.from_page_id where l.wiki_id = %s and p.slug <> l.to_slug""",
+                (wiki["id"],),
+            )
+        ).fetchall()
+    existing = {p["slug"] for p in pages}
+    inbound: dict[str, int] = {}
+    outbound: dict[str, int] = {}
+    for e in links:
+        inbound[e["target"]] = inbound.get(e["target"], 0) + 1
+        outbound[e["source"]] = outbound.get(e["source"], 0) + 1
+    nodes = [
+        {"id": p["slug"], "title": p["title"], "type": p["type"], "summary": p["summary"], "missing": False,
+         "inbound": inbound.get(p["slug"], 0), "outbound": outbound.get(p["slug"], 0),
+         "orphan": p["slug"] != "overview" and inbound.get(p["slug"], 0) == 0}
+        for p in pages
+    ]
+    nodes += [
+        {"id": s, "title": s, "type": "missing", "summary": "", "missing": True, "inbound": inbound[s], "outbound": 0, "orphan": False}
+        for s in sorted(set(inbound) - existing)
+    ]
+    return {"nodes": nodes, "edges": links}
+
+
 @router.get("/wikis/{w}/index.md", response_class=PlainTextResponse)
 async def index_md(wiki: dict = Depends(wiki_dep)):
     return await store.render_index(wiki)

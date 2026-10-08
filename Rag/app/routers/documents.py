@@ -33,6 +33,24 @@ async def list_documents():
         return await cur.fetchall()
 
 
+@router.get("/chunks")
+async def get_chunks(para_ref: str, document_id: UUID | None = None, include_notes: bool = False):
+    """Look up chunks by IFRS paragraph reference (e.g. 5.5.3, B5.5.17, 'Appendix A: credit loss') - used by citation viewers."""
+    async with get_pool().connection() as conn:
+        cur = await conn.execute(
+            """select c.id, c.para_ref, c.part, c.source_type, c.page, c.heading, c.content, d.filename, d.id as document_id
+               from chunks c join documents d on d.id = c.document_id
+               where c.para_ref = %s and (%s::uuid is null or c.document_id = %s)
+                 and (%s or c.source_type <> 'note')
+               order by d.created_at, c.source_type <> 'note' desc, c.part""",
+            (para_ref, document_id, document_id, include_notes),
+        )
+        rows = await cur.fetchall()
+    if not rows:
+        raise HTTPException(404, f"No chunk with para_ref '{para_ref}'")
+    return rows
+
+
 @router.delete("/documents/{doc_id}", status_code=204)
 async def delete_document(doc_id: UUID):
     async with get_pool().connection() as conn:

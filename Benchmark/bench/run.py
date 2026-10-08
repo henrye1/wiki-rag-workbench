@@ -172,6 +172,7 @@ async def main():
                 "config": {
                     "started": dt.datetime.now().isoformat(timespec="seconds"), "git_commit": _git_commit(),
                     "judge_model": s.judge_model, "judge_effort": s.judge_effort, "runs": runs, "seed": s.seed,
+                    "topics_selected": [t.number for t in topics], "expected_judgements": len(topics) * runs,
                     "question_format": "topic title + Q1..Qn, sent identically to RAG /query and Wiki /query",
                     "systems": await systems.describe(http),
                     "query_set": s.query_set.name, "reference": s.reference_docx.name,
