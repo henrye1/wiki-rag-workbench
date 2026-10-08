@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ wiki.name }}</h1>
+<div class="meta">{{ wiki.description }} · {{ count }} pages</div>
+{% if results is not none %}
+  <h2>Results for “{{ q }}”</h2>
+  <ul class="plain">
+  {% for r in results %}<li><a href="/view/{{ wiki.slug }}/{{ r.slug }}">{{ r.title }}</a> <span class="tag">{{ r.type }}</span><div class="summary">{{ r.summary }}</div></li>
+  {% else %}<li class="summary">No matches.</li>{% endfor %}
+  </ul>
+{% else %}
+  {% for type, pages in groups %}
+  <h2>{{ type|capitalize }} ({{ pages|length }})</h2>
+  <ul class="plain">
+  {% for p in pages %}<li><a href="/view/{{ wiki.slug }}/{{ p.slug }}">{{ p.title }}</a> <span class="summary">— {{ p.summary }}</span></li>{% endfor %}
+  </ul>
+  {% else %}<p class="summary">Empty wiki. Add a source with POST /wikis/{{ wiki.slug }}/sources.</p>{% endfor %}
+{% endif %}
+{% endblock %}

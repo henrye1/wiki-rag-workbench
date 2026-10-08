@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Wikis</h1>
+<ul class="plain">
+{% for w in wikis %}<li><a href="/view/{{ w.slug }}">{{ w.name }}</a> <span class="summary">— {{ w.description }}</span></li>
+{% else %}<li class="summary">No wikis yet. Create one with POST /wikis.</li>{% endfor %}
+</ul>
+{% endblock %}

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ wiki.name if wiki else "Wikis" }}{% endblock %}</title>
+<style>
+:root { --bg:#fbfaf8; --fg:#1d1d1f; --muted:#6b6b70; --line:#e4e2dd; --accent:#2f5bd3; --broken:#c2410c; --card:#ffffff; --warn:#fff6e5; --warnline:#e0a43a; color-scheme: light; }
+@media (prefers-color-scheme: dark) { :root { --bg:#161618; --fg:#ececee; --muted:#9a9aa2; --line:#2c2c30; --accent:#8fb0ff; --broken:#fb923c; --card:#1d1d20; --warn:#2a2316; --warnline:#b7862f; color-scheme: dark; } }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+a.broken { color:var(--broken); border-bottom:1px dashed var(--broken); }
+header { border-bottom:1px solid var(--line); padding:12px 16px; display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+header .brand { font-weight:600; color:var(--fg); }
+header nav { display:flex; gap:12px; font-size:14px; }
+header form { margin-left:auto; }
+input[type=search] { padding:6px 10px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--fg); width:min(260px, 70vw); }
+main { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 1.8rem; line-height:1.2; margin: 0 0 4px; }
+.meta { color:var(--muted); font-size:13px; margin-bottom: 20px; }
+.tag { display:inline-block; border:1px solid var(--line); border-radius:10px; padding:0 8px; margin-right:4px; font-size:12px; }
+.box { border:1px solid var(--line); background:var(--card); border-radius:8px; padding:12px 16px; margin-top:28px; }
+.box h3 { margin:0 0 6px; font-size:14px; color:var(--muted); font-weight:600; }
+ul.plain { list-style:none; padding:0; margin:0; } ul.plain li { padding:3px 0; }
+.summary { color:var(--muted); }
+article table { border-collapse: collapse; display:block; overflow-x:auto; }
+article th, article td { border:1px solid var(--line); padding:6px 10px; }
+article pre { overflow-x:auto; background:var(--card); border:1px solid var(--line); padding:10px; border-radius:6px; }
+article blockquote { margin:12px 0; padding:4px 14px; border-left:3px solid var(--line); color:var(--muted); }
+article blockquote.callout { background:var(--warn); border-left-color:var(--warnline); color:var(--fg); border-radius:4px; }
+</style>
+</head>
+<body>
+<header>
+  {% if wiki %}
+  <a class="brand" href="/view/{{ wiki.slug }}">{{ wiki.name }}</a>
+  <nav><a href="/view/{{ wiki.slug }}/overview">Overview</a><a href="/view/{{ wiki.slug }}/log">Log</a><a href="/view/{{ wiki.slug }}/schema">Schema</a><a href="/view">All wikis</a></nav>
+  <form action="/view/{{ wiki.slug }}" method="get"><input type="search" name="q" placeholder="Search pages" value="{{ q or '' }}"></form>
+  {% else %}<a class="brand" href="/view">Wikis</a>{% endif %}
+</header>
+<main>{% block content %}{% endblock %}</main>
+</body>
+</html>

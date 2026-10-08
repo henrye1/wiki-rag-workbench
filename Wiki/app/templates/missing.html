@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>{{ slug }}</h1>
+<p class="summary">This page does not exist yet. Run lint with <code>fix</code> to create pages for broken links.</p>
+{% if backlinks %}<div class="box"><h3>Linked from</h3><ul class="plain">{% for b in backlinks %}<li><a href="/view/{{ wiki.slug }}/{{ b.slug }}">{{ b.title }}</a></li>{% endfor %}</ul></div>{% endif %}
+{% endblock %}

@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ page.title }} · {{ wiki.name }}{% endblock %}
+{% block content %}
+<h1>{{ page.title }}</h1>
+<div class="meta"><span class="tag">{{ page.type }}</span>{% for t in page.tags %}<span class="tag">{{ t }}</span>{% endfor %} v{{ page.version }} · updated {{ page.updated_at.strftime('%Y-%m-%d %H:%M') }}</div>
+{% if page.summary %}<p class="summary"><em>{{ page.summary }}</em></p>{% endif %}
+<article>{{ body }}</article>
+<div class="box"><h3>Linked from ({{ backlinks|length }})</h3>
+<ul class="plain">{% for b in backlinks %}<li><a href="/view/{{ wiki.slug }}/{{ b.slug }}">{{ b.title }}</a></li>{% else %}<li class="summary">No backlinks.</li>{% endfor %}</ul></div>
+{% if sources %}<div class="box"><h3>Sources</h3><ul class="plain">{% for s in sources %}<li><a href="/view/{{ wiki.slug }}/{{ s.slug }}">{{ s.title }}</a> <span class="tag">{{ s.kind }}</span></li>{% endfor %}</ul></div>{% endif %}
+{% endblock %}

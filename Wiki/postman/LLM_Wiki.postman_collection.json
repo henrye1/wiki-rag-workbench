@@ -1,0 +1,923 @@
+{
+  "info": {
+    "name": "LLM Wiki API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Set collection variables apiKey (API_KEY from Wiki/.env) and wiki. Start: .venv\\Scripts\\python run.py (port 8001). Long operations return job_id; the test scripts store it in {{jobId}} \u2014 then run 'Get job'."
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {
+        "key": "key",
+        "value": "X-API-Key",
+        "type": "string"
+      },
+      {
+        "key": "value",
+        "value": "{{apiKey}}",
+        "type": "string"
+      },
+      {
+        "key": "in",
+        "value": "header",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "try { const j = pm.response.json();",
+          "  if (j && j.job_id) pm.collectionVariables.set('jobId', j.job_id);",
+          "  if (j && j.changeset_id) pm.collectionVariables.set('changesetId', j.changeset_id);",
+          "  if (j && j.result && j.result.changeset_id) pm.collectionVariables.set('changesetId', j.result.changeset_id);",
+          "  if (j && j.result && j.result.fix && j.result.fix.changeset_id) pm.collectionVariables.set('changesetId', j.result.fix.changeset_id);",
+          "} catch (e) {}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8001"
+    },
+    {
+      "key": "apiKey",
+      "value": "change-me"
+    },
+    {
+      "key": "wiki",
+      "value": "ifrs9"
+    },
+    {
+      "key": "slug",
+      "value": "overview"
+    },
+    {
+      "key": "jobId",
+      "value": ""
+    },
+    {
+      "key": "changesetId",
+      "value": ""
+    },
+    {
+      "key": "version",
+      "value": "1"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "health"
+          ]
+        },
+        "auth": {
+          "type": "noauth"
+        }
+      }
+    },
+    {
+      "name": "Wikis",
+      "item": [
+        {
+          "name": "Create wiki",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/wikis",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"slug\": \"{{wiki}}\",\n  \"name\": \"IFRS 9 Wiki\",\n  \"description\": \"IFRS 9 Financial Instruments knowledge base\"\n}"
+            }
+          }
+        },
+        {
+          "name": "List wikis",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/wikis",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get wiki",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get schema",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/schema",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "schema"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update schema",
+          "request": {
+            "method": "PUT",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/schema",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "schema"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"schema_md\": \"# Wiki schema\\n\\n(paste full conventions doc here)\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Index.md",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/index.md",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "index.md"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Log.md",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/log.md",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "log.md"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Export zip (Obsidian vault)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/export.zip",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "export.zip"
+              ]
+            },
+            "description": "Use Send and Download."
+          }
+        },
+        {
+          "name": "Delete wiki",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}"
+              ]
+            },
+            "description": "Deletes everything in the wiki."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Sources (ingest)",
+      "item": [
+        {
+          "name": "Upload PDF (auto)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/sources?mode=auto",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "sources"
+              ],
+              "query": [
+                {
+                  "key": "mode",
+                  "value": "auto"
+                }
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "C:/Code/2026/Danielle's Project/Docs/13 - IFRS 9 Financial Instruments (Assessment).pdf"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Upload file (review)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/sources?mode=review",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "sources"
+              ],
+              "query": [
+                {
+                  "key": "mode",
+                  "value": "review"
+                }
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "C:/Code/2026/Danielle's Project/Docs/IFRS9_Requirement_Query_Set_BULK_5.txt"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Ingest URL",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/sources/url?mode=review",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "sources",
+                "url"
+              ],
+              "query": [
+                {
+                  "key": "mode",
+                  "value": "review"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://en.wikipedia.org/wiki/IFRS_9\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Ingest text",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/sources/text?mode=auto",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "sources",
+                "text"
+              ],
+              "query": [
+                {
+                  "key": "mode",
+                  "value": "auto"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Meeting notes\",\n  \"text\": \"Paste text here (at least 20 characters).\"\n}"
+            }
+          }
+        },
+        {
+          "name": "List sources",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/sources",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "sources"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get source",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/sources/source-ecl-policy-memo?include_text=false",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "sources",
+                "source-ecl-policy-memo"
+              ],
+              "query": [
+                {
+                  "key": "include_text",
+                  "value": "false"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete source",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/sources/source-ecl-policy-memo",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "sources",
+                "source-ecl-policy-memo"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Jobs",
+      "item": [
+        {
+          "name": "Get job",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/jobs/{{jobId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "jobs",
+                "{{jobId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List jobs",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/jobs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "jobs"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Query",
+      "item": [
+        {
+          "name": "Query",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/query",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "query"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"How does staging work for expected credit losses?\",\n  \"save\": false,\n  \"mode\": \"auto\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Query and save as page",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/query",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "query"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"Compare 12-month and lifetime expected credit losses\",\n  \"save\": true,\n  \"mode\": \"review\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Query stream (SSE)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/query/stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "query",
+                "stream"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"What is amortised cost?\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Lint",
+      "item": [
+        {
+          "name": "Structural lint (instant)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/lint",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "lint"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "name": "LLM lint (job)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/lint",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "lint"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"llm\": true,\n  \"fix\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "LLM lint + fix (review)",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/lint",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "lint"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"llm\": true,\n  \"fix\": true,\n  \"mode\": \"review\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Changesets",
+      "item": [
+        {
+          "name": "List pending",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/changesets?status=pending",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "changesets"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "pending"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get changeset (diffs)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/changesets/{{changesetId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "changesets",
+                "{{changesetId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Apply",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/changesets/{{changesetId}}/apply",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "changesets",
+                "{{changesetId}}",
+                "apply"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Discard",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/changesets/{{changesetId}}/discard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "changesets",
+                "{{changesetId}}",
+                "discard"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Pages",
+      "item": [
+        {
+          "name": "List pages",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/pages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "pages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get page",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/pages/{{slug}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "pages",
+                "{{slug}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create/edit page",
+          "request": {
+            "method": "PUT",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/pages/my-notes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "pages",
+                "my-notes"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"My notes\",\n  \"type\": \"topic\",\n  \"summary\": \"Hand-written notes\",\n  \"content_md\": \"Notes linking to [[overview]].\",\n  \"tags\": [\n    \"notes\"\n  ],\n  \"change_note\": \"Manual edit\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Versions",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/pages/{{slug}}/versions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "pages",
+                "{{slug}}",
+                "versions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get version",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/pages/{{slug}}/versions/{{version}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "pages",
+                "{{slug}}",
+                "versions",
+                "{{version}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Revert to version",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/pages/{{slug}}/revert/{{version}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "pages",
+                "{{slug}}",
+                "revert",
+                "{{version}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete page",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{baseUrl}}/wikis/{{wiki}}/pages/my-notes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wikis",
+                "{{wiki}}",
+                "pages",
+                "my-notes"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth check - no key (expect 401)",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/wikis",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "wikis"
+          ]
+        },
+        "auth": {
+          "type": "noauth"
+        }
+      }
+    }
+  ]
+}
