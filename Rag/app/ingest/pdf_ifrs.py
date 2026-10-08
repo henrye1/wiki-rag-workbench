@@ -1,0 +1,172 @@
+"""Layout-aware parser for IFRS Foundation annotated standards (e.g. IFRS 9 PDF).
+
+Layout facts it relies on:
+- Paragraph numbers (1.1, 5.5.3, B5.5.17) sit in the left margin in the body (Swift) font.
+- Body text is indented further right than the margin.
+- Editorial material ([Refer:], [Note:], [Link], IFRIC boxes, E-footnotes) uses HelveticaLTPro-BoldCond.
+- Headings use HelveticaLTPro Bold/Oblique at >= 9.5pt.
+- Running header/footer use HelveticaLTPro-Roman 9pt.
+"""
+import re
+from dataclasses import dataclass, field
+
+import pymupdf
+
+from .models import Chunk
+from .text import clean, split_long
+
+PARA_RE = re.compile(r"^(?:B|C|BCZ?|IE|IG)?\d+(?:\.\d+)*[A-Z]{0,2}$")
+EDITORIAL_BRACKETS = re.compile(r"\[(?:Refer|Note|Link|now)\b[^\]]*\]", re.I)
+MARGIN_MAX_X = 150
+HEADER_Y, FOOTER_Y = 110, 720
+
+
+@dataclass
+class _Para:
+    ref: str | None
+    section: str
+    page: int
+    heading: str | None
+    body: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
+def _is_editorial(font: str, size: float = 8.5, x: float = 999) -> bool:
+    # BoldCond = [Refer]/[Note]/IFRIC boxes; small Helvetica Bold left of body = IFRIC box sub-headings
+    return "BoldCond" in font or (font == "HelveticaLTPro-Bold" and size < 9 and x < 175)
+
+
+def _is_heading(font: str, size: float) -> bool:
+    return font.startswith("HelveticaLTPro") and not _is_editorial(font) and "Roman" not in font and size >= 9.4
+
+
+def looks_like_ifrs(doc: pymupdf.Document) -> bool:
+    hits = 0
+    for page in doc.pages(0, min(doc.page_count, 40)):
+        for b in page.get_text("dict")["blocks"]:
+            for l in b.get("lines", []):
+                for s in l["spans"]:
+                    if s["bbox"][0] < MARGIN_MAX_X and s["font"].startswith("Swift") and PARA_RE.match(s["text"].strip()):
+                        hits += 1
+    return hits >= 10
+
+
+def _lines(page: pymupdf.Page):
+    """Yield lines as lists of spans, ordered top->bottom, left->right. Margin labels sort first on their row."""
+    spans = []
+    for b in page.get_text("dict")["blocks"]:
+        for l in b.get("lines", []):
+            for s in l["spans"]:
+                if s["text"].strip():
+                    spans.append(s)
+    spans.sort(key=lambda s: (s["bbox"][1], s["bbox"][0]))
+    rows: list[list[dict]] = []
+    for s in spans:
+        if rows and abs(s["bbox"][1] - rows[-1][0]["bbox"][1]) <= 3:
+            rows[-1].append(s)
+        else:
+            rows.append([s])
+    for r in rows:
+        yield sorted(r, key=lambda s: s["bbox"][0])
+
+
+def _section_for_heading(text: str, current: str) -> str:
+    t = text.lower()
+    if t.startswith("international financial reporting standard"):
+        return "standard"
+    if t == "appendix a":
+        return "appendix_a"
+    if t == "appendix b":
+        return "appendix_b"
+    if t == "appendix c":
+        return "appendix_c"
+    if t.startswith("approval by the board") or t.startswith("basis for conclusions") or t.startswith("dissenting"):
+        return "back_matter"
+    return current
+
+
+def _join(parts: list[str]) -> str:
+    out = ""
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        if out.endswith("-") and p[:1].islower():
+            out += p
+        else:
+            out += (" " if out else "") + p
+    return clean(out)
+
+
+def parse(doc: pymupdf.Document, max_words: int = 500) -> list[Chunk]:
+    section = "intro"
+    heading: str | None = None
+    heading_buf: list[str] = []
+    heading_key: tuple = ()
+    paras: list[_Para] = []
+    cur = _Para(None, section, 1, None)
+    last_label: tuple = ()  # (page, y) of last margin label, to join multi-line defined terms
+
+    def flush():
+        nonlocal cur
+        if cur.body or cur.notes:
+            paras.append(cur)
+
+    for pno, page in enumerate(doc, start=1):
+        for row in _lines(page):
+            y = row[0]["bbox"][1]
+            for s in row:
+                text, font, size, x = s["text"].strip(), s["font"], s["size"], s["bbox"][0]
+                if "Roman" in font and size >= 8.9 and (y < HEADER_Y or y > FOOTER_Y):
+                    continue  # running header/footer
+                if size < 6:
+                    continue  # superscript E-footnote markers
+                if _is_heading(font, size):
+                    prev = heading_key
+                    heading_key = (pno, y, font, size)
+                    if prev and prev[0] == pno and prev[2:] == (font, size) and 0 <= y - prev[1] < 14:
+                        heading_buf.append(text)
+                    else:
+                        heading_buf = [text]
+                    new_section = _section_for_heading(text, section)
+                    if new_section != section:
+                        flush()
+                        section = new_section
+                        cur = _Para(None, section, pno, None)
+                    heading = " ".join(heading_buf)
+                    continue
+                is_label = (
+                    section in ("standard", "appendix_a", "appendix_b", "appendix_c")
+                    and x < MARGIN_MAX_X
+                    and font.startswith("Swift")
+                    and (PARA_RE.match(text) or (section == "appendix_a" and "Bold" in font))
+                )
+                if is_label:
+                    if section == "appendix_a" and last_label and last_label[0] == pno and 0 < y - last_label[1] < 13:
+                        cur.ref = f"{cur.ref} {text}"
+                    else:
+                        flush()
+                        cur = _Para(text, section, pno, heading)
+                    last_label = (pno, y)
+                    continue
+                if _is_editorial(font, size, x):
+                    cur.notes.append(text)
+                else:
+                    cur.body.append(text)
+    flush()
+
+    chunks: list[Chunk] = []
+    for p in paras:
+        ref = p.ref
+        if p.section == "appendix_a" and ref:
+            ref = f"Appendix A: {ref}"
+        body = EDITORIAL_BRACKETS.sub("", _join(p.body))
+        body = clean(body)
+        if body:
+            for i, part in enumerate(split_long(body, max_words)):
+                chunks.append(Chunk(ref, p.section, p.page, p.heading, part, i))
+        notes = _join(p.notes)
+        if notes and len(notes.split()) > 5:
+            for i, part in enumerate(split_long(notes, max_words)):
+                chunks.append(Chunk(ref, "note", p.page, p.heading, part, i))
+    return chunks

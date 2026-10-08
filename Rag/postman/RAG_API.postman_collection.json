@@ -1,0 +1,180 @@
+{
+  "info": {
+    "name": "RAG API",
+    "description": "Local RAG API (FastAPI + Gemini + Supabase). Set the apiKey collection variable to API_KEY from Rag/.env. Start the API with: .venv\\Scripts\\python run.py",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      { "key": "key", "value": "X-API-Key", "type": "string" },
+      { "key": "value", "value": "{{apiKey}}", "type": "string" },
+      { "key": "in", "value": "header", "type": "string" }
+    ]
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://127.0.0.1:8000" },
+    { "key": "apiKey", "value": "change-me" },
+    { "key": "documentId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "GET",
+        "url": "{{baseUrl}}/health"
+      }
+    },
+    {
+      "name": "Documents",
+      "item": [
+        {
+          "name": "Ingest file",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/ingest",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": "C:/Code/2026/Danielle's Project/Docs/13 - IFRS 9 Financial Instruments (Assessment).pdf" }
+              ]
+            },
+            "description": "Upload .pdf/.txt/.md. 409 if the same file was already ingested."
+          }
+        },
+        {
+          "name": "List documents",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const docs = pm.response.json();",
+                  "if (Array.isArray(docs) && docs.length) pm.collectionVariables.set('documentId', docs[0].id);"
+                ]
+              }
+            }
+          ],
+          "request": { "method": "GET", "url": "{{baseUrl}}/documents" }
+        },
+        {
+          "name": "Delete document",
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/documents/{{documentId}}",
+            "description": "Deletes the document in {{documentId}} (set by List documents). Re-ingest afterwards."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Query",
+      "item": [
+        {
+          "name": "Query",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/query",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"When is the loss allowance measured at lifetime expected credit losses?\",\n  \"top_k\": 8,\n  \"include_editorial\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "Query - Application Guidance only",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/query",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"What is the 30 days past due rebuttable presumption?\",\n  \"source_types\": [\"appendix_b\"]\n}"
+            }
+          }
+        },
+        {
+          "name": "Query stream (SSE)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Accept", "value": "text/event-stream" }
+            ],
+            "url": "{{baseUrl}}/query/stream",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"question\": \"Define credit loss\"\n}"
+            },
+            "description": "Server-sent events: token, citations, done."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Bulk",
+      "item": [
+        {
+          "name": "Parse query set (no LLM)",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/bulk/parse",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": "C:/Code/2026/Danielle's Project/Docs/IFRS9_Requirement_Query_Set_BULK_5.txt" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bulk - one topic",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{baseUrl}}/bulk?topics=1&revise=true",
+              "host": ["{{baseUrl}}"],
+              "path": ["bulk"],
+              "query": [
+                { "key": "topics", "value": "1" },
+                { "key": "revise", "value": "true" }
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": "C:/Code/2026/Danielle's Project/Docs/IFRS9_Requirement_Query_Set_BULK_5.txt" }
+              ]
+            },
+            "description": "Add more topics with extra topics=N params. ~30-60s per topic."
+          }
+        },
+        {
+          "name": "Bulk - all topics",
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/bulk",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": "C:/Code/2026/Danielle's Project/Docs/IFRS9_Requirement_Query_Set_BULK_5.txt" }
+              ]
+            },
+            "description": "All 26 topics, several minutes. Raise Postman's request timeout (Settings > General) if it is set."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth check - no key (expect 401)",
+      "request": {
+        "auth": { "type": "noauth" },
+        "method": "GET",
+        "url": "{{baseUrl}}/documents"
+      }
+    }
+  ]
+}
