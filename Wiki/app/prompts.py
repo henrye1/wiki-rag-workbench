@@ -87,6 +87,7 @@ def plan_prompt(source_title: str, source_slug: str, notes: str, index: str, can
         "- Prefer updating existing pages over creating near-duplicates.\n"
         "- Create pages for important entities/concepts/topics that the source covers substantively.\n"
         "- Always include the `overview` page (create it if missing, otherwise update it).\n"
+        "- If the schema defines a fixed list of sections, include one page for every section.\n"
         f"{ONE_TOP_PAGE}\n"
         "- Do not include the source page itself.\n"
         "- Do not create a page whose content would come only from open questions; those belong on the source page.\n\n"
@@ -114,7 +115,8 @@ PAGE_SCHEMA = {
 def write_page_prompt(
     *, slug: str, title: str, ptype: str, focus: str, existing_md: str | None, material: str,
     linkable: str, source_slug: str | None, source_paragraphs: str | None = None,
-    part: tuple[int, int] | None = None, headings_so_far: str = "",
+    background_paragraphs: str | None = None, auto_gaps: bool = False,
+    part: tuple[int, int] | None = None, earlier_parts: str = "",
 ) -> str:
     cite = (
         f"The source page is [[{source_slug}]]; cite it exactly as the wiki schema requires. "
@@ -122,20 +124,37 @@ def write_page_prompt(
         "questions may be recorded as open questions the source raises, never as facts.\n"
         if source_slug else ""
     )
+    if background_paragraphs and source_paragraphs:
+        scope = ("Write only about the paragraphs in <source_paragraphs>: they are this page's own section. "
+                 "<background_paragraphs> belong to other sections and are context only: never write them up or list them; "
+                 "link to the page that covers them instead.\n")
+    elif background_paragraphs:
+        scope = ("<background_paragraphs> belong to the section pages and are context only: never write them up; "
+                 "link to the section page that covers them instead.\n")
+    else:
+        scope = ""
+    gaps = "Do not write a 'Not yet covered' list; it is added automatically.\n" if auto_gaps else ""
     paragraphs = (
         "<source_paragraphs>\nThe source's own text for this page, each paragraph labelled with its [paragraph number], "
         "in document order. Write from these first; use the material for context.\n\n"
         f"{source_paragraphs}\n</source_paragraphs>\n\n"
         if source_paragraphs else ""
     )
+    background = (
+        "<background_paragraphs>\nContext only, from other sections, unlabelled: they cannot be cited, so nothing from them "
+        f"may be written on this page.\n\n{background_paragraphs}\n"
+        "</background_paragraphs>\n\n"
+        if background_paragraphs else ""
+    )
     if part:
         n, total = part
         current = (
             f"This page is long, so it is written in {total} parts. This is part {n} of {total}: write only the content "
             "drawn from the source paragraphs given here. "
-            + ("Start the page. " if n == 1 else
-               f"Continue the page: do not repeat the introduction or a heading already used.\n<headings_so_far>\n{headings_so_far or '(none)'}\n</headings_so_far>\n")
-            + "Do not write a 'Not yet covered' list; it is added after all parts are written.\n"
+            + ("Start the page.\n" if n == 1 else
+               "Continue the page: no introduction, and do not restate, summarise or re-head anything already in "
+               f"<earlier_parts>.\n<earlier_parts>\n{earlier_parts}\n</earlier_parts>\n")
+            + ("" if auto_gaps else "Do not write a 'Not yet covered' list; it is added after all parts are written.\n")
         )
         if existing_md:
             current += (
@@ -153,13 +172,39 @@ def write_page_prompt(
         current = "This is a new page.\n"
     return (
         f"Write the wiki page `{slug}` (type: {ptype}, title: \"{title}\").\n"
-        f"Focus: {focus}\n{cite}"
+        f"Focus: {focus}\n{cite}{scope}{gaps}"
         "Link other pages with [[slug]] using ONLY slugs listed in <linkable_pages>.\n"
         f"{ONE_TOP_PAGE}\n\n"
         f"{current}\n"
         f"<linkable_pages>\n{linkable}\n</linkable_pages>\n\n"
-        f"{paragraphs}"
+        f"{paragraphs}{background}"
         f"<material>\n{material}\n</material>"
+    )
+
+
+# ---------- ingest: route paragraphs to sections ----------
+
+ROUTE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "assignments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"id": {"type": "integer"}, "section": {"type": "integer", "description": "Section number"}},
+                "required": ["id", "section"],
+            },
+        },
+    },
+    "required": ["assignments"],
+}
+
+
+def route_prompt(briefs: str, lines: str) -> str:
+    return (
+        "Assign each source paragraph to the ONE section whose brief says it belongs there (follow the briefs' hand-off "
+        "rules). That section's page is the only one that writes it up. Return every id exactly once, with its section number.\n\n"
+        f"<section_briefs>\n{briefs}\n</section_briefs>\n\n<paragraphs>\nid | text (first words)\n{lines}\n</paragraphs>"
     )
 
 

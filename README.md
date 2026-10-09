@@ -96,7 +96,7 @@ Each service reads its own `.env` file (never committed; copy `.env.example`). O
 | RAG | `BULK_CONCURRENCY`, `BULK_K_PER_QUERY`, `BULK_MAX_CHUNKS` | 3, 6, 30 | Bulk run parallelism and retrieval budget |
 | Wiki | `API_KEY`, `GEMINI_API_KEY` (required) | none | As for RAG |
 | Wiki | `DATABASE_URL` | local Supabase `:54322` | Same database, `wiki` schema |
-| Wiki | `MAX_PAGES_PER_INGEST` | 15 | Cap on pages one ingest creates or updates |
+| Wiki | `MAX_PAGES_PER_INGEST` | 17 | Cap on pages one ingest creates or updates, including the source page (15 sections + overview + source) |
 | Wiki | `LLM_CONCURRENCY`, `JOB_WORKERS` | 4, 2 | Parallel LLM calls per job; jobs running at once |
 | Wiki | `TEMPERATURE` | 0.2 (set to 0.1 here to match RAG) | Sampling |
 | Benchmark | `ANTHROPIC_API_KEY` | none | Claude judge |
@@ -184,17 +184,18 @@ The Wiki does the reading once: when a source is added, the LLM turns it into wi
 ### Ingest
 
 1. **Extract.** The source becomes text split into sections of about 3,000 words. IFRS PDFs reuse the RAG paragraph parser and keep only binding text.
-2. **Notes.** Each section is summarised into claims the source asserts, open questions it only poses, and entities and concepts. Questions are never turned into claims, so a questionnaire produces open questions, not facts. A section the model refuses to process (Gemini blocks verbatim reproduction of copyrighted text) is split in half and retried.
-3. **Plan.** The LLM sees the schema, the current index and the existing pages most related to the new material, and picks up to 15 pages to create or update, always including the overview.
-4. **Write.** The source page and each planned page are written in parallel. Updated pages keep their existing correct content; contradictions are flagged with a `> [!warning] Contradiction` callout naming both sources.
-5. **Commit.** The edits become a changeset: applied now (*auto*) or left pending (*review*). Applying stores versions, rebuilds links and search chunks, and records which sources each page draws on.
+2. **Notes.** Each section is summarised, following the schema, into claims the source asserts, open questions it only poses, and entities and concepts. Questions are never turned into claims, so a questionnaire produces open questions, not facts. A section the model refuses to process (Gemini blocks verbatim reproduction of copyrighted text) is split in half and retried.
+3. **Route.** If the schema defines fixed sections (`### 01. <name>` briefs), the LLM assigns every source paragraph to exactly one section, following the briefs' hand-off rules. The job result lists which paragraphs went where.
+4. **Plan.** The LLM sees the schema, the current index and the existing pages most related to the new material, and picks the pages to create or update. Every schema section gets a page and `overview` is the only top-level page; the source page counts toward the limit of 17.
+5. **Write.** The source page and each planned page are written in parallel. A section page writes up only its own paragraphs, cited by paragraph number; a few related paragraphs from other sections come without numbers, as context only. Long pages are written in parts of about 4,000 source words, each part seeing the earlier ones, and repeated blocks are dropped. A section page ends with a "Not yet covered" list of its own paragraphs it does not cite. A section with no paragraphs gets a one-line empty page (an existing page is left as it is). Links to pages that do not exist become plain text. Updated pages keep their existing correct content; contradictions are flagged with a `> [!warning] Contradiction` callout naming both sources.
+6. **Commit.** The edits become a changeset: applied now (*auto*) or left pending (*review*). Applying stores versions, rebuilds links and search chunks, and records which sources each page draws on.
 
-The IFRS 9 PDF (26 sections) produces about 16 pages in a few minutes.
+The IFRS 9 PDF (26 sections) produces 17 pages.
 
 ### Query
 
 1. Hybrid search over page chunks finds related pages; the LLM also picks pages from the index.
-2. Up to about 8 full pages are read and the answer cites them as `[[slug]]`.
+2. Up to about 8 full pages are read, with the schema, and the answer cites them as `[[slug]]`.
 3. With `save: true`, the answer is filed back as a synthesis page, so good answers become part of the wiki.
 
 ### Lint
