@@ -37,7 +37,7 @@ async def answer(wiki: dict, question: str, save: bool = False, mode: str = "aut
     if not pages:
         text = "The wiki has no pages relevant to this question yet."
     else:
-        text = await llm.generate(prompts.QUERY_SYSTEM, prompts.query_prompt(question, _pages_md(pages)))
+        text = await llm.generate(prompts.QUERY_SYSTEM, prompts.with_schema(wiki["schema_md"], prompts.query_prompt(question, _pages_md(pages))))
     result = {"answer": text, "pages": _cited(text, pages)}
     saved = await save_answer(wiki, question, text, mode) if save and pages else None
     if saved:
@@ -50,7 +50,7 @@ async def answer(wiki: dict, question: str, save: bool = False, mode: str = "aut
 async def stream_answer(wiki: dict, question: str) -> tuple[list[dict], AsyncIterator[str]]:
     pages = await _select_pages(wiki, question)
     await store.add_log(wiki["id"], "query", question[:200], "Pages read: " + ", ".join(f"[[{p['slug']}]]" for p in pages))
-    return pages, llm.stream(prompts.QUERY_SYSTEM, prompts.query_prompt(question, _pages_md(pages)))
+    return pages, llm.stream(prompts.QUERY_SYSTEM, prompts.with_schema(wiki["schema_md"], prompts.query_prompt(question, _pages_md(pages))))
 
 
 async def save_answer(wiki: dict, question: str, answer_md: str, mode: str) -> dict:

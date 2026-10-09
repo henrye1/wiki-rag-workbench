@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     section_words: int = 3000  # source split size for note extraction
     chunk_max_words: int = 500  # page chunk size for search / IFRS parser
     max_pages_per_ingest: int = 15
+    page_source_words: int = 12000  # source paragraphs given to each page writer (overview/source pages: one part)
+    page_part_words: int = 4000  # source words per writing call; longer pages are written in parts
     llm_concurrency: int = 4  # parallel LLM calls inside one job
     job_workers: int = 2  # jobs running at once
     query_top_k: int = 8
