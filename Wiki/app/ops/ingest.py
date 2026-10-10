@@ -152,17 +152,59 @@ def _parts(paras: list[str], max_words: int) -> list[list[str]]:
     return parts
 
 
-def _not_covered(content: str, paras: list[str], what: str = "source paragraphs given for this page") -> str:
-    """List the labelled paragraphs in paras that the page does not cite."""
-    missing = []
+# An issuer's own example label, e.g. "Example 1", "Instrument A" (not "Entity A", a party inside guidance)
+EXAMPLE_LABEL = re.compile(r"\b(?:Example|Instrument|Scenario|Illustration)\s+(?:\d+[A-Z]?|[A-Z])\b")
+
+
+def _ref(para: str) -> str:
+    m = re.match(r"^\[([^\]]+)\]", para)
+    return m.group(1).strip() if m else ""
+
+
+REF_PAT = r"[A-Z]*\d+(?:\.\d+)*[A-Z]{0,2}"
+
+
+def _ref_key(ref: str) -> tuple[str, list[str], int] | None:
+    m = re.fullmatch(r"([A-Z]*)(\d+(?:\.\d+)*)([A-Z]{0,2})", ref)
+    if not m:
+        return None
+    nums = m.group(2).split(".")
+    return m.group(1), nums[:-1], int(nums[-1])
+
+
+def _covers(label: str, ref: str) -> bool:
+    """Whether a citation label (e.g. "4.2.1(a)", "paragraphs B4.1.1–B4.1.26", "AppA:credit loss") cites ref."""
+    if ref.startswith("Appendix A:"):
+        term = ref.split(":", 1)[1].strip().lower()
+        return bool(term) and term in label.lower()
+    if re.search(rf"(?<![\w.]){re.escape(ref)}(?![\w]|\.\d)", label):
+        return True
+    key = _ref_key(ref)
+    for lo, hi in re.findall(rf"({REF_PAT})\s*[–-]\s*({REF_PAT})", label):
+        a, b = _ref_key(lo), _ref_key(hi)
+        if key and a and b and a[:2] == b[:2] == key[:2] and a[2] <= key[2] <= b[2]:
+            return True
+    return False
+
+
+def _uncited(content: str, paras: list[str]) -> list[str]:
+    """The labelled paragraphs in paras that no citation on the page names (each chunk of an uncited paragraph)."""
+    labels = [m.group(2) for m in store.LINK_RE.finditer(content) if m.group(2)]
+    out, cited = [], {}
     for p in paras:
-        m = re.match(r"^\[([^\]]+)\]", p)
-        ref = m.group(1).strip() if m else ""
+        ref = _ref(p)
         if not ref or re.fullmatch(r"p(age )?\d+", ref):
             continue
-        term = ref.split(":", 1)[1].strip() if ref.startswith("Appendix A:") else ref
-        if term and not re.search(rf"(?<![\w.]){re.escape(term)}(?![\w])", content, re.I) and ref not in missing:
-            missing.append(ref)
+        if ref not in cited:
+            cited[ref] = any(_covers(label, ref) for label in labels)
+        if not cited[ref]:
+            out.append(p)
+    return out
+
+
+def _not_covered(content: str, paras: list[str], what: str = "source paragraphs given for this page") -> str:
+    """List the labelled paragraphs in paras that the page does not cite."""
+    missing = list(dict.fromkeys(_ref(p) for p in _uncited(content, paras)))
     if not missing:
         return ""
     return f"\n\nNot yet covered: ({what} that it does not cite) " + ", ".join(missing)
@@ -231,33 +273,58 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
 
     # 2. Route: give each source paragraph to exactly one schema section (only that section's page writes it up)
     paras = [b.strip() for b in re.split(r"\n\s*\n", ex.text) if b.strip()]
+    para_vecs = np.asarray(await llm.embed(paras)) if paras else None
     sections = _sections(schema)
     owner: dict[int, int] = {}
+    unassigned: list[dict] = []  # paragraphs the model did not assign, and where they were placed instead
     if sections and paras:
         await ctx.progress(stage="route")
-        briefs = "\n\n".join(x["brief"] for x in sections)
-        nums = {x["num"] for x in sections}
+        heads = ex.meta.get("headings") or []
+        heads = heads if len(heads) == len(paras) else [""] * len(paras)
+        # The issuer's labelled examples go to the examples section; nothing else does
+        ex_sec = next((x for x in sections if "example" in _norm(x["name"])), None)
+        if ex_sec:
+            labelled = {_ref(p) or i for i, p in enumerate(paras) if EXAMPLE_LABEL.search(p)}
+            owner.update({i: ex_sec["num"] for i, p in enumerate(paras) if (_ref(p) or i) in labelled})
+        targets = [x for x in sections if x is not ex_sec]
+        briefs = "\n\n".join(x["brief"] for x in targets)
+        nums = {x["num"] for x in targets}
+        note = (f"Section {ex_sec['num']:02d} ({ex_sec['name']}) is not offered: the issuer's labelled examples have already "
+                "been placed there, and every other paragraph, including application guidance that says \"for example\", "
+                "goes to the section that owns its requirement." if ex_sec else "")
+        outline = "\n".join(ex.meta.get("outline") or [])
 
         async def route(batch: list[int]) -> dict[int, int]:
-            lines = "\n".join(f"{i} | {' '.join(paras[i].split()[:60])}" for i in batch)
+            lines = "\n".join(f"{i} | {heads[i] or '-'} | {' '.join(paras[i].split()[:60])}" for i in batch)
             try:
-                out = await llm.generate_json(system, prompts.route_prompt(briefs, lines), prompts.ROUTE_SCHEMA)
-            except Exception as e:  # unrouted paragraphs fall back to their group below
+                out = await llm.generate_json(system, prompts.route_prompt(briefs, lines, outline, note), prompts.ROUTE_SCHEMA)
+            except Exception as e:  # unrouted paragraphs are retried, then placed by the fallbacks below
                 log.warning("ingest: routing batch failed: %s", e)
                 return {}
             return {a["id"]: a["section"] for a in out["assignments"] if a["id"] in batch and a["section"] in nums}
 
-        ids = list(range(len(paras)))
-        for d in await llm.gather_limited(route(ids[i : i + s.route_batch]) for i in range(0, len(ids), s.route_batch)):
-            owner.update(d)
+        todo = [i for i in range(len(paras)) if i not in owner]
+        for size in (s.route_batch, 40):  # second round: only what the first one missed, in smaller batches
+            for d in await llm.gather_limited(route(todo[i : i + size]) for i in range(0, len(todo), size)):
+                owner.update(d)
+            todo = [i for i in todo if i not in owner]
+            if not todo:
+                break
+        # Still missing: where most of its paragraph group (e.g. 5.5.x) went, else the closest section brief
         groups: dict[str, list[int]] = {}
         for i, p in enumerate(paras):
             groups.setdefault(_group_key(p, i), []).append(i)
-        for idx in groups.values():  # a paragraph the model skipped goes where most of its group (e.g. 5.5.x) went
-            votes = [owner[i] for i in idx if i in owner]
-            for i in idx:
-                if i not in owner and votes:
-                    owner[i] = max(set(votes), key=votes.count)
+        name = {x["num"]: f"{x['num']:02d} {x['name']}" for x in sections}
+        brief_vecs = np.asarray(await llm.embed([x["brief"][:8000] for x in targets], task="RETRIEVAL_QUERY")) if todo else None
+        for i in todo:
+            votes = [owner[j] for j in groups[_group_key(paras[i], i)] if j in owner and owner[j] in nums]
+            if votes:
+                owner[i], by = max(set(votes), key=votes.count), "its paragraph group"
+            else:
+                owner[i], by = targets[int(np.argmax(brief_vecs @ para_vecs[i]))]["num"], "closest section brief"
+            unassigned.append({"paragraph": _ref(paras[i]) or f"paragraph {i + 1}", "placed_in": name[owner[i]], "by": by})
+        if unassigned:
+            await ctx.progress(unassigned=unassigned)
 
     # 3. Plan
     await ctx.progress(stage="plan")
@@ -307,8 +374,6 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     material = f"Source: {ex.title}\n\n{notes_md}"
     failed_pages: list[dict] = []
 
-    # Source paragraphs ([label] text blocks), embedded once to pick background / relevant paragraphs per page
-    para_vecs = np.asarray(await llm.embed(paras)) if paras else None
     own: dict[int, list[int]] = {}
     for i, n in sorted(owner.items()):
         own.setdefault(n, []).append(i)
@@ -367,6 +432,29 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         if not outs:
             raise RuntimeError(f"every part of {slug} failed")
         content = _join_parts([o["content_md"] for o in outs])
+        if auto_gaps:  # own paragraphs the parts left out get one more pass
+            for group in _parts(_uncited(content, given), s.page_part_words):
+                refs = {_ref(p) for p in group}
+                try:
+                    out = await llm.generate_json(
+                        system,
+                        prompts.with_schema(schema, prompts.write_page_prompt(
+                            slug=slug, title=title, ptype=ptype, focus=focus, existing_md=None, material=page_material,
+                            linkable=linkable, source_slug=source_slug, source_paragraphs="\n\n".join(group),
+                            auto_gaps=True, fill=True, earlier_parts="\n".join(re.findall(r"^#{2,4} .*$", content, re.M)),
+                        )),
+                        prompts.PAGE_SCHEMA,
+                    )
+                    # keep only what cites a missing paragraph (headings kept), so the pass cannot rewrite the page
+                    blocks = [b for b in re.split(r"\n\s*\n", out["content_md"].strip()) if b.strip()]
+                    keep = [b for b in blocks if re.match(r"^#{2,4} ", b) or any(
+                        _covers(m.group(2), r) for m in store.LINK_RE.finditer(b) if m.group(2) for r in refs)]
+                    while keep and re.match(r"^#{2,4} ", keep[-1]):
+                        keep.pop()
+                    content = _join_parts([content, "\n\n".join(keep)])
+                except Exception as e:
+                    log.warning("ingest: page %s fill pass failed: %s", slug, e)
+                    failed_pages.append({"slug": f"{slug} (fill pass)", "error": f"{type(e).__name__}: {e}"})
         if auto_gaps and given:
             content += _not_covered(content, given, "paragraphs of this section") or "\n\nNot yet covered: none"
         elif len(groups) > 1:
@@ -412,9 +500,9 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         f"- {o.op} [[{o.slug}]]: {o.change_note}" for o in ops
     )
     await store.add_log(wiki_id, "ingest", ex.title, detail + f"\n\nMode: {mode} ({result['status']})")
-    label = lambda i: (m.group(1) if (m := re.match(r"^\[([^\]]+)\]", paras[i])) else f"paragraph {i + 1}")
+    label = lambda i: _ref(paras[i]) or f"paragraph {i + 1}"
     routing = {f"{x['num']:02d} {x['name']}": [label(i) for i in own.get(x["num"], [])] for x in sections} if owner else {}
-    return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "routing": routing, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
+    return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "routing": routing, "unassigned": unassigned, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
 
 
 async def run_safe(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: str) -> dict:

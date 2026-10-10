@@ -116,7 +116,7 @@ def write_page_prompt(
     *, slug: str, title: str, ptype: str, focus: str, existing_md: str | None, material: str,
     linkable: str, source_slug: str | None, source_paragraphs: str | None = None,
     background_paragraphs: str | None = None, auto_gaps: bool = False,
-    part: tuple[int, int] | None = None, earlier_parts: str = "",
+    part: tuple[int, int] | None = None, earlier_parts: str = "", fill: bool = False,
 ) -> str:
     cite = (
         f"The source page is [[{source_slug}]]; cite it exactly as the wiki schema requires. "
@@ -133,7 +133,12 @@ def write_page_prompt(
                  "link to the section page that covers them instead.\n")
     else:
         scope = ""
-    gaps = "Do not write a 'Not yet covered' list; it is added automatically.\n" if auto_gaps else ""
+    gaps = (
+        "Every paragraph in <source_paragraphs> is assigned to this page and to no other: write up each one, even where "
+        "it seems to sit at the edge of this section; a paragraph left out is missing from the wiki. "
+        "Do not write a 'Not yet covered' list; it is added automatically.\n"
+        if auto_gaps else ""
+    )
     paragraphs = (
         "<source_paragraphs>\nThe source's own text for this page, each paragraph labelled with its [paragraph number], "
         "in document order. Write from these first; use the material for context.\n\n"
@@ -146,7 +151,14 @@ def write_page_prompt(
         "</background_paragraphs>\n\n"
         if background_paragraphs else ""
     )
-    if part:
+    if fill:
+        current = (
+            "This page is already written, but it does not yet cover the paragraphs in <source_paragraphs>. Write only "
+            "those paragraphs, to be added to the end of the page: no introduction, no summary, and nothing about any "
+            "other paragraph. Use one of the page's headings below or a new one.\n"
+            f"<page_headings>\n{earlier_parts or '(none)'}\n</page_headings>\n"
+        )
+    elif part:
         n, total = part
         current = (
             f"This page is long, so it is written in {total} parts. This is part {n} of {total}: write only the content "
@@ -200,11 +212,15 @@ ROUTE_SCHEMA = {
 }
 
 
-def route_prompt(briefs: str, lines: str) -> str:
+def route_prompt(briefs: str, lines: str, outline: str = "", note: str = "") -> str:
     return (
         "Assign each source paragraph to the ONE section whose brief says it belongs there (follow the briefs' hand-off "
-        "rules). That section's page is the only one that writes it up. Return every id exactly once, with its section number.\n\n"
-        f"<section_briefs>\n{briefs}\n</section_briefs>\n\n<paragraphs>\nid | text (first words)\n{lines}\n</paragraphs>"
+        "rules). That section's page is the only one that writes it up. Return every id exactly once, with its section number. "
+        "Keep a topic together: paragraphs under the same heading, and application guidance (B paragraphs) with the "
+        "chapter its number points to (B6.x goes with chapter 6), go to the same section unless a brief hands one off.\n"
+        f"{note}\n"
+        + (f"<source_outline>\nNumbered headings of the source:\n{outline}\n</source_outline>\n\n" if outline else "")
+        + f"<section_briefs>\n{briefs}\n</section_briefs>\n\n<paragraphs>\nid | heading | text (first words)\n{lines}\n</paragraphs>"
     )
 
 
