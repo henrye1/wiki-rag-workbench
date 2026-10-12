@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     embed_batch: int = 100
     temperature: float = 0.2
     database_url: str = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"  # local Supabase
+    db_pool_max: int = 10  # keep low on hosted Postgres (connection limits)
 
     section_words: int = 3000  # source split size for note extraction
     chunk_max_words: int = 500  # page chunk size for search / IFRS parser

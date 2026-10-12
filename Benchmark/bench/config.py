@@ -22,10 +22,14 @@ class Settings(BaseSettings):
     wiki_api_key: str
     wiki_slug: str = "ifrs9"
 
+    # Results and uploaded inputs are stored in bench.runs
+    database_url: str = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"  # local Supabase
+
     runs: int = 3
     concurrency: int = 4  # parallel topics (each topic = 2 system calls + 1 judge call)
     seed: int = 42
 
+    # CLI only: inputs for a new run started from the command line (UI runs upload them instead)
     query_set: pathlib.Path = DOCS / "IFRS9_Requirement_Query_Set_BULK_5.txt"
     # Human-written assessment with the reference answers (kept local, see Docs/ in .gitignore)
     reference_docx: pathlib.Path = DOCS / "reference_assessment.docx"
@@ -34,6 +38,13 @@ class Settings(BaseSettings):
     @classmethod
     def _relative_to_benchmark(cls, v: pathlib.Path) -> pathlib.Path:
         return v if v.is_absolute() else (ROOT / v).resolve()
+
+    @field_validator("rag_url", "wiki_url")
+    @classmethod
+    def _scheme(cls, v: str) -> str:
+        # Render private services expose host:port without a scheme
+        v = v.rstrip("/")
+        return v if "://" in v else f"http://{v}"
 
 
 @lru_cache
