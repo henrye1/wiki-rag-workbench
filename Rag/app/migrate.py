@@ -24,8 +24,13 @@ def _explain(e: Exception) -> str:
         hints.append("this is Supabase's direct (IPv6-only) host: use the Session pooler URI (...pooler.supabase.com:5432)")
     if ":6543" in host:
         hints.append("port 6543 is the transaction pooler: use the session pooler on port 5432")
+    user = url.split("://", 1)[-1].split("@")[0].split(":")[0] if "@" in url else ""
+    if "pooler.supabase.com" in host and "." not in user:
+        hints.append(f"user is '{user}': the Supabase pooler needs 'postgres.<project-ref>' (copy it from Connect > Session pooler)")
     if "password authentication failed" in msg:
-        hints.append("wrong database password (URL-encode special characters such as @ # / ?)")
+        hints.append("Supabase rejected the password: use the database password (Project Settings > Database), "
+                     "not your account password; paste it raw, it is encoded automatically. "
+                     "Resetting it to letters and digits only avoids any ambiguity")
     return f"Cannot connect to the database at {host}: {msg}" + "".join(f"\n  hint: {h}" for h in hints)
 
 
