@@ -25,11 +25,25 @@ def _explain(e: Exception) -> str:
     return f"Cannot connect to the database at {host}: {msg}" + "".join(f"\n  hint: {h}" for h in hints)
 
 
+def _redacted(url: str) -> str:
+    """The URL with its password hidden, so the deploy log shows what was actually configured."""
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        return f"{url[:12]}... (not a postgresql:// URL)"
+    creds, at, host = rest.rpartition("@")
+    user = creds.split(":", 1)[0]
+    return f"{scheme}://{user}:***@{host}" if at else url
+
+
 def _connect():
     try:
         return psycopg.connect(get_settings().database_url, autocommit=True, connect_timeout=15)
     except psycopg.OperationalError as e:
         sys.exit(_explain(e))
+    except psycopg.ProgrammingError as e:  # unparseable DATABASE_URL
+        sys.exit(f"DATABASE_URL is not a valid connection string ({str(e).strip()}): {_redacted(get_settings().database_url)}\n"
+                 "  hint: expected postgresql://postgres.<project-ref>:<password>@<region>.pooler.supabase.com:5432/postgres"
+                 "?sslmode=require; URL-encode special characters in the password")
 
 
 def main():

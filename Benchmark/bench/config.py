@@ -1,5 +1,6 @@
 import pathlib
 from functools import lru_cache
+from urllib.parse import quote
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -45,6 +46,26 @@ class Settings(BaseSettings):
         # Render private services expose host:port without a scheme
         v = v.rstrip("/")
         return v if "://" in v else f"http://{v}"
+
+    @field_validator("database_url")
+    @classmethod
+    def _clean_database_url(cls, v: str) -> str:
+        # Tolerate copy/paste slips in hosting dashboards: quotes, whitespace, a pasted "DATABASE_URL=" prefix,
+        # and empty query parts ("...postgres?&sslmode=require", trailing "?") that psycopg rejects
+        v = v.strip().strip("\"'").strip()
+        if v.upper().startswith("DATABASE_URL="):
+            v = v.split("=", 1)[1].strip()
+        v = v.lstrip("=").strip()
+        creds, at, rest = v.rpartition("@")  # only touch the query after the host: a password may contain "?"
+        base, _, query = rest.partition("?")
+        params = [p for p in query.split("&") if p and not p.startswith("=")]
+        scheme, sep, userinfo = creds.partition("://")
+        if at and sep and ":" in userinfo:
+            # The password is taken literally (as typed into Supabase's URI template) and percent-encoded here,
+            # so %, ?, #, / and @ in it work. Do not percent-encode it yourself.
+            user, _, pw = userinfo.partition(":")
+            creds = f"{scheme}://{user}:{quote(pw, safe='')}"
+        return creds + at + base + ("?" + "&".join(params) if params else "")
 
 
 @lru_cache
