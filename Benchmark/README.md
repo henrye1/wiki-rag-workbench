@@ -34,17 +34,20 @@ copy .env.example .env          # set ANTHROPIC_API_KEY, RAG_API_KEY, WIKI_API_K
 .venv\Scripts\python -m bench.data                       # check topic <-> reference mapping
 .venv\Scripts\python -m bench.run --topics 2 --runs 1    # quick check
 .venv\Scripts\python -m bench.run                        # full: 26 topics x 3 runs
-.venv\Scripts\python -m bench.run --resume results/<dir> # continue after an error
+.venv\Scripts\python -m bench.run --run-id <id>        # resume a stored run after an error
 ```
 
-## Output: `results/<timestamp>/results.json`
+## Output: `bench.runs` (database)
+One row per run: status, the uploaded inputs (query set, reference .docx), the run log, and `results` (JSON):
 - `config`: judge model and effort, runs, seed, git commit, and a snapshot of each system (RAG documents and chunk counts; Wiki page and source counts).
 - `topics[n]`:
   - the question, reference and `key_points`
   - `runs[r]`: per system, the answer, sources, latency, per-point grades, similarity, coverage and contradictions; plus the winner, rationale and point notes
   - `aggregate`: mean ± sd per metric, win counts, and the hit rate for each key point
 - `summary`: per system, similarity, coverage and standard-only coverage (mean ± sd across topics); wins per run; similarity by docx section.
-- `errors`: topics that failed. Re-run with `--resume`.
+- `errors`: topics that failed. Resume with `--run-id`.
+
+Create the table once with `python -m bench.migrate` (Render runs it as a pre-deploy step). `python -m bench.import_results results/<dir>` imports runs saved as `results.json` by older versions.
 
 ## Cost
 Roughly 26 key-point calls plus 78 judge calls with Claude Opus 5.5 at effort `high`, and 156 Gemini calls to the systems under test. Judge calls send a server-side refusal fallback (`fallbacks: "default"`); IFRS text shouldn't trigger it.

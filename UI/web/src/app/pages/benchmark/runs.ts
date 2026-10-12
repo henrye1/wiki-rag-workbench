@@ -9,11 +9,12 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { Router, RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../../core/api';
+import { FileDrop } from '../../shared/file-drop';
 import { poller } from '../../shared/poll';
 
 @Component({
   selector: 'app-bench-runs',
-  imports: [FormsModule, RouterLink, DatePipe, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule],
+  imports: [FormsModule, RouterLink, DatePipe, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, FileDrop],
   template: `
     <div class="page">
       <h1>Benchmark</h1>
@@ -21,13 +22,20 @@ import { poller } from '../../shared/poll';
         (key-point checklist, 0–10 similarity, winner).</p>
       <div class="card">
         <h3>New run</h3>
+        <div class="files">
+          <app-file-drop accept=".docx" label="Reference assessment (.docx)" (picked)="reference = $event" />
+          <app-file-drop accept=".txt" label="Query set (.txt)" (picked)="querySet = $event" />
+        </div>
+        <p class="muted small">Leave a file empty to reuse the one from the last run. Files are stored with the run in the database.</p>
         <div class="row">
+          <mat-form-field appearance="outline" subscriptSizing="dynamic" class="wiki"><mat-label>Wiki</mat-label>
+            <input matInput [(ngModel)]="wiki" /></mat-form-field>
           <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>Topics</mat-label>
             <input matInput [(ngModel)]="topics" placeholder="e.g. 2 or 1-5 (empty = all 26)" /></mat-form-field>
           <mat-form-field appearance="outline" subscriptSizing="dynamic" class="runs"><mat-label>Runs</mat-label>
             <input matInput type="number" min="1" max="10" [(ngModel)]="runs" /></mat-form-field>
           <button mat-flat-button (click)="start()" [disabled]="active()"><mat-icon>play_arrow</mat-icon> Start</button>
-          <span class="muted small">Full run ≈ 26 × runs × (2 system answers + 1 Claude judgement). Needs RAG and Wiki running.</span>
+          <span class="muted small">Full run ≈ 26 × runs × (2 system answers + 1 Claude judgement). Needs RAG and the wiki populated.</span>
         </div>
         @if (active(); as a) {
           <div class="progress">
@@ -45,7 +53,7 @@ import { poller } from '../../shared/poll';
         @else { <span class="muted small">Tick two runs to compare</span> }
       </div>
       <table class="simple">
-        <thead><tr><th></th><th>Run</th><th>Topics × runs</th><th>RAG sim / cov</th><th>Wiki sim / cov</th><th>Wins (rag / wiki / tie)</th><th>Status</th></tr></thead>
+        <thead><tr><th></th><th>Run</th><th>Topics × runs</th><th>RAG sim / cov</th><th>Wiki sim / cov</th><th>Wins (rag / wiki / tie)</th><th>Status</th><th></th></tr></thead>
         <tbody>
           @for (r of list(); track r.id) {
             <tr>
@@ -58,15 +66,24 @@ import { poller } from '../../shared/poll';
                 <td>{{ r.summary.wins_by_run.rag }} / {{ r.summary.wins_by_run.wiki }} / {{ r.summary.wins_by_run.tie }}</td>
               } @else { <td colspan="3" class="muted">—</td> }
               <td><span class="pill" [class.ok]="r.progress.status === 'finished'" [class.warn]="r.progress.status === 'running'"
-                        [class.bad]="r.progress.status === 'failed'">{{ r.progress.status }}</span></td>
+                        [class.bad]="r.progress.status === 'failed' || r.progress.status === 'interrupted'">{{ r.progress.status }}</span></td>
+              <td class="actions">
+                @if (r.progress.status === 'interrupted' || r.progress.status === 'failed' || r.progress.status === 'queued') {
+                  <button mat-icon-button title="Resume" (click)="resume(r.id)" [disabled]="active()"><mat-icon>replay</mat-icon></button>
+                }
+                @if (r.progress.status !== 'running') {
+                  <button mat-icon-button title="Delete run" (click)="remove(r.id)"><mat-icon>delete</mat-icon></button>
+                }
+              </td>
             </tr>
-          } @empty { <tr><td colspan="7" class="muted">No runs yet.</td></tr> }
+          } @empty { <tr><td colspan="8" class="muted">No runs yet.</td></tr> }
         </tbody>
       </table>
     </div>
   `,
   styles: `
-    .runs { width: 90px; } .small { font-size: 12px; } .head { margin-top: 20px; }
+    .runs { width: 90px; } .wiki { width: 140px; } .actions { white-space: nowrap; }
+    .files { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; } .small { font-size: 12px; } .head { margin-top: 20px; }
     .progress { margin-top: 12px; } .log { max-height: 160px; overflow: auto; white-space: pre-wrap; margin: 8px 0 0; }
   `,
 })
@@ -79,6 +96,9 @@ export class BenchRuns {
   readonly error = signal('');
   topics = '2';
   runs = 1;
+  wiki = 'ifrs9';
+  reference: File | null = null;
+  querySet: File | null = null;
   private poll = poller(async () => {
     const a = this.active();
     if (!a) return false;
@@ -104,12 +124,43 @@ export class BenchRuns {
   async start() {
     this.error.set('');
     try {
-      const r = await this.api.post('/api/bench/runs', { topics: this.topics, runs: this.runs });
-      this.active.set({ id: r.id, done: 0, expected: null, log: [], status: 'running' });
-      setTimeout(() => this.poll.start(), 1500);
+      const fd = new FormData();
+      if (this.reference) fd.append('reference', this.reference, this.reference.name);
+      if (this.querySet) fd.append('query_set', this.querySet, this.querySet.name);
+      fd.append('topics', this.topics);
+      fd.append('runs', String(this.runs));
+      fd.append('wiki', this.wiki);
+      const r = await this.api.post('/api/bench/runs', fd);
+      this.watch(r.id);
     } catch (e) {
       this.error.set(errMsg(e));
     }
+  }
+
+  async resume(id: string) {
+    this.error.set('');
+    try {
+      await this.api.post(`/api/bench/runs/${enc(id)}/resume`);
+      this.watch(id);
+    } catch (e) {
+      this.error.set(errMsg(e));
+    }
+  }
+
+  async remove(id: string) {
+    if (!confirm(`Delete benchmark run ${id}?`)) return;
+    try {
+      await this.api.delete(`/api/bench/runs/${enc(id)}`);
+      this.selected.update((s) => s.filter((x) => x !== id));
+      await this.load();
+    } catch (e) {
+      this.error.set(errMsg(e));
+    }
+  }
+
+  private watch(id: string) {
+    this.active.set({ id, done: 0, expected: null, log: [], status: 'running' });
+    setTimeout(() => this.poll.start(), 1500);
   }
 
   toggle(id: string) {

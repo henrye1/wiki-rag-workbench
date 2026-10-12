@@ -62,10 +62,11 @@ def load_references(path) -> list[dict]:
     return refs
 
 
-def load() -> list[Topic]:
+def load(query_set=None, reference_docx=None) -> list[Topic]:
+    """Topics with their reference answers. Paths default to QUERY_SET / REFERENCE_DOCX."""
     s = get_settings()
-    topics = load_topics(s.query_set)
-    refs = load_references(s.reference_docx)
+    topics = load_topics(query_set or s.query_set)
+    refs = load_references(reference_docx or s.reference_docx)
     if len(topics) != len(refs):
         raise ValueError(f"{len(topics)} topics vs {len(refs)} references")
     for t, r in zip(topics, refs):

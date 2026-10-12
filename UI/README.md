@@ -43,7 +43,7 @@ npm start
 - `GET /api/status`: health and counts.
 - `/api/rag/{path}` and `/api/wiki/{path}`: proxies (JSON, multipart, SSE, downloads).
 - `POST/GET /api/bulk`, `GET /api/bulk/{id}`: bulk runs. These are kept in memory until the BFF restarts.
-- `GET/POST /api/bench/runs`, `GET /api/bench/runs/{id}`, `GET /api/bench/runs/{id}/status`: benchmark runs. The CLI runs as a subprocess; output goes to `Benchmark/results/<id>/run.log`.
+- `GET/POST /api/bench/runs`, `GET/DELETE /api/bench/runs/{id}`, `GET /api/bench/runs/{id}/status`, `POST /api/bench/runs/{id}/resume`: benchmark runs, stored in `bench.runs`. POST takes multipart `reference` (.docx) and `query_set` (.txt), both optional after the first run (the last uploaded files are reused), plus `topics`, `runs` and `wiki`. The CLI (`bench.run --run-id`) runs as a subprocess.
 
 ## Sharing with a tester (Cloudflare quick tunnel)
 1. Set `UI_PASSWORD` (and `SESSION_SECRET`) in `UI/server/.env`, then restart the BFF. With a password set, every `/api` and `/view` request needs a login; the page itself shows a sign-in screen.

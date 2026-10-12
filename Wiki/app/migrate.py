@@ -10,6 +10,7 @@ MIGRATIONS = pathlib.Path(__file__).resolve().parent.parent / "migrations"
 
 def main():
     with psycopg.connect(get_settings().database_url, autocommit=True) as conn:
+        conn.execute("set search_path = public, extensions")
         conn.execute("create schema if not exists wiki")
         conn.execute("create table if not exists wiki.schema_migrations (name text primary key, applied_at timestamptz default now())")
         done = {r[0] for r in conn.execute("select name from wiki.schema_migrations")}

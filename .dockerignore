@@ -1,0 +1,11 @@
+# Keep images small and never ship local data or secrets
+.git
+Docs/
+**/.venv
+**/.env
+**/__pycache__
+**/node_modules
+**/results
+**/.angular
+UI/web/dist
+Rag/supabase/.temp
