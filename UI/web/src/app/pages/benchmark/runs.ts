@@ -7,6 +7,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
 import { Router, RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../../core/api';
 import { FileDrop } from '../../shared/file-drop';
@@ -14,7 +15,7 @@ import { poller } from '../../shared/poll';
 
 @Component({
   selector: 'app-bench-runs',
-  imports: [FormsModule, RouterLink, DatePipe, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, FileDrop],
+  imports: [FormsModule, RouterLink, DatePipe, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatSelectModule, FileDrop],
   template: `
     <div class="page">
       <h1>Benchmark</h1>
@@ -29,12 +30,14 @@ import { poller } from '../../shared/poll';
         <p class="muted small">Leave a file empty to reuse the one from the last run. Files are stored with the run in the database.</p>
         <div class="row">
           <mat-form-field appearance="outline" subscriptSizing="dynamic" class="wiki"><mat-label>Wiki</mat-label>
-            <input matInput [(ngModel)]="wiki" /></mat-form-field>
+            <mat-select [(ngModel)]="wiki">
+              @for (w of wikis(); track w.slug) { <mat-option [value]="w.slug">{{ w.name }} ({{ w.slug }})</mat-option> }
+            </mat-select></mat-form-field>
           <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>Topics</mat-label>
             <input matInput [(ngModel)]="topics" placeholder="e.g. 2 or 1-5 (empty = all 26)" /></mat-form-field>
           <mat-form-field appearance="outline" subscriptSizing="dynamic" class="runs"><mat-label>Runs</mat-label>
             <input matInput type="number" min="1" max="10" [(ngModel)]="runs" /></mat-form-field>
-          <button mat-flat-button (click)="start()" [disabled]="active()"><mat-icon>play_arrow</mat-icon> Start</button>
+          <button mat-flat-button (click)="start()" [disabled]="active() || !wiki"><mat-icon>play_arrow</mat-icon> Start</button>
           <span class="muted small">Full run ≈ 26 × runs × (2 system answers + 1 Claude judgement). Needs RAG and the wiki populated.</span>
         </div>
         @if (active(); as a) {
@@ -82,7 +85,7 @@ import { poller } from '../../shared/poll';
     </div>
   `,
   styles: `
-    .runs { width: 90px; } .wiki { width: 140px; } .actions { white-space: nowrap; }
+    .runs { width: 90px; } .wiki { width: 240px; } .actions { white-space: nowrap; }
     .files { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; } .small { font-size: 12px; } .head { margin-top: 20px; }
     .progress { margin-top: 12px; } .log { max-height: 160px; overflow: auto; white-space: pre-wrap; margin: 8px 0 0; }
   `,
@@ -94,9 +97,10 @@ export class BenchRuns {
   readonly active = signal<any>(null);
   readonly selected = signal<string[]>([]);
   readonly error = signal('');
+  readonly wikis = signal<any[]>([]);
   topics = '2';
   runs = 1;
-  wiki = 'ifrs9';
+  wiki = '';
   reference: File | null = null;
   querySet: File | null = null;
   private poll = poller(async () => {
@@ -110,7 +114,13 @@ export class BenchRuns {
     return running;
   }, 3000);
 
-  constructor() { void this.load(true); }
+  constructor() {
+    void this.load(true);
+    void this.api.wikis().then((w) => {
+      this.wikis.set(w);
+      if (!this.wiki && w.length) this.wiki = w[0].slug;
+    }).catch((e) => this.error.set(`Could not list wikis: ${errMsg(e)}`));
+  }
 
   async load(resume = false) {
     this.list.set(await this.api.get('/api/bench/runs'));

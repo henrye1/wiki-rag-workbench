@@ -4,12 +4,14 @@ import asyncio
 import datetime as dt
 import os
 import subprocess
+from urllib.parse import quote
 
 import psycopg
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 from psycopg.rows import dict_row
 
 from .config import get_settings
+from .proxy import client
 
 router = APIRouter(prefix="/api/bench", tags=["benchmark"])
 _procs: dict[str, subprocess.Popen] = {}
@@ -121,16 +123,29 @@ async def _read(f: UploadFile | None, ext: str) -> tuple[str, bytes] | None:
     return f.filename, data
 
 
+async def _ensure_wiki(slug: str):
+    """Refuse a run up front when the wiki does not exist, instead of failing on every topic."""
+    s = get_settings()
+    if not slug:
+        raise HTTPException(400, "Choose the wiki to benchmark")
+    r = await client().get(f"{s.wiki_url}/wikis/{quote(slug, safe='')}", headers={"X-API-Key": s.wiki_api_key}, timeout=15)
+    if r.status_code == 404:
+        raise HTTPException(400, f"No wiki with slug '{slug}'")
+    r.raise_for_status()
+
+
 @router.post("/runs", status_code=202)
 async def start(
     reference: UploadFile | None = None,
     query_set: UploadFile | None = None,
     topics: str = Form("", description="e.g. 1,2,5-7 (empty = all)"),
     runs: int = Form(3, ge=1, le=10),
-    wiki: str = Form("ifrs9", description="Wiki slug under test"),
+    wiki: str = Form(..., description="Wiki slug under test"),
 ):
     """Start a run. Files left out are reused from the most recent run that has them."""
     _ensure_idle()
+    wiki = wiki.strip()
+    await _ensure_wiki(wiki)
     ref, qs = await _read(reference, ".docx"), await _read(query_set, ".txt")
     if ref is None:
         last = await _query("select reference_name, reference from bench.runs where reference is not null order by created_at desc limit 1", one=True)
@@ -144,7 +159,7 @@ async def start(
     await _query(
         """insert into bench.runs (id, topics, runs, wiki_slug, query_set_name, query_set, reference_name, reference)
            values (%s, %s, %s, %s, %s, %s, %s, %s)""",
-        (run_id, topics.replace(" ", ""), runs, wiki.strip() or "ifrs9", qs[0], qs[1], ref[0], ref[1]),
+        (run_id, topics.replace(" ", ""), runs, wiki, qs[0], qs[1], ref[0], ref[1]),
     )
     _spawn(run_id)
     return {"id": run_id}
