@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     embed_dim: int = 768  # must match vector(768) in migration
     embed_batch: int = 100
     database_url: str = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"  # local Supabase
+    db_pool_max: int = 10  # keep low on hosted Postgres (connection limits)
     top_k: int = 8
     chunk_max_words: int = 500
     temperature: float = 0.1

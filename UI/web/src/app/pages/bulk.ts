@@ -24,7 +24,7 @@ import { poller } from '../shared/poll';
       <div class="card">
         <p class="muted">Runs a query-set file (TOPIC n of N blocks) through the RAG bulk pipeline: retrieval per question, the run rules,
           a self-check revision pass and rule checks. Leave the file empty to use the IFRS 9 query set. About 30–60 s per topic.</p>
-        <app-file-drop accept=".txt,.md" label="Optional: drop a query-set file (default: IFRS9_Requirement_Query_Set_BULK_5.txt)" (picked)="file.set($event)" />
+        <app-file-drop accept=".txt,.md" label="Query-set file (optional locally: defaults to IFRS9_Requirement_Query_Set_BULK_5.txt)" (picked)="file.set($event)" />
         <div class="row opts">
           <mat-form-field appearance="outline" subscriptSizing="dynamic">
             <mat-label>Topics</mat-label>

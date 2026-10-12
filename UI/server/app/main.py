@@ -39,12 +39,21 @@ async def status():
     rag_health, rag_docs, wiki_health, wikis = await asyncio.gather(
         check("rag", "/health"), check("rag", "/documents"), check("wiki", "/health"), check("wiki", "/wikis")
     )
-    runs = await bench.list_runs()
+    try:
+        runs = await bench.list_runs()
+    except Exception:
+        runs = []
     return {
         "rag": {"ok": rag_health["ok"], "url": rag_health["url"], "documents": rag_docs.get("data") or []},
         "wiki": {"ok": wiki_health["ok"], "url": wiki_health["url"], "wikis": wikis.get("data") or []},
-        "benchmark": {"ok": s.bench_python_path().exists(), "runs": len(runs), "latest": runs[0] if runs else None},
+        "benchmark": {"ok": await bench.db_ok() and s.bench_python_path().exists(), "runs": len(runs), "latest": runs[0] if runs else None},
     }
+
+
+@app.get("/healthz", include_in_schema=False)
+async def healthz():
+    """Liveness for the host (Render health check); open, no login."""
+    return {"status": "ok"}
 
 
 # Order matters: specific /api routers before the generic /api/{service}/... proxy

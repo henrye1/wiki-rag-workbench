@@ -1,19 +1,24 @@
-"""Run the benchmark.
+"""Run the benchmark. Results are stored in bench.runs (see migrations/).
 
-  python -m bench.run                      # all topics, RUNS runs
+  python -m bench.run                      # new run: all topics, RUNS runs, inputs from QUERY_SET / REFERENCE_DOCX
   python -m bench.run --topics 2 --runs 1  # quick check
-  python -m bench.run --resume results/20261008-101500
+  python -m bench.run --run-id 20261008-101500  # run/resume a stored run (inputs come from the row; used by the UI)
 """
 import argparse
 import asyncio
 import datetime as dt
-import json
+import os
+import pathlib
 import random
 import statistics
 import subprocess
 import sys
+import tempfile
 
 import httpx
+import psycopg
+from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from . import judge, systems
 from .config import ROOT, get_settings
@@ -47,6 +52,8 @@ def _mean_sd(xs: list[float]) -> dict:
 
 
 def _git_commit() -> str | None:
+    if c := os.environ.get("RENDER_GIT_COMMIT"):
+        return c[:7]
     try:
         return subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"], text=True).strip()
     except Exception:
@@ -54,18 +61,34 @@ def _git_commit() -> str | None:
 
 
 class Store:
-    """results.json, rewritten after every completed step so a run can resume."""
+    """A bench.runs row. `data` (results) and the log are rewritten after every completed step so a run can resume."""
 
-    def __init__(self, path):
-        self.path = path
+    LOG_LINES = 300
+
+    def __init__(self, conn: psycopg.Connection, run_id: str, data: dict, log: str = ""):
+        self.conn, self.run_id, self.data = conn, run_id, data
+        self.lines = log.splitlines()
         self.lock = asyncio.Lock()
-        self.data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
-    async def save(self):
+    def log(self, msg: str = ""):
+        print(msg, flush=True)
+        self.lines.extend(msg.splitlines() or [""])
+        del self.lines[: -self.LOG_LINES]
+
+    async def heartbeat(self):
+        """Lets the UI tell a live run from one killed mid-way (e.g. by a redeploy)."""
+        while True:
+            await asyncio.sleep(30)
+            async with self.lock:
+                await asyncio.to_thread(self.conn.execute, "update bench.runs set updated_at = now() where id = %s", (self.run_id,))
+
+    async def save(self, status: str | None = None):
         async with self.lock:
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8")
-            tmp.replace(self.path)
+            await asyncio.to_thread(
+                self.conn.execute,
+                "update bench.runs set results = %s, log = %s, status = coalesce(%s, status), updated_at = now() where id = %s",
+                (Jsonb(self.data), "\n".join(self.lines), status, self.run_id),
+            )
 
 
 async def run_topic(t: Topic, runs: int, store: Store, http: httpx.AsyncClient, sem: asyncio.Semaphore):
@@ -108,9 +131,9 @@ async def run_topic(t: Topic, runs: int, store: Store, http: httpx.AsyncClient, 
                 "point_notes": {pg["id"]: pg["note"] for pg in jd["point_grades"]}, "judge_model": g["model"], "judge_usage": g["usage"],
                 "judgement": True,
             }
+            store.log(f"  topic {t.number:>2} run {r}: rag {per_system['rag']['similarity']}/10 ({per_system['rag']['coverage']}%) "
+                  f"| wiki {per_system['wiki']['similarity']}/10 ({per_system['wiki']['coverage']}%) -> {winner}")
             await store.save()
-            print(f"  topic {t.number:>2} run {r}: rag {per_system['rag']['similarity']}/10 ({per_system['rag']['coverage']}%) "
-                  f"| wiki {per_system['wiki']['similarity']}/10 ({per_system['wiki']['coverage']}%) -> {winner}", flush=True)
 
 
 def aggregate(data: dict):
@@ -148,57 +171,90 @@ def aggregate(data: dict):
     }
 
 
+def _new_run(conn: psycopg.Connection, topics: str, runs: int) -> str:
+    """CLI: store a new run with the local QUERY_SET / REFERENCE_DOCX files as its inputs."""
+    s = get_settings()
+    run_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    conn.execute(
+        """insert into bench.runs (id, topics, runs, wiki_slug, query_set_name, query_set, reference_name, reference)
+           values (%s, %s, %s, %s, %s, %s, %s, %s)""",
+        (run_id, topics, runs, s.wiki_slug, s.query_set.name, s.query_set.read_bytes(),
+         s.reference_docx.name, s.reference_docx.read_bytes()),
+    )
+    return run_id
+
+
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--topics", help="e.g. 1,2,5-7 (default: all)")
     ap.add_argument("--runs", type=int)
-    ap.add_argument("--resume", help="existing results dir to continue")
+    ap.add_argument("--run-id", help="stored run to execute or resume")
     args = ap.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
 
     s = get_settings()
-    runs = args.runs or s.runs
-    topics = load()
-    wanted = set(parse_topics(args.topics, len(topics)))
-    topics = [t for t in topics if t.number in wanted]
+    conn = psycopg.connect(s.database_url, autocommit=True, row_factory=dict_row)
+    run_id = args.run_id or _new_run(conn, args.topics or "", args.runs or s.runs)
+    row = conn.execute("select * from bench.runs where id = %s", (run_id,)).fetchone()
+    if not row:
+        sys.exit(f"Run {run_id} not found")
+    if not (row["query_set"] and row["reference"]):
+        sys.exit(f"Run {run_id} has no query set / reference document")
+    s.wiki_slug = row["wiki_slug"]
+    runs = args.runs or row["runs"]
+    store = Store(conn, run_id, row["results"] or {}, row["log"])
+    store.log(f"--- {dt.datetime.now().isoformat(timespec='seconds')} start")
+    await store.save("running")
+    beat = asyncio.create_task(store.heartbeat())
 
-    out_dir = ROOT / args.resume if args.resume else ROOT / "results" / dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    store = Store(out_dir / "results.json")
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            qs, ref = pathlib.Path(tmp, "query_set.txt"), pathlib.Path(tmp, "reference.docx")
+            qs.write_bytes(row["query_set"])
+            ref.write_bytes(row["reference"])
+            topics = load(qs, ref)
+        wanted = set(parse_topics(args.topics or row["topics"] or None, len(topics)))
+        topics = [t for t in topics if t.number in wanted]
 
-    async with httpx.AsyncClient() as http:
-        if not store.data:
-            store.data = {
-                "config": {
-                    "started": dt.datetime.now().isoformat(timespec="seconds"), "git_commit": _git_commit(),
-                    "judge_model": s.judge_model, "judge_effort": s.judge_effort, "runs": runs, "seed": s.seed,
-                    "topics_selected": [t.number for t in topics], "expected_judgements": len(topics) * runs,
-                    "question_format": "topic title + Q1..Qn, sent identically to RAG /query and Wiki /query",
-                    "systems": await systems.describe(http),
-                    "query_set": s.query_set.name, "reference": s.reference_docx.name,
-                },
-                "topics": {},
-            }
-            await store.save()
-        print(f"Benchmark -> {out_dir}  ({len(topics)} topics x {runs} runs)", flush=True)
-        sem = asyncio.Semaphore(s.concurrency)
-        results = await asyncio.gather(*(run_topic(t, runs, store, http, sem) for t in topics), return_exceptions=True)
+        async with httpx.AsyncClient() as http:
+            if not store.data:
+                store.data = {
+                    "config": {
+                        "started": dt.datetime.now().isoformat(timespec="seconds"), "git_commit": _git_commit(),
+                        "judge_model": s.judge_model, "judge_effort": s.judge_effort, "runs": runs, "seed": s.seed,
+                        "topics_selected": [t.number for t in topics], "expected_judgements": len(topics) * runs,
+                        "question_format": "topic title + Q1..Qn, sent identically to RAG /query and Wiki /query",
+                        "systems": await systems.describe(http),
+                        "query_set": row["query_set_name"], "reference": row["reference_name"],
+                    },
+                    "topics": {},
+                }
+                await store.save()
+            store.log(f"Benchmark {run_id}  ({len(topics)} topics x {runs} runs)")
+            sem = asyncio.Semaphore(s.concurrency)
+            results = await asyncio.gather(*(run_topic(t, runs, store, http, sem) for t in topics), return_exceptions=True)
 
-    errors = {t.number: f"{type(r).__name__}: {r}" for t, r in zip(topics, results) if isinstance(r, Exception)}
-    store.data["errors"] = errors
-    aggregate(store.data)
-    store.data["config"]["finished"] = dt.datetime.now().isoformat(timespec="seconds")
-    await store.save()
+        errors = {t.number: f"{type(r).__name__}: {r}" for t, r in zip(topics, results) if isinstance(r, Exception)}
+        store.data["errors"] = errors
+        aggregate(store.data)
+        store.data["config"]["finished"] = dt.datetime.now().isoformat(timespec="seconds")
 
-    sm = store.data["summary"]
-    print("\nSummary (mean of topic means):")
-    for name, v in sm["by_system"].items():
-        print(f"  {name:<5} similarity {v['similarity']['mean']}/10  coverage {v['coverage']['mean']}%  "
-              f"standard-only coverage {v['coverage_standard']['mean']}%")
-    print(f"  wins (per run): {sm['wins_by_run']}")
-    if errors:
-        print(f"  errors: {errors}  (re-run with --resume {out_dir.relative_to(ROOT)})")
-    print(f"Results: {out_dir / 'results.json'}")
+        sm = store.data["summary"]
+        store.log("\nSummary (mean of topic means):")
+        for name, v in sm["by_system"].items():
+            store.log(f"  {name:<5} similarity {v['similarity']['mean']}/10  coverage {v['coverage']['mean']}%  "
+                      f"standard-only coverage {v['coverage_standard']['mean']}%")
+        store.log(f"  wins (per run): {sm['wins_by_run']}")
+        if errors:
+            store.log(f"  errors: {errors}  (resume with --run-id {run_id})")
+        await store.save("finished")
+    except BaseException as e:
+        store.log(f"FAILED: {type(e).__name__}: {e}")
+        await store.save("failed")
+        raise
+    finally:
+        beat.cancel()
+        conn.close()
 
 
 if __name__ == "__main__":

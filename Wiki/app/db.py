@@ -14,7 +14,7 @@ async def _configure(conn):
 
 async def open_pool():
     global pool
-    pool = AsyncConnectionPool(get_settings().database_url, min_size=1, max_size=10, configure=_configure, open=False)
+    pool = AsyncConnectionPool(get_settings().database_url, min_size=1, max_size=get_settings().db_pool_max, configure=_configure, open=False)
     await pool.open()
 
 

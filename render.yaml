@@ -1,0 +1,70 @@
+# Render Blueprint: Workbench UI (public) + RAG API and Wiki API (private). Database: Supabase Cloud (see DEPLOY.md).
+# Secrets marked `sync: false` are asked for when the Blueprint is first created.
+services:
+  - type: web
+    name: workbench
+    runtime: docker
+    dockerfilePath: ./UI/Dockerfile
+    dockerContext: .
+    region: frankfurt
+    plan: 0.5c-512mb
+    healthCheckPath: /healthz
+    preDeployCommand: cd /app/Benchmark && python -m bench.migrate
+    envVars:
+      - key: RAG_URL
+        fromService: { name: rag, type: pserv, property: hostport }
+      - key: RAG_API_KEY
+        fromService: { name: rag, type: pserv, envVarKey: API_KEY }
+      - key: WIKI_URL
+        fromService: { name: wiki, type: pserv, property: hostport }
+      - key: WIKI_API_KEY
+        fromService: { name: wiki, type: pserv, envVarKey: API_KEY }
+      - key: DATABASE_URL
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: UI_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - fromGroup: workbench-shared
+
+  - type: pserv
+    name: rag
+    runtime: docker
+    dockerfilePath: ./Rag/Dockerfile
+    dockerContext: .
+    region: frankfurt
+    plan: 0.5c-512mb
+    preDeployCommand: python -m app.migrate
+    envVars:
+      - key: API_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - fromGroup: workbench-shared
+
+  - type: pserv
+    name: wiki
+    runtime: docker
+    dockerfilePath: ./Wiki/Dockerfile
+    dockerContext: .
+    region: frankfurt
+    plan: 0.5c-512mb
+    preDeployCommand: python -m app.migrate
+    envVars:
+      - key: API_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - fromGroup: workbench-shared
+
+envVarGroups:
+  - name: workbench-shared
+    envVars:
+      - key: DB_POOL_MAX
+        value: "4"  # 3 services share the Supabase pooler's client limit

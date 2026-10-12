@@ -37,7 +37,7 @@ async def start(file: UploadFile | None = None, topics: str = Form(""), revise: 
         filename, data = file.filename or "query_set.txt", await file.read()
     else:
         if not s.default_query_set.exists():
-            raise HTTPException(404, "Default query set not found")
+            raise HTTPException(400, "No default query set on this server: upload a query-set file")
         filename, data = s.default_query_set.name, s.default_query_set.read_bytes()
     nums: list[int] = []
     for part in [p for p in topics.replace(" ", "").split(",") if p]:

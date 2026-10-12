@@ -246,10 +246,11 @@ From `Benchmark/` with RAG and Wiki running:
 
 - `.venv\Scripts\python -m bench.run --topics 2 --runs 1` for a quick check (about a minute)
 - `.venv\Scripts\python -m bench.run` for the full run (26 topics x 3 runs: about 100 Claude calls and 156 Gemini calls, roughly 10 minutes)
-- `--topics 1,4,10-12` selects topics; `--resume results\<folder>` continues a run that stopped
-- Or start runs from the UI's Benchmark screen and watch progress there
+- `--topics 1,4,10-12` selects topics; `--run-id <id>` resumes a run that stopped
+- Or start runs from the UI's Benchmark screen: upload the reference .docx and the query set (later runs reuse the last uploaded files), watch progress, resume interrupted runs
+- First time: `.venv\Scripts\python -m bench.migrate` creates the `bench.runs` table; `python -m bench.import_results results\<folder>` imports runs saved by older versions
 
-Results go to `Benchmark/results/<timestamp>/results.json`: the configuration (models, document and page counts, git commit), each topic's key points, every answer with its grades and the judge's notes, and per-topic and overall averages.
+Results are stored in the database (`bench.runs`, one row per run, together with the uploaded inputs and the run log): the configuration (models, document and page counts, git commit), each topic's key points, every answer with its grades and the judge's notes, and per-topic and overall averages.
 
 ### Latest full run (2026-10-08)
 
@@ -359,6 +360,10 @@ Things to know:
 | Benchmark judge errors with authentication | No Anthropic key | Set `ANTHROPIC_API_KEY` in `Benchmark/.env` |
 | Gemini 429 errors | Rate limit | Calls retry with backoff automatically; lower `BULK_CONCURRENCY`, `LLM_CONCURRENCY` or `CONCURRENCY` |
 
+## Deploying to Render
+
+See [DEPLOY.md](DEPLOY.md): a Render Blueprint (`render.yaml`) runs the Workbench publicly and RAG and Wiki as private services, on a Supabase Cloud database.
+
 ## Repository, data and limits
 
 The code is at [github.com/henrye1/wiki-rag-workbench](https://github.com/henrye1/wiki-rag-workbench). Source documents are deliberately not in it.
@@ -367,7 +372,7 @@ The code is at [github.com/henrye1/wiki-rag-workbench](https://github.com/henrye
 | --- | --- |
 | `Rag/` | RAG API: `app/ingest` (IFRS PDF parser, chunking), `app/retrieval.py`, `app/bulk.py`, `supabase/migrations`, Postman collection |
 | `Wiki/` | Wiki API: `app/ops` (ingest, query, lint), `app/wiki/store.py` (pages, versions, changesets), `migrations`, HTML viewer templates, `llm-wiki.md` (the pattern it implements) |
-| `Benchmark/` | `bench/` (data loading, system clients, Claude judge, runner); `results/` is local only |
+| `Benchmark/` | `bench/` (data loading, system clients, Claude judge, runner); results are stored in `bench.runs` |
 | `UI/web/` | Angular app: `pages/` (one file per screen), `shared/` (markdown rendering, citation panel, diff viewer) |
 | `UI/server/` | BFF: proxy, login, bulk runner, benchmark runner |
 | `Docs/` | Local only, ignored by git: the IFRS 9 PDF, the query set and the reference assessment |
