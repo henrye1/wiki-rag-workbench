@@ -62,6 +62,7 @@ class Settings(BaseSettings):
         scheme, sep, userinfo = creds.partition("://")
         if at and sep and ":" in userinfo:
             # The password is taken literally (as typed into Supabase's URI template) and percent-encoded here,
+            # so %, ?, #, / and @ in it work. Do not percent-encode it yourself.
             user, _, pw = userinfo.partition(":")
             creds = f"{scheme}://{user}:{quote(pw, safe='')}"
         return creds + at + base + ("?" + "&".join(params) if params else "")
