@@ -61,10 +61,14 @@ async def generate(system: str, prompt: str, schema: dict | None = None) -> str:
     resp = await _retry(
         lambda: client().aio.models.generate_content(model=get_settings().gemini_chat_model, contents=prompt, config=_cfg(system, **kw))
     )
+    cand = resp.candidates[0] if resp.candidates else None
     if not resp.text:
-        cand = resp.candidates[0] if resp.candidates else None
         reason = (cand.finish_reason if cand else None) or getattr(resp.prompt_feedback, "block_reason", None)
         raise EmptyResponse(f"Gemini returned no text (finish_reason={reason})")
+    reason = getattr(cand.finish_reason, "name", cand.finish_reason) if cand else None
+    if schema and reason and reason != "STOP":
+        # JSON cut off mid-string (e.g. RECITATION or MAX_TOKENS): fail with the reason, not a JSONDecodeError
+        raise EmptyResponse(f"Gemini stopped early (finish_reason={reason}, {len(resp.text)} chars)")
     return resp.text
 
 
@@ -81,8 +85,8 @@ async def stream(system: str, prompt: str) -> AsyncIterator[str]:
             yield chunk.text
 
 
-async def generate_json(system: str, prompt: str, schema: dict, attempts: int = 2) -> dict:
-    """JSON-mode generation; retries once on empty/invalid output (e.g. truncation, transient blocks)."""
+async def generate_json(system: str, prompt: str, schema: dict, attempts: int = 3) -> dict:
+    """JSON-mode generation; retries on empty/invalid output (e.g. truncation, transient blocks)."""
     for i in range(attempts):
         try:
             return json.loads(await generate(system, prompt, schema=schema))

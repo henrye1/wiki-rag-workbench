@@ -45,12 +45,17 @@ def notes_prompt(source_title: str, idx: int, total: int, section: str) -> str:
         "with every condition); the questions/requests it poses without answering (as open questions, not claims); "
         "and the entities and concepts that deserve or relate to wiki pages. "
         "If the source is mainly a questionnaire, checklist or instructions, most content belongs in open_questions. "
-        "Paraphrase precisely in your own words; do not copy long passages verbatim.\n\n"
+        "Follow the wiki schema for what to capture and how to label it.\n\n"
         f"<section>\n{section}\n</section>"
     )
 
 
 # ---------- ingest: plan ----------
+
+ONE_TOP_PAGE = (
+    "- `overview` is the wiki's only top-level page. Never create or link a second top-level or index page "
+    "(for example one named after the standard, such as `ifrs-9`), even where the schema describes one; link to [[overview]] instead."
+)
 
 PLAN_SCHEMA = {
     "type": "object",
@@ -82,6 +87,8 @@ def plan_prompt(source_title: str, source_slug: str, notes: str, index: str, can
         "- Prefer updating existing pages over creating near-duplicates.\n"
         "- Create pages for important entities/concepts/topics that the source covers substantively.\n"
         "- Always include the `overview` page (create it if missing, otherwise update it).\n"
+        "- If the schema defines a fixed list of sections, include one page for every section.\n"
+        f"{ONE_TOP_PAGE}\n"
         "- Do not include the source page itself.\n"
         "- Do not create a page whose content would come only from open questions; those belong on the source page.\n\n"
         f"<current_index>\nslug | type | title | summary\n{index}\n</current_index>\n\n"
@@ -107,28 +114,113 @@ PAGE_SCHEMA = {
 
 def write_page_prompt(
     *, slug: str, title: str, ptype: str, focus: str, existing_md: str | None, material: str,
-    linkable: str, source_slug: str | None,
+    linkable: str, source_slug: str | None, source_paragraphs: str | None = None,
+    background_paragraphs: str | None = None, auto_gaps: bool = False,
+    part: tuple[int, int] | None = None, earlier_parts: str = "", fill: bool = False,
 ) -> str:
     cite = (
-        f"Cite the source as [[{source_slug}]] once per paragraph or list for the claims it supports (not after every sentence). "
-        "Only state as fact what the material lists under Claims; material listed under Open questions may be recorded as open "
-        "questions the source raises, never as facts.\n"
+        f"The source page is [[{source_slug}]]; cite it exactly as the wiki schema requires. "
+        "Only state as fact what the source paragraphs or the Claims in the material support; material listed under Open "
+        "questions may be recorded as open questions the source raises, never as facts.\n"
         if source_slug else ""
     )
-    current = (
-        f"<current_page version=\"existing\">\n{existing_md}\n</current_page>\n"
-        "Rewrite the full page integrating the new material. Keep existing correct content and its citations; "
-        "flag contradictions with the schema's contradiction callout rather than silently replacing claims.\n"
-        if existing_md
-        else "This is a new page.\n"
+    if background_paragraphs and source_paragraphs:
+        scope = ("Write only about the paragraphs in <source_paragraphs>: they are this page's own section. "
+                 "<background_paragraphs> belong to other sections and are context only: never write them up or list them; "
+                 "link to the page that covers them instead.\n")
+    elif background_paragraphs:
+        scope = ("<background_paragraphs> belong to the section pages and are context only: never write them up; "
+                 "link to the section page that covers them instead.\n")
+    else:
+        scope = ""
+    gaps = (
+        "Every paragraph in <source_paragraphs> is assigned to this page and to no other: write up each one, even where "
+        "it seems to sit at the edge of this section; a paragraph left out is missing from the wiki. "
+        "Do not write a 'Not yet covered' list; it is added automatically.\n"
+        if auto_gaps else ""
     )
+    paragraphs = (
+        "<source_paragraphs>\nThe source's own text for this page, each paragraph labelled with its [paragraph number], "
+        "in document order. Write from these first; use the material for context.\n\n"
+        f"{source_paragraphs}\n</source_paragraphs>\n\n"
+        if source_paragraphs else ""
+    )
+    background = (
+        "<background_paragraphs>\nContext only, from other sections, unlabelled: they cannot be cited, so nothing from them "
+        f"may be written on this page.\n\n{background_paragraphs}\n"
+        "</background_paragraphs>\n\n"
+        if background_paragraphs else ""
+    )
+    if fill:
+        current = (
+            "This page is already written, but it does not yet cover the paragraphs in <source_paragraphs>. Write only "
+            "those paragraphs, to be added to the end of the page: no introduction, no summary, and nothing about any "
+            "other paragraph. Use one of the page's headings below or a new one.\n"
+            f"<page_headings>\n{earlier_parts or '(none)'}\n</page_headings>\n"
+        )
+    elif part:
+        n, total = part
+        current = (
+            f"This page is long, so it is written in {total} parts. This is part {n} of {total}: write only the content "
+            "drawn from the source paragraphs given here. "
+            + ("Start the page.\n" if n == 1 else
+               "Continue the page: no introduction, and do not restate, summarise or re-head anything already in "
+               f"<earlier_parts>.\n<earlier_parts>\n{earlier_parts}\n</earlier_parts>\n")
+            + ("" if auto_gaps else "Do not write a 'Not yet covered' list; it is added after all parts are written.\n")
+        )
+        if existing_md:
+            current += (
+                f"<current_page version=\"existing\">\n{existing_md}\n</current_page>\n"
+                "Keep the current page's correct content that relates to this part's source paragraphs, with its citations; "
+                "flag contradictions with the schema's contradiction callout rather than silently replacing claims.\n"
+            )
+    elif existing_md:
+        current = (
+            f"<current_page version=\"existing\">\n{existing_md}\n</current_page>\n"
+            "Rewrite the full page integrating the new material. Keep existing correct content and its citations; "
+            "flag contradictions with the schema's contradiction callout rather than silently replacing claims.\n"
+        )
+    else:
+        current = "This is a new page.\n"
     return (
         f"Write the wiki page `{slug}` (type: {ptype}, title: \"{title}\").\n"
-        f"Focus: {focus}\n{cite}"
-        "Link other pages with [[slug]] using ONLY slugs listed in <linkable_pages>.\n\n"
+        f"Focus: {focus}\n{cite}{scope}{gaps}"
+        "Link other pages with [[slug]] using ONLY slugs listed in <linkable_pages>.\n"
+        f"{ONE_TOP_PAGE}\n\n"
         f"{current}\n"
         f"<linkable_pages>\n{linkable}\n</linkable_pages>\n\n"
+        f"{paragraphs}{background}"
         f"<material>\n{material}\n</material>"
+    )
+
+
+# ---------- ingest: route paragraphs to sections ----------
+
+ROUTE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "assignments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"id": {"type": "integer"}, "section": {"type": "integer", "description": "Section number"}},
+                "required": ["id", "section"],
+            },
+        },
+    },
+    "required": ["assignments"],
+}
+
+
+def route_prompt(briefs: str, lines: str, outline: str = "", note: str = "") -> str:
+    return (
+        "Assign each source paragraph to the ONE section whose brief says it belongs there (follow the briefs' hand-off "
+        "rules). That section's page is the only one that writes it up. Return every id exactly once, with its section number. "
+        "Keep a topic together: paragraphs under the same heading, and application guidance (B paragraphs) with the "
+        "chapter its number points to (B6.x goes with chapter 6), go to the same section unless a brief hands one off.\n"
+        f"{note}\n"
+        + (f"<source_outline>\nNumbered headings of the source:\n{outline}\n</source_outline>\n\n" if outline else "")
+        + f"<section_briefs>\n{briefs}\n</section_briefs>\n\n<paragraphs>\nid | heading | text (first words)\n{lines}\n</paragraphs>"
     )
 
 

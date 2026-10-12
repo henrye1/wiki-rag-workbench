@@ -1,5 +1,6 @@
 import { Component, effect, inject, input, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { Router } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
@@ -32,16 +33,39 @@ import { Markdown } from '../../shared/markdown';
       <a mat-button [href]="'/api/wiki/wikis/' + w() + '/index.md'" target="_blank">index.md</a>
       <a mat-button [href]="'/api/wiki/wikis/' + w() + '/log.md'" target="_blank">log.md</a>
     </div>
+    <div class="card danger">
+      <h3>Delete wiki</h3>
+      <p class="muted">Permanently deletes this wiki and everything in it: pages, versions, sources, changesets, jobs and the log. This cannot be undone; download the zip above first if you want a copy.</p>
+      @if (deleting()) {
+        <mat-form-field appearance="outline">
+          <mat-label>Type {{ w() }} to confirm</mat-label>
+          <input matInput [(ngModel)]="confirmSlug" autocomplete="off" />
+        </mat-form-field>
+        <div class="row">
+          <button mat-flat-button class="del" [disabled]="confirmSlug !== w() || busy()" (click)="remove()"><mat-icon>delete_forever</mat-icon> Delete wiki</button>
+          <button mat-button (click)="deleting.set(false); confirmSlug = ''">Cancel</button>
+        </div>
+      } @else {
+        <button mat-stroked-button class="error" (click)="deleting.set(true)"><mat-icon>delete</mat-icon> Delete this wiki…</button>
+      }
+      @if (delMsg()) { <p class="error">{{ delMsg() }}</p> }
+    </div>
   `,
-  styles: `.export { margin-top: 16px; }`,
+  styles: `.export, .danger { margin-top: 16px; }
+    .del { background: var(--mat-sys-error); color: var(--mat-sys-on-error); }`,
 })
 export class WikiSettings {
   private api = inject(Api);
+  private router = inject(Router);
   readonly w = input.required<string>();
   readonly schema = signal('');
   readonly editing = signal(false);
   readonly msg = signal('');
+  readonly deleting = signal(false);
+  readonly busy = signal(false);
+  readonly delMsg = signal('');
   draft = '';
+  confirmSlug = '';
 
   constructor() {
     effect(() => {
@@ -57,6 +81,19 @@ export class WikiSettings {
       this.msg.set('Schema saved. It applies to future ingests, queries and lint runs.');
     } catch (e) {
       this.msg.set(errMsg(e));
+    }
+  }
+
+  async remove() {
+    this.busy.set(true);
+    this.delMsg.set('');
+    try {
+      await this.api.delete(`/api/wiki/wikis/${enc(this.w())}`);
+      await this.router.navigate(['/wiki']);
+    } catch (e) {
+      this.delMsg.set(errMsg(e));
+    } finally {
+      this.busy.set(false);
     }
   }
 }

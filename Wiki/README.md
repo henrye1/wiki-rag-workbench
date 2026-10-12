@@ -47,10 +47,11 @@ copy .env.example .env                  # set API_KEY, GEMINI_API_KEY
 ## How the operations work
 **Ingest**
 1. The source is split into sections of about 3,000 words.
-2. Notes are extracted from each section. Claims the source makes are kept separate from questions it only poses; sections blocked by the model are split and retried.
-3. A plan is made: which pages to create or update. It's based on the index and a hybrid search for the entities found, up to `MAX_PAGES_PER_INGEST` pages.
-4. The source page and the planned pages are written. Pages cite `[[source-…]]` and flag contradictions with a `> [!warning]` callout.
-5. The changeset is applied or left pending, depending on the mode.
+2. Notes are extracted from each section, with the schema. Claims the source makes are kept separate from questions it only poses; sections blocked by the model are split and retried.
+3. If the schema defines fixed sections (`### 01. <name>`), every source paragraph is assigned to exactly one section: labelled issuer examples to the worked-examples section, the rest by the LLM (with a retry and fallbacks, so none is left out). The job result lists the assignment and any paragraphs the LLM did not assign itself.
+4. A plan is made: which pages to create or update. It's based on the index and a hybrid search for the entities found, up to `MAX_PAGES_PER_INGEST` pages including the source page. Every schema section gets a page; `overview` is the only top-level page.
+5. The source page and the planned pages are written. A section page writes up only its own paragraphs (other sections' paragraphs are unnumbered context), long pages are written in parts, own paragraphs a page leaves out get one more writing pass, and a "Not yet covered" list of any still uncited is added. Links to pages that do not exist become plain text.
+6. The changeset is applied or left pending, depending on the mode.
 
 **Query**
 1. Hybrid search over page chunks, plus the LLM picking pages from the index.

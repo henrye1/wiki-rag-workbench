@@ -47,6 +47,16 @@ def _title_from(name: str) -> str:
     return re.sub(r"\.[a-z0-9]+$", "", name, flags=re.I).replace("_", " ").strip()
 
 
+def _outline(chunks) -> list[str]:
+    """Numbered headings in document order (e.g. "6.4 Qualifying criteria for hedge accounting")."""
+    out: list[str] = []
+    for c in chunks:
+        h = (c.heading or "").strip()
+        if re.match(r"^[A-Z]?\d+(\.\d+)*\s", h) and h not in out:
+            out.append(h)
+    return out
+
+
 def from_pdf(name: str, data: bytes, max_words: int) -> Extracted:
     doc = pymupdf.open(stream=data, filetype="pdf")
     meta = {"pages": doc.page_count, **{k: v for k, v in (doc.metadata or {}).items() if v}}
@@ -55,6 +65,8 @@ def from_pdf(name: str, data: bytes, max_words: int) -> Extracted:
         chunks = [c for c in pdf_ifrs.parse(doc) if c.source_type in ("standard", "appendix_a", "appendix_b")]
         blocks = [f"[{c.para_ref or 'p' + str(c.page)}] {c.content}" for c in chunks]
         meta["parser"] = "ifrs"
+        meta["headings"] = [(c.heading or "").strip() for c in chunks]  # one per block, for routing to schema sections
+        meta["outline"] = _outline(chunks)
     else:
         blocks = [f"[page {i}]\n{p.get_text()}" for i, p in enumerate(doc, start=1) if p.get_text().strip()]
         meta["parser"] = "pdf"
