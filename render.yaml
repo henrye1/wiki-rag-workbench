@@ -9,7 +9,7 @@ services:
     region: frankfurt
     plan: 0.5c-512mb
     healthCheckPath: /healthz
-    preDeployCommand: cd /app/Benchmark && python -m bench.migrate
+    preDeployCommand: python -m bench.migrate
     envVars:
       - key: RAG_URL
         fromService: { name: rag, type: pserv, property: hostport }
