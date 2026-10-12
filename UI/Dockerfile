@@ -9,6 +9,7 @@ RUN npm run build
 FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     BENCH_DIR=/app/Benchmark \
+    PYTHONPATH=/app/Benchmark \
     WEB_DIST=/app/UI/web/dist/web/browser
 WORKDIR /app
 COPY UI/server/requirements.txt /tmp/ui.txt
