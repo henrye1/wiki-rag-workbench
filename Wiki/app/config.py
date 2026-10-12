@@ -1,5 +1,5 @@
 from functools import lru_cache
-from urllib.parse import quote, unquote
+from urllib.parse import quote
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -45,9 +45,10 @@ class Settings(BaseSettings):
         base, _, query = rest.partition("?")
         params = [p for p in query.split("&") if p and not p.startswith("=")]
         scheme, sep, userinfo = creds.partition("://")
-        if at and sep and ":" in userinfo:  # percent-encode the password (Supabase passwords often contain ?#/@)
+        if at and sep and ":" in userinfo:
+            # The password is taken literally (as typed into Supabase's URI template) and percent-encoded here,
             user, _, pw = userinfo.partition(":")
-            creds = f"{scheme}://{user}:{quote(unquote(pw), safe='')}"
+            creds = f"{scheme}://{user}:{quote(pw, safe='')}"
         return creds + at + base + ("?" + "&".join(params) if params else "")
 
 

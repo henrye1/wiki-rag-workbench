@@ -83,7 +83,7 @@ Everything else is wired automatically:
 | Symptom | Cause / fix |
 | --- | --- |
 | Pre-deploy fails with `could not translate host name` / `Network is unreachable` | You used the direct connection URL. Switch to the session pooler URI. |
-| `DATABASE_URL is not a valid connection string` | The value isn't a `postgresql://` URI. Paste only the URI, without the `DATABASE_URL=` prefix. Quotes, spaces and special characters in the password are handled automatically. |
+| `DATABASE_URL is not a valid connection string` | The value isn't a `postgresql://` URI. Paste only the URI, without the `DATABASE_URL=` prefix. Paste the password as-is (no percent-encoding); quotes, spaces and special characters such as `%` are handled automatically. |
 | `prepared statement ... already exists` | You used the transaction pooler (port 6543). Use the session pooler on port 5432. |
 | `remaining connection slots are reserved` / pool timeouts | Lower `DB_POOL_MAX` in the `workbench-shared` group, or raise the Supabase pool size. |
 | Home shows RAG/Wiki down | Check that the private services are live. `RAG_URL`/`WIKI_URL` must be the `host:port` Render provides; the scheme is added automatically. |
