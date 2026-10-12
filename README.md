@@ -96,6 +96,7 @@ Each service reads its own `.env` file (never committed; copy `.env.example`). O
 | RAG | `BULK_CONCURRENCY`, `BULK_K_PER_QUERY`, `BULK_MAX_CHUNKS` | 3, 6, 30 | Bulk run parallelism and retrieval budget |
 | Wiki | `API_KEY`, `GEMINI_API_KEY` (required) | none | As for RAG |
 | Wiki | `DATABASE_URL` | local Supabase `:54322` | Same database, `wiki` schema |
+| RAG, Wiki | `SUPABASE_SECRET_KEY`, `SUPABASE_URL`, `STORAGE_BUCKET` | empty, from `DATABASE_URL`, `sources` | Optional: keep each uploaded file in a private Supabase Storage bucket, opened from the UI with **View original** (signed links valid for one hour). Files ingested earlier can be attached with `python -m app.attach_file` in `Rag/` or `Wiki/` |
 | Wiki | `MAX_PAGES_PER_INGEST` | 17 | Cap on pages one ingest creates or updates, including the source page (15 sections + overview + source) |
 | Wiki | `LLM_CONCURRENCY`, `JOB_WORKERS` | 4, 2 | Parallel LLM calls per job; jobs running at once |
 | Wiki | `TEMPERATURE` | 0.2 (set to 0.1 here to match RAG) | Sampling |

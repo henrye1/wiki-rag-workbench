@@ -5,7 +5,7 @@ from uuid import UUID
 
 import numpy as np
 
-from .. import llm
+from .. import llm, storage
 from ..config import get_settings
 from ..db import get_pool
 from ..sources.text import split_long
@@ -262,10 +262,13 @@ async def discard_changeset(changeset_id: UUID) -> str | None:
             row = await (
                 await conn.execute(
                     """delete from wiki.sources s where s.id = %s
-                       and not exists (select 1 from wiki.page_sources ps where ps.source_id = s.id) returning slug""",
+                       and not exists (select 1 from wiki.page_sources ps where ps.source_id = s.id)
+                       returning slug, meta->'file' as file""",
                     (cs["source_id"],),
                 )
             ).fetchone()
+            if row:
+                await storage.remove(row["file"])
             return row["slug"] if row else None
     return None
 

@@ -35,7 +35,8 @@ import { FileDrop } from '../shared/file-drop';
             @for (d of docs(); track d.id) {
               <tr>
                 <td>{{ d.filename }}</td><td>{{ d.parser }}</td><td>{{ d.chunks | number }}</td><td>{{ d.created_at | date: 'medium' }}</td>
-                <td>
+                <td class="actions">
+                  @if (d.has_file) { <button mat-icon-button (click)="view(d)" title="View the original file"><mat-icon>open_in_new</mat-icon></button> }
                   @if (confirming() === d.id) {
                     <button mat-button class="error" (click)="remove(d)">Confirm delete</button>
                     <button mat-button (click)="confirming.set(null)">Cancel</button>
@@ -79,6 +80,14 @@ export class Documents {
       this.error.set(errMsg(e));
     } finally {
       this.busy.set(false);
+    }
+  }
+
+  async view(d: any) {
+    try {
+      await this.api.openFile(`/api/rag/documents/${enc(d.id)}/file`);
+    } catch (e) {
+      this.error.set(errMsg(e));
     }
   }
 

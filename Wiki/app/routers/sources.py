@@ -2,9 +2,10 @@ import asyncio
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field, HttpUrl
 
-from .. import jobs
+from .. import jobs, storage
 from ..config import get_settings
 from ..db import get_pool
 from ..ops import ingest
@@ -24,13 +25,16 @@ class TextIn(BaseModel):
     text: str = Field(min_length=20)
 
 
-async def _start(wiki: dict, ex: extract.Extracted, uri: str | None, mode: str) -> dict:
+async def _start(wiki: dict, ex: extract.Extracted, uri: str | None, mode: str,
+                 file: tuple[str, bytes] | None = None) -> dict:
     if not ex.text.strip():
         raise HTTPException(422, "No text extracted")
     try:
         source = await ingest.save_source(wiki["id"], ex, uri)
     except ingest.DuplicateSource as e:
         raise HTTPException(409, {"message": "Source already ingested", "source": e.slug})
+    if file:  # keep the original upload so it can be viewed later
+        await attach_file(source["id"], storage.object_path("wiki", str(wiki["id"]), source["slug"], file[0]), file[1], file[0])
     job_id = await jobs.submit(
         wiki["id"], "ingest", {"source": source["slug"], "mode": mode},
         lambda ctx: ingest.run_safe(ctx, wiki, source, ex, mode),
@@ -50,7 +54,16 @@ async def add_file(file: UploadFile, mode: Mode = MODE_Q, wiki: dict = Depends(w
         ex = await asyncio.to_thread(extract.from_upload, name, data, s.section_words)
     except ValueError as e:
         raise HTTPException(415, str(e))
-    return await _start(wiki, ex, name, mode)
+    return await _start(wiki, ex, name, mode, file=(name, data))
+
+
+async def attach_file(source_id, path: str, data: bytes, name: str) -> dict | None:
+    rec = await storage.put(path, data, storage.content_type(name))
+    if rec:
+        async with get_pool().connection() as conn:
+            await conn.execute("update wiki.sources set meta = meta || jsonb_build_object('file', %s::jsonb) where id = %s",
+                               (Jsonb(rec), source_id))
+    return rec
 
 
 @router.post("/wikis/{w}/sources/url", status_code=202)
@@ -73,7 +86,7 @@ async def list_sources(wiki: dict = Depends(wiki_dep)):
     async with get_pool().connection() as conn:
         return await (
             await conn.execute(
-                """select id, slug, title, kind, uri, meta, length(text) as chars, created_at
+                """select id, slug, title, kind, uri, meta, meta->'file' as file, length(text) as chars, created_at
                    from wiki.sources where wiki_id = %s order by created_at""",
                 (wiki["id"],),
             )
@@ -100,10 +113,34 @@ async def get_source(slug: str, include_text: bool = False, wiki: dict = Depends
     return {**row, "pages": pages}
 
 
+@router.get("/wikis/{w}/sources/{slug}/file")
+async def source_file(slug: str, wiki: dict = Depends(wiki_dep)):
+    """A short-lived link to the original uploaded file."""
+    async with get_pool().connection() as conn:
+        row = await (
+            await conn.execute("select meta->'file' as file from wiki.sources where wiki_id = %s and slug = %s", (wiki["id"], slug))
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Source not found")
+    if not row["file"]:
+        raise HTTPException(404, "No original file is stored for this source")
+    if not storage.enabled():
+        raise HTTPException(503, "File storage is not configured (SUPABASE_SECRET_KEY)")
+    try:
+        url = await storage.signed_url(row["file"])
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"File storage error: {e}")
+    return {"url": url, "name": row["file"]["path"].rsplit("/", 1)[-1], "content_type": row["file"]["content_type"]}
+
+
 @router.delete("/wikis/{w}/sources/{slug}", status_code=204)
 async def delete_source(slug: str, wiki: dict = Depends(wiki_dep)):
-    """Remove a raw source (pages built from it are kept; use lint to find unsourced pages)."""
+    """Remove a raw source and its stored file (pages built from it are kept; use lint to find unsourced pages)."""
     async with get_pool().connection() as conn:
-        cur = await conn.execute("delete from wiki.sources where wiki_id = %s and slug = %s", (wiki["id"], slug))
-        if cur.rowcount == 0:
+        row = await (
+            await conn.execute("delete from wiki.sources where wiki_id = %s and slug = %s returning meta->'file' as file",
+                               (wiki["id"], slug))
+        ).fetchone()
+        if not row:
             raise HTTPException(404, "Source not found")
+    await storage.remove(row["file"])

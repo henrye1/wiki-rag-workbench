@@ -1,7 +1,9 @@
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, HTTPException, UploadFile
 
+from .. import storage
 from ..db import get_pool
 from ..ingest.pipeline import DuplicateDocument, ingest
 
@@ -26,7 +28,7 @@ async def ingest_file(file: UploadFile):
 async def list_documents():
     async with get_pool().connection() as conn:
         cur = await conn.execute(
-            """select d.id, d.filename, d.parser, d.created_at, count(c.id) as chunks
+            """select d.id, d.filename, d.parser, d.created_at, d.file is not null as has_file, count(c.id) as chunks
                from documents d left join chunks c on c.document_id = d.id
                group by d.id order by d.created_at desc"""
         )
@@ -51,9 +53,28 @@ async def get_chunks(para_ref: str, document_id: UUID | None = None, include_not
     return rows
 
 
+@router.get("/documents/{doc_id}/file")
+async def document_file(doc_id: UUID):
+    """A short-lived link to the original uploaded file."""
+    async with get_pool().connection() as conn:
+        row = await (await conn.execute("select file from documents where id = %s", (doc_id,))).fetchone()
+    if not row:
+        raise HTTPException(404, "Not found")
+    if not row["file"]:
+        raise HTTPException(404, "No original file is stored for this document")
+    if not storage.enabled():
+        raise HTTPException(503, "File storage is not configured (SUPABASE_SECRET_KEY)")
+    try:
+        url = await storage.signed_url(row["file"])
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"File storage error: {e}")
+    return {"url": url, "name": row["file"]["path"].rsplit("/", 1)[-1], "content_type": row["file"]["content_type"]}
+
+
 @router.delete("/documents/{doc_id}", status_code=204)
 async def delete_document(doc_id: UUID):
     async with get_pool().connection() as conn:
-        cur = await conn.execute("delete from documents where id = %s", (doc_id,))
-        if cur.rowcount == 0:
+        row = await (await conn.execute("delete from documents where id = %s returning file", (doc_id,))).fetchone()
+        if not row:
             raise HTTPException(404, "Not found")
+    await storage.remove(row["file"])

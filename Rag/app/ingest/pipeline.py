@@ -2,8 +2,9 @@ import hashlib
 
 import numpy as np
 import pymupdf
+from psycopg.types.json import Jsonb
 
-from .. import llm
+from .. import llm, storage
 from ..config import get_settings
 from ..db import get_pool
 from . import pdf_ifrs
@@ -54,6 +55,11 @@ async def ingest(filename: str, data: bytes) -> dict:
                     for c, v in zip(chunks, vectors)
                 ],
             )
+    # Keep the original upload so it can be viewed later (skipped when storage is not configured)
+    rec = await storage.put(storage.object_path("rag", str(doc["id"]), filename), data, storage.content_type(filename))
+    if rec:
+        async with pool.connection() as conn:
+            await conn.execute("update documents set file = %s where id = %s", (Jsonb(rec), doc["id"]))
     counts: dict[str, int] = {}
     for c in chunks:
         counts[c.source_type] = counts.get(c.source_type, 0) + 1

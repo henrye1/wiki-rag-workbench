@@ -36,6 +36,7 @@ No data is copied from your machine: upload documents and benchmark files throug
 | workbench | `UI_PASSWORD` | The shared login password for testers |
 | rag, wiki | `DATABASE_URL` | The same URI |
 | rag, wiki | `GEMINI_API_KEY` | Your Google AI Studio key |
+| rag, wiki | `SUPABASE_SECRET_KEY` | Optional. The Supabase secret key (Project Settings → API Keys). Keeps every uploaded file in a private Storage bucket (`sources`) so it can be opened from the UI with **View original**. Leave empty to keep only the extracted text. |
 
 Everything else is wired automatically:
 - The services' `API_KEY`s are generated, and the workbench reads them from `rag` and `wiki`.
@@ -53,7 +54,7 @@ Everything else is wired automatically:
 4. **Wiki:** create a wiki with slug `ifrs9` and ingest the same PDF in auto mode. Follow the job until it finishes.
 5. **Benchmark → New run:**
    - Upload the reference assessment (.docx) and the query set (.txt).
-   - Set the topics (for example `2`), the runs and the wiki (`ifrs9`), then click Start.
+   - Set the topics (for example `2`) and the runs, choose the wiki from the list, then click Start.
    - Later runs reuse the last uploaded files unless you upload new ones.
    - Results, inputs and the log are stored in `bench.runs`.
 

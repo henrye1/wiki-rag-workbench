@@ -59,7 +59,8 @@ import { FileDrop } from '../../shared/file-drop';
           <tr>
             <td><a [routerLink]="['..', 'pages', s.slug]">{{ s.title }}</a><div class="muted mono">{{ s.uri }}</div></td>
             <td>{{ s.kind }}</td><td>{{ s.chars | number }} chars</td><td>{{ s.created_at | date: 'medium' }}</td>
-            <td>
+            <td class="actions">
+              @if (s.file) { <button mat-icon-button (click)="view(s.slug)" title="View the original file"><mat-icon>open_in_new</mat-icon></button> }
               @if (confirming() === s.slug) {
                 <button mat-button class="error" (click)="remove(s.slug)">Confirm</button><button mat-button (click)="confirming.set(null)">Cancel</button>
               } @else { <button mat-icon-button (click)="confirming.set(s.slug)" title="Delete raw source (pages are kept)"><mat-icon>delete</mat-icon></button> }
@@ -69,7 +70,7 @@ import { FileDrop } from '../../shared/file-drop';
       </tbody>
     </table>
   `,
-  styles: `.pad { padding: 12px 0; }`,
+  styles: `.pad { padding: 12px 0; } .actions { white-space: nowrap; }`,
 })
 export class WikiSources {
   private api = inject(Api);
@@ -115,6 +116,13 @@ export class WikiSources {
   submitUrl() { return this.submit(() => this.api.post(`/api/wiki/wikis/${enc(this.w())}/sources/url`, { url: this.url }, { mode: this.mode })); }
   submitText() {
     return this.submit(() => this.api.post(`/api/wiki/wikis/${enc(this.w())}/sources/text`, { title: this.title, text: this.text }, { mode: this.mode }));
+  }
+  async view(slug: string) {
+    try {
+      await this.api.openFile(`/api/wiki/wikis/${enc(this.w())}/sources/${enc(slug)}/file`);
+    } catch (e) {
+      this.error.set(errMsg(e));
+    }
   }
   async remove(slug: string) {
     try {

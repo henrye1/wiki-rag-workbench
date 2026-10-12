@@ -9,7 +9,7 @@ from uuid import UUID
 import numpy as np
 from psycopg.types.json import Jsonb
 
-from .. import llm, prompts
+from .. import llm, prompts, storage
 from ..config import get_settings
 from ..db import get_pool
 from ..jobs import JobContext
@@ -511,9 +511,13 @@ async def run_safe(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mod
         return await run(ctx, wiki, source, ex, mode)
     except Exception:
         async with get_pool().connection() as conn:
-            await conn.execute(
-                """delete from wiki.sources s where s.id = %s
-                   and not exists (select 1 from wiki.page_sources ps where ps.source_id = s.id)""",
-                (source["id"],),
-            )
+            row = await (
+                await conn.execute(
+                    """delete from wiki.sources s where s.id = %s
+                       and not exists (select 1 from wiki.page_sources ps where ps.source_id = s.id) returning meta->'file' as file""",
+                    (source["id"],),
+                )
+            ).fetchone()
+        if row:
+            await storage.remove(row["file"])
         raise

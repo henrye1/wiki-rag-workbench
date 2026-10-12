@@ -22,6 +22,18 @@ export class Api {
   delete<T = any>(url: string): Promise<T> {
     return firstValueFrom(this.http.delete<T>(url));
   }
+  /** Open a stored original file in a new tab. The API returns a short-lived signed URL; the tab opens first so popup blockers allow it. */
+  async openFile(url: string): Promise<void> {
+    const tab = window.open('', '_blank');
+    try {
+      const r = await this.get<{ url: string }>(url);
+      if (tab) tab.location.href = r.url;
+      else window.open(r.url, '_blank');
+    } catch (e) {
+      tab?.close();
+      throw e;
+    }
+  }
   upload<T = any>(url: string, file: File, params?: Record<string, any>, fields?: Record<string, string>): Promise<T> {
     const fd = new FormData();
     fd.append('file', file, file.name);
