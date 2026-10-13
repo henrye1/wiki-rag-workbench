@@ -4,6 +4,7 @@ import asyncio
 import datetime as dt
 import os
 import subprocess
+from typing import Literal
 from urllib.parse import quote
 
 import psycopg
@@ -59,7 +60,7 @@ def _progress(row: dict, cfg: dict | None, errors: dict | None = None) -> dict:
 @router.get("/runs")
 async def list_runs():
     rows = await _query(
-        f"""select id, status, updated_at, runs, topics, query_set_name, reference_name, rag_collection, wiki_slug, {DONE_SQL},
+        f"""select id, status, updated_at, runs, topics, query_set_name, reference_name, rag_collection, wiki_slug, sources, {DONE_SQL},
                    results->'config' as config, results->'summary' as summary, results->'errors' as errors,
                    jsonb_array_length(coalesce(results->'config'->'topics_selected', '[]'::jsonb)) as n_topics
             from bench.runs order by created_at desc"""
@@ -71,7 +72,7 @@ async def list_runs():
             "id": r["id"], "started": cfg.get("started"), "finished": cfg.get("finished"), "runs": cfg.get("runs") or r["runs"],
             "judge_model": cfg.get("judge_model"), "topics": r["n_topics"] or r["topics"] or "all",
             "query_set": r["query_set_name"], "reference": r["reference_name"],
-            "rag_collection": r["rag_collection"], "wiki": r["wiki_slug"],
+            "rag_collection": r["rag_collection"], "wiki": r["wiki_slug"], "sources": r["sources"],
             "summary": r["summary"], "progress": _progress(r, cfg, r["errors"]),
         })
     return out
@@ -86,9 +87,11 @@ async def _row(run_id: str, cols: str) -> dict:
 
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str):
-    row = await _row(run_id, "results")
+    row = await _row(run_id, "results, rag_collection, wiki_slug, sources")
     data = row["results"] or {}
     data["progress"] = _progress(row, data.get("config"), data.get("errors"))
+    # what the run compared, from the run row (results of older runs do not record it)
+    data["compared"] = {"rag_collection": row["rag_collection"], "wiki": row["wiki_slug"], "sources": row["sources"]}
     return data
 
 
@@ -156,6 +159,7 @@ async def start(
     runs: int = Form(3, ge=1, le=10),
     collection: str = Form(..., description="RAG collection under test"),
     wiki: str = Form(..., description="Wiki slug under test"),
+    sources: Literal["standard", "all"] = Form(..., description="Both systems use the same: standard = Part A only; all = Parts A, B and C"),
 ):
     """Start a run comparing one RAG collection with one wiki. Files left out are reused from the most recent run that has them."""
     _ensure_idle()
@@ -173,9 +177,9 @@ async def start(
         raise HTTPException(400, "Upload the reference assessment (.docx) and the query set (.txt) for the first run")
     run_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     await _query(
-        """insert into bench.runs (id, topics, runs, rag_collection, wiki_slug, query_set_name, query_set, reference_name, reference)
-           values (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-        (run_id, topics.replace(" ", ""), runs, collection, wiki, qs[0], qs[1], ref[0], ref[1]),
+        """insert into bench.runs (id, topics, runs, rag_collection, wiki_slug, sources, query_set_name, query_set, reference_name, reference)
+           values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        (run_id, topics.replace(" ", ""), runs, collection, wiki, sources, qs[0], qs[1], ref[0], ref[1]),
     )
     _spawn(run_id)
     return {"id": run_id}

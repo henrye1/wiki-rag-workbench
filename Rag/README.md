@@ -25,7 +25,7 @@ Schema change: edit migration, then `npx supabase db reset` (wipes data). `EMBED
 | POST | `/collections/{c}/documents` | multipart `file` (.pdf/.txt/.md) into collection `c`. IFRS PDFs auto-detected; others chunked generically. 409 if already in that collection. |
 | GET | `/collections/{c}/documents` | the collection's documents w/ chunk counts (`GET /documents`: all collections) |
 | DELETE | `/documents/{id}` | removes doc + chunks |
-| POST | `/collections/{c}/query` | `{question, top_k?, source_types?, include_editorial?}` → `{answer, citations[]}`, searching only collection `c` |
+| POST | `/collections/{c}/query` | `{question, top_k?, source_types?, include_editorial?, sources?}` → `{answer, citations[]}`, searching only collection `c`; `sources`: `all` (default) or `standard` (Part A types only) |
 | POST | `/collections/{c}/query/stream` | same body; SSE events `token` (JSON string), `citations`, `done` |
 | POST | `/collections/{c}/bulk` | multipart `file` = query-set (`TOPIC n of N:` blocks); `?topics=1&topics=3` to subset, `?revise=false` to skip the self-check revision pass. JSON per topic: prose, source list, not addressed, word count, rendered markdown, citations, `draft_issues`/`issues` (rule checks) |
 | POST | `/bulk/parse` | dry run of query-set parsing (no LLM) |

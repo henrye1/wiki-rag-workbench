@@ -5,6 +5,7 @@ import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { RouterLink } from '@angular/router';
@@ -27,7 +28,7 @@ const emptyPane = (): Pane => ({ text: '', running: false, error: '', sources: [
 
 @Component({
   selector: 'app-ask',
-  imports: [FormsModule, RouterLink, MatFormFieldModule, MatInputModule, MatButtonModule, MatCheckboxModule, MatSelectModule,
+  imports: [FormsModule, RouterLink, MatFormFieldModule, MatInputModule, MatButtonModule, MatButtonToggleModule, MatCheckboxModule, MatSelectModule,
     MatIconModule, MatProgressBarModule, Markdown],
   template: `
     <div class="page">
@@ -53,6 +54,13 @@ const emptyPane = (): Pane => ({ text: '', running: false, error: '', sources: [
             @for (w of wikis(); track w.slug) { <mat-option [value]="w.slug">{{ w.name }}</mat-option> }
           </mat-select>
         </mat-form-field>
+        <div class="sources" title="Which documents both RAG and the Wiki may use">
+          <span class="muted">Sources</span>
+          <mat-button-toggle-group [(ngModel)]="sources" hideSingleSelectionIndicator>
+            <mat-button-toggle value="standard">Standard only</mat-button-toggle>
+            <mat-button-toggle value="all">All</mat-button-toggle>
+          </mat-button-toggle-group>
+        </div>
         <span class="grow"></span>
         @if (rag().running || wikiPane().running) { <button mat-stroked-button (click)="stop()"><mat-icon>stop</mat-icon> Stop</button> }
         <button mat-flat-button (click)="ask()" [disabled]="!question.trim() || (!(useRag && cols.current()) && !useWiki)"><mat-icon>send</mat-icon> Ask</button>
@@ -113,13 +121,13 @@ const emptyPane = (): Pane => ({ text: '', running: false, error: '', sources: [
             border-radius: 12px; padding: 2px 10px; cursor: pointer; font-size: 12.5px; }
     .chip.dim { opacity: .6; }
     .save { margin-top: 12px; }
-    .small { font-size: 12px; }
-  `,
+    .small { font-size: 12px; } .sources { display: flex; align-items: center; gap: 8px; }`,
 })
 export class Ask {
   private api = inject(Api);
   readonly cites = inject(CitationService);
   question = '';
+  sources: 'standard' | 'all' = 'all';
   useRag = true;
   useWiki = true;
   wiki = '';
@@ -160,7 +168,7 @@ export class Ask {
     const t0 = performance.now();
     pane.set({ ...emptyPane(), running: true });
     try {
-      for await (const ev of postSse(url, { question: q }, this.abort!.signal)) {
+      for await (const ev of postSse(url, { question: q, sources: this.sources }, this.abort!.signal)) {
         if (ev.event === 'token') pane.update((p) => ({ ...p, text: p.text + JSON.parse(ev.data) }));
         else if (ev.event === sourcesEvent) pane.update((p) => ({ ...p, sources: JSON.parse(ev.data) }));
       }

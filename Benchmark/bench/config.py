@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     # CLI only: what a new run compares (UI runs choose them; a resumed run uses what it stored)
     rag_collection: str = ""
     wiki_slug: str = ""
+    sources: str = "all"  # "standard" (Part A only) or "all" (Parts A, B and C); always the same for both systems
 
     # Results and uploaded inputs are stored in bench.runs
     database_url: str = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"  # local Supabase

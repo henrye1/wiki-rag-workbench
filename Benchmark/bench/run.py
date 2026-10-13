@@ -176,11 +176,13 @@ def _new_run(conn: psycopg.Connection, topics: str, runs: int) -> str:
     s = get_settings()
     if not (s.rag_collection and s.wiki_slug):
         sys.exit("Set RAG_COLLECTION and WIKI_SLUG (the RAG collection and the wiki to compare)")
+    if s.sources not in ("standard", "all"):
+        sys.exit("SOURCES must be 'standard' (Part A only) or 'all' (Parts A, B and C)")
     run_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     conn.execute(
-        """insert into bench.runs (id, topics, runs, rag_collection, wiki_slug, query_set_name, query_set, reference_name, reference)
-           values (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-        (run_id, topics, runs, s.rag_collection, s.wiki_slug, s.query_set.name, s.query_set.read_bytes(),
+        """insert into bench.runs (id, topics, runs, rag_collection, wiki_slug, sources, query_set_name, query_set, reference_name, reference)
+           values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        (run_id, topics, runs, s.rag_collection, s.wiki_slug, s.sources, s.query_set.name, s.query_set.read_bytes(),
          s.reference_docx.name, s.reference_docx.read_bytes()),
     )
     return run_id
@@ -204,7 +206,7 @@ async def main():
         sys.exit(f"Run {run_id} has no query set / reference document")
     if not row["rag_collection"]:
         sys.exit(f"Run {run_id} has no RAG collection")
-    s.rag_collection, s.wiki_slug = row["rag_collection"], row["wiki_slug"]
+    s.rag_collection, s.wiki_slug, s.sources = row["rag_collection"], row["wiki_slug"], row["sources"] or "all"
     runs = args.runs or row["runs"]
     store = Store(conn, run_id, row["results"] or {}, row["log"])
     store.log(f"--- {dt.datetime.now().isoformat(timespec='seconds')} start")
@@ -228,7 +230,7 @@ async def main():
                         "judge_model": s.judge_model, "judge_effort": s.judge_effort, "runs": runs, "seed": s.seed,
                         "topics_selected": [t.number for t in topics], "expected_judgements": len(topics) * runs,
                         "question_format": "topic title + Q1..Qn, sent identically to RAG /collections/{c}/query and Wiki /wikis/{w}/query",
-                        "rag_collection": s.rag_collection, "wiki_slug": s.wiki_slug,
+                        "rag_collection": s.rag_collection, "wiki_slug": s.wiki_slug, "sources": s.sources,
                         "systems": await systems.describe(http),
                         "query_set": row["query_set_name"], "reference": row["reference_name"],
                     },

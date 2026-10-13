@@ -34,7 +34,7 @@ copy .env.example .env                  # set API_KEY, GEMINI_API_KEY
 | `POST /wikis/{w}/sources?mode=` | upload file → `{job_id}` |
 | `POST /wikis/{w}/sources/url?mode=`, `/sources/text?mode=` | ingest a URL / pasted text |
 | `GET /wikis/{w}/sources`, `GET/DELETE /wikis/{w}/sources/{slug}` | raw sources |
-| `POST /wikis/{w}/query` `{question, save?, mode?}` | cited answer; `save` files it as a synthesis page |
+| `POST /wikis/{w}/query` `{question, save?, mode?, sources?}` | cited answer; `save` files it as a synthesis page; `sources`: `all` (default) or `standard` (only statements cited to a Standard, Part A) |
 | `POST /wikis/{w}/query/stream` | SSE events: `token`, `pages`, `done` |
 | `POST /wikis/{w}/lint` `{llm?, fix?, mode?}` | structural checks run immediately; with `llm` or `fix` it becomes a job |
 | `GET /jobs/{id}`, `GET /wikis/{w}/jobs` | job status, progress, result |

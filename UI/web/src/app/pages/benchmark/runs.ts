@@ -6,6 +6,7 @@ import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { Router, RouterLink } from '@angular/router';
@@ -15,7 +16,7 @@ import { poller } from '../../shared/poll';
 
 @Component({
   selector: 'app-bench-runs',
-  imports: [FormsModule, RouterLink, DatePipe, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatSelectModule, FileDrop],
+  imports: [FormsModule, RouterLink, DatePipe, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatSelectModule, MatButtonToggleModule, FileDrop],
   template: `
     <div class="page">
       <h1>Benchmark</h1>
@@ -38,6 +39,13 @@ import { poller } from '../../shared/poll';
             <mat-select [(ngModel)]="wiki">
               @for (w of wikis(); track w.slug) { <mat-option [value]="w.slug">{{ w.name }} ({{ w.slug }})</mat-option> }
             </mat-select></mat-form-field>
+          <div class="sources" title="Both systems always get the same setting">
+            <span class="muted">Sources</span>
+            <mat-button-toggle-group [(ngModel)]="sources" hideSingleSelectionIndicator>
+              <mat-button-toggle value="standard">Standard only</mat-button-toggle>
+              <mat-button-toggle value="all">All</mat-button-toggle>
+            </mat-button-toggle-group>
+          </div>
           <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>Topics</mat-label>
             <input matInput [(ngModel)]="topics" placeholder="e.g. 2 or 1-5 (empty = all 26)" /></mat-form-field>
           <mat-form-field appearance="outline" subscriptSizing="dynamic" class="runs"><mat-label>Runs</mat-label>
@@ -61,13 +69,14 @@ import { poller } from '../../shared/poll';
         @else { <span class="muted small">Tick two runs to compare</span> }
       </div>
       <table class="simple">
-        <thead><tr><th></th><th>Run</th><th>Compared</th><th>Topics × runs</th><th>RAG sim / cov</th><th>Wiki sim / cov</th><th>Wins (rag / wiki / tie)</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Run</th><th>Compared</th><th>Sources</th><th>Topics × runs</th><th>RAG sim / cov</th><th>Wiki sim / cov</th><th>Wins (rag / wiki / tie)</th><th>Status</th><th></th></tr></thead>
         <tbody>
           @for (r of list(); track r.id) {
             <tr>
               <td><mat-checkbox [checked]="selected().includes(r.id)" (change)="toggle(r.id)" /></td>
               <td><a [routerLink]="[r.id]">{{ r.id }}</a><div class="muted small">{{ r.started | date: 'medium' }}</div></td>
               <td class="small">{{ r.rag_collection || '—' }}<span class="muted"> vs </span>{{ r.wiki || '—' }}</td>
+              <td><span class="pill">{{ sourcesLabel(r.sources) }}</span></td>
               <td>{{ r.topics }} × {{ r.runs }}</td>
               @if (r.summary?.by_system; as b) {
                 <td><b>{{ b.rag.similarity.mean }}</b> / {{ b.rag.coverage.mean }}%</td>
@@ -85,13 +94,13 @@ import { poller } from '../../shared/poll';
                 }
               </td>
             </tr>
-          } @empty { <tr><td colspan="9" class="muted">No runs yet.</td></tr> }
+          } @empty { <tr><td colspan="10" class="muted">No runs yet.</td></tr> }
         </tbody>
       </table>
     </div>
   `,
   styles: `
-    .runs { width: 90px; } .wiki { width: 240px; } .actions { white-space: nowrap; }
+    .runs { width: 90px; } .sources { display: flex; align-items: center; gap: 8px; } .wiki { width: 240px; } .actions { white-space: nowrap; }
     .files { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; } .small { font-size: 12px; } .head { margin-top: 20px; }
     .progress { margin-top: 12px; } .log { max-height: 160px; overflow: auto; white-space: pre-wrap; margin: 8px 0 0; }
   `,
@@ -106,6 +115,7 @@ export class BenchRuns {
   readonly wikis = signal<any[]>([]);
   readonly collections = signal<any[]>([]);
   collection = '';
+  sources: 'standard' | 'all' = 'all';
   topics = '2';
   runs = 1;
   wiki = '';
@@ -152,6 +162,7 @@ export class BenchRuns {
       fd.append('topics', this.topics);
       fd.append('runs', String(this.runs));
       fd.append('collection', this.collection);
+      fd.append('sources', this.sources);
       fd.append('wiki', this.wiki);
       const r = await this.api.post('/api/bench/runs', fd);
       this.watch(r.id);
@@ -185,6 +196,8 @@ export class BenchRuns {
     this.active.set({ id, done: 0, expected: null, log: [], status: 'running' });
     setTimeout(() => this.poll.start(), 1500);
   }
+
+  sourcesLabel(s: string | null) { return s === 'standard' ? 'Standard only' : s === 'all' ? 'All' : '—'; }
 
   toggle(id: string) {
     this.selected.update((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id].slice(-2)));

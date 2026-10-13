@@ -104,6 +104,7 @@ Each service reads its own `.env` file (never committed; copy `.env.example`). O
 | Benchmark | `JUDGE_MODEL`, `JUDGE_EFFORT` | `claude-opus-5-5`, `high` | Judge model and reasoning effort |
 | Benchmark | `RAG_URL` / `RAG_API_KEY`, `WIKI_URL` / `WIKI_API_KEY` | `:8000`, `:8001` | Systems under test |
 | Benchmark | `RAG_COLLECTION`, `WIKI_SLUG` | none | CLI runs only: the RAG collection and the wiki to compare (UI runs choose them; a resumed run uses what it stored) |
+| Benchmark | `SOURCES` | `all` | CLI runs only: `standard` (both systems use only the Standard, Part A) or `all` (Parts A, B and C). Both systems always get the same setting; it is stored with the run and shown on its results |
 | Benchmark | `REFERENCE_DOCX` | `../Docs/reference_assessment.docx` | Human-written assessment with the reference answers |
 | Benchmark | `RUNS`, `CONCURRENCY`, `SEED` | 3, 4, 42 | Repeats per topic, parallel topics, A/B shuffle seed |
 | UI server | `RAG_API_KEY`, `WIKI_API_KEY` (required) | none | Keys the server adds when it calls RAG and Wiki |
@@ -197,6 +198,15 @@ The Wiki does the reading once: when a source is added, the LLM turns it into wi
 6. **Commit.** The edits become a changeset: applied now (*auto*) or left pending (*review*). Applying stores versions, rebuilds links and search chunks, and records which sources each page draws on.
 
 The IFRS 9 PDF (26 sections) produces 17 pages.
+
+### Sources: Standard only or All
+
+The Ask and Benchmark pages have a **Sources** switch, applied to RAG and the Wiki alike (in a benchmark run both systems always get the same setting, stored with the run and shown on its results and in comparisons):
+
+- **Standard only:** only the Standard itself (Part A). RAG searches only `standard`, `appendix_a` and `appendix_b` passages. The Wiki reads the same pages but keeps only the statements cited to a source read as a Standard; statements cited to Parts B or C, and uncited text, are left out.
+- **All:** Parts A, B and C (examples, implementation guidance, Basis for Conclusions).
+
+With a collection or wiki that holds only Part A, both settings give the same RAG retrieval.
 
 ### Query
 

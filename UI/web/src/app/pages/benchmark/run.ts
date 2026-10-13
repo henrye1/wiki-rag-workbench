@@ -16,6 +16,11 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki';
       @if (error()) { <p class="error">{{ error() }}</p> }
       @if (data(); as d) {
         <h1>Run {{ id() }}</h1>
+        @if (d.compared; as c) {
+          <p class="compared"><b>{{ c.rag_collection || '—' }}</b> <span class="muted">vs</span> <b>{{ c.wiki || '—' }}</b> ·
+            Sources: <span class="pill">{{ c.sources === 'standard' ? 'Standard only' : c.sources === 'all' ? 'All' : '—' }}</span>
+            <span class="muted small">(the same for both systems)</span></p>
+        }
         <p class="muted">Judge {{ d.config.judge_model }} ({{ d.config.judge_effort }}) · {{ d.config.runs }} run(s) per topic ·
           RAG: {{ ragDocs(d) }} · Wiki: {{ d.config.systems?.wiki?.wiki?.pages ?? '?' }} pages · commit {{ d.config.git_commit ?? '—' }}</p>
 

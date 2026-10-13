@@ -10,6 +10,13 @@ import { Api, enc, errMsg } from '../../core/api';
     <div class="page">
       <a routerLink="/benchmark" class="muted">← Runs</a>
       <h1>Compare {{ a() }} → {{ b() }}</h1>
+      @if (runA()?.compared && runB()?.compared) {
+        <p>A: <b>{{ runA().compared.rag_collection || '—' }}</b> vs <b>{{ runA().compared.wiki || '—' }}</b>, Sources <span class="pill">{{ label(runA().compared.sources) }}</span>
+          · B: <b>{{ runB().compared.rag_collection || '—' }}</b> vs <b>{{ runB().compared.wiki || '—' }}</b>, Sources <span class="pill">{{ label(runB().compared.sources) }}</span></p>
+        @if (runA().compared.sources !== runB().compared.sources) {
+          <p class="warn"><b>Different sources:</b> run A used {{ label(runA().compared.sources) }}, run B {{ label(runB().compared.sources) }}. Differences may come from the setting, not the systems.</p>
+        }
+      }
       @if (error()) { <p class="error">{{ error() }}</p> }
       @if (rows().length) {
         <div class="cards">
@@ -47,6 +54,7 @@ export class BenchCompare {
   readonly runB = signal<any>(null);
   readonly loaded = signal(false);
   readonly error = signal('');
+  label(s: string | null) { return s === 'standard' ? 'Standard only' : s === 'all' ? 'All' : '—'; }
 
   readonly rows = computed(() => {
     const A = this.runA(), B = this.runB();

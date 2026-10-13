@@ -30,10 +30,12 @@ async def ask(client: httpx.AsyncClient, system: str, question: str) -> dict:
     s = get_settings()
     t0 = time.perf_counter()
     if system == "rag":
-        data = await _post(client, f"{s.rag_url}/collections/{quote(s.rag_collection, safe='')}/query", s.rag_api_key, {"question": question})
+        data = await _post(client, f"{s.rag_url}/collections/{quote(s.rag_collection, safe='')}/query", s.rag_api_key,
+                           {"question": question, "sources": s.sources})
         sources = [c.get("para_ref") or c.get("chunk_id") for c in data.get("citations", [])]
     else:
-        data = await _post(client, f"{s.wiki_url}/wikis/{s.wiki_slug}/query", s.wiki_api_key, {"question": question, "save": False})
+        data = await _post(client, f"{s.wiki_url}/wikis/{s.wiki_slug}/query", s.wiki_api_key,
+                           {"question": question, "save": False, "sources": s.sources})
         sources = [p["slug"] for p in data.get("pages", []) if p.get("cited")]
     return {"answer": data["answer"], "sources": sources, "latency_s": round(time.perf_counter() - t0, 2)}
 
