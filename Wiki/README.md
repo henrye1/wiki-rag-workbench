@@ -18,7 +18,7 @@ copy .env.example .env                  # set API_KEY, GEMINI_API_KEY
 
 ## Concepts
 - **Wiki**: an independent knowledge base. You can have several, each with its own **schema** (the conventions doc every LLM call follows; edit it with `PUT /wikis/{w}/schema`).
-- **Source**: raw, immutable input (PDF, DOCX, MD/TXT, URL or pasted text). IFRS-layout PDFs reuse the Rag paragraph parser.
+- **Source**: raw, immutable input (PDF, DOCX, MD/TXT, URL or pasted text). IFRS-layout PDFs reuse the Rag paragraph parser (Standards, and their Parts B and C by IE / IG / BC… / DO numbering); a PDF whose layout is not recognised is kept page by page and the upload returns a warning.
 - **Page**: an LLM-maintained markdown page with a type (overview, topic, concept, entity, comparison, synthesis or source). Links use `[[slug]]` or `[[slug|label]]`. Every change is stored as a version.
 - **Changeset**: the proposed page edits from an ingest, a saved query or a lint fix.
   - `mode=auto` applies it straight away; `mode=review` leaves it pending.

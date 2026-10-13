@@ -124,6 +124,8 @@ The RAG API answers each question from scratch: it finds the paragraphs of the S
    - Appendix A defined terms become chunks keyed `Appendix A: <term>`.
    - Editorial material ([Refer], [Note], [Link] boxes, IFRIC agenda decisions, E-footnotes) is separated from the binding text and stored as `note` chunks.
    - Each chunk is tagged with a source type: `standard`, `appendix_a`, `appendix_b` (Application Guidance), `note`, `intro`, `appendix_c` or `back_matter`.
+   - Documents published with a Standard (Parts B and C of the IFRS volumes, any Standard) are recognised by their own paragraph numbers and tagged by kind: `example` (IE…), `implementation_guidance` (IG…), `basis_for_conclusions` (BC…, BCZ…, BCIN…, BCE…) and `dissenting_opinion` (DO…). They are searched by default, each passage labelled with its kind. A Standard (Part A) is read exactly as before.
+   - A PDF whose layout is not recognised is kept as page-by-page chunks, and the upload returns a warning (shown in the UI).
    - Paragraphs longer than 500 words are split at sentence boundaries.
    - Other PDFs and text files are split into overlapping ~400-word windows (`general`).
 3. **Embed** each chunk with Gemini (768-dimension vectors) and store it in Postgres with a full-text index.
@@ -187,7 +189,7 @@ The Wiki does the reading once: when a source is added, the LLM turns it into wi
 
 ### Ingest
 
-1. **Extract.** The source becomes text split into sections of about 3,000 words. IFRS PDFs reuse the RAG paragraph parser and keep only binding text.
+1. **Extract.** The source becomes text split into sections of about 3,000 words. IFRS PDFs reuse the RAG paragraph parser: from a Standard (Part A) only the binding text is kept; from a document published with it (Part B or C) every numbered paragraph is kept and marked with its kind, e.g. `[IE1] (Illustrative example)`, `[BC5.190] (Basis for Conclusions)`. Illustrative examples go straight to the schema's examples section. A PDF whose layout is not recognised is kept page by page, with a warning.
 2. **Notes.** Each section is summarised, following the schema, into claims the source asserts, open questions it only poses, and entities and concepts. Questions are never turned into claims, so a questionnaire produces open questions, not facts. A section the model refuses to process (Gemini blocks verbatim reproduction of copyrighted text) is split in half and retried.
 3. **Route.** If the schema defines fixed sections (`### 01. <name>` briefs), every source paragraph goes to exactly one section. Paragraphs carrying an issuer example label ("Example 1", "Instrument A", "Scenario 2") go to the worked-examples section, and nothing else does. The LLM assigns the rest, following the briefs' hand-off rules and seeing each paragraph's heading and the source's numbered outline, so a topic such as hedge accounting (chapter 6 and B6) stays together. Paragraphs it misses get a second round; any still missing go where most of their paragraph group went, else to the closest section brief. The job result lists which paragraphs went where (`routing`) and any the LLM did not assign itself (`unassigned`).
 4. **Plan.** The LLM sees the schema, the current index and the existing pages most related to the new material, and picks the pages to create or update. Every schema section gets a page and `overview` is the only top-level page; the source page counts toward the limit of 17.

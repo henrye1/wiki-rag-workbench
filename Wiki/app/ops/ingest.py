@@ -284,7 +284,11 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         # The issuer's labelled examples go to the examples section; nothing else does
         ex_sec = next((x for x in sections if "example" in _norm(x["name"])), None)
         if ex_sec:
-            labelled = {_ref(p) or i for i, p in enumerate(paras) if EXAMPLE_LABEL.search(p)}
+            # Illustrative examples (IE, from a Part B) by their kind; in a Standard, paragraphs carrying an example label
+            kinds = ex.meta.get("kinds") or []
+            kinds = kinds if len(kinds) == len(paras) else [""] * len(paras)
+            labelled = {_ref(p) or i for i, p in enumerate(paras)
+                        if (kinds[i] == "example" if kinds[i] else EXAMPLE_LABEL.search(p))}
             owner.update({i: ex_sec["num"] for i, p in enumerate(paras) if (_ref(p) or i) in labelled})
         targets = [x for x in sections if x is not ex_sec]
         briefs = "\n\n".join(x["brief"] for x in targets)

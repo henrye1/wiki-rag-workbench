@@ -12,10 +12,15 @@ from dataclasses import dataclass, field
 
 import pymupdf
 
-from .models import Chunk
+from .models import ACCOMPANYING_TYPES, Chunk
 from .text import clean, split_long
 
 PARA_RE = re.compile(r"^(?:B|C|BCZ?|IE|IG)?\d+(?:\.\d+)*[A-Z]{0,2}$")
+# Documents published with a Standard (Parts B and C of the IFRS bound volumes), numbered by prefix:
+# IE = illustrative example, IG = implementation guidance, BC/BCZ/BCIN/BCE/... = Basis for Conclusions, DO = dissenting opinion
+ACCOMPANYING_RE = re.compile(r"^(IE|IG|BC[A-Z]{0,3}|DO)(?:\d+|\.\d+)(?:\.\d+)*[A-Z]{0,2}$")
+ACCOMPANYING_KINDS = {"IE": "example", "IG": "implementation_guidance", "DO": "dissenting_opinion"}  # BC... -> basis_for_conclusions
+RANGE_DASH = ("\u2013", "-")  # "BC2.17A–" continued by "BC2.17H" on the next line: a range of deleted paragraphs
 EDITORIAL_BRACKETS = re.compile(r"\[(?:Refer|Note|Link|now)\b[^\]]*\]", re.I)
 MARGIN_MAX_X = 150
 HEADER_Y, FOOTER_Y = 110, 720
@@ -98,7 +103,31 @@ def _join(parts: list[str]) -> str:
     return clean(out)
 
 
-def parse(doc: pymupdf.Document, max_words: int = 500) -> list[Chunk]:
+def accompanying_kind(ref: str) -> str:
+    m = ACCOMPANYING_RE.match(ref.rstrip("".join(RANGE_DASH)))
+    prefix = m.group(1) if m else ""
+    return ACCOMPANYING_KINDS.get(prefix, "basis_for_conclusions" if prefix.startswith("BC") else "intro")
+
+
+def parse_document(doc: pymupdf.Document, max_words: int = 500) -> tuple[list[Chunk], str]:
+    """Read an IFRS PDF. A Standard (Part A) is read exactly as parse() always has; a document published with it
+    (illustrative examples, implementation guidance, Basis for Conclusions: Parts B and C) by its own paragraph numbers.
+
+    Returns (chunks, layout): layout is "standard", "accompanying", or "" when no numbered paragraphs were recognised.
+    A short accompanying document can have too few numbered paragraphs for looks_like_ifrs(); it is still recognised
+    by its numbering (IE, IG, BC..., DO in the IFRS margin font), but never read as a Standard.
+    """
+    chunks = parse(doc, max_words) if looks_like_ifrs(doc) else []
+    if any(c.source_type == "standard" for c in chunks):
+        return chunks, "standard"
+    acc = parse(doc, max_words, accompanying=True)
+    if any(c.source_type in ACCOMPANYING_TYPES for c in acc):
+        return acc, "accompanying"
+    return chunks, ""
+
+
+def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = False) -> list[Chunk]:
+    """accompanying=False reads a Standard (Part A); True reads a document published with one (Parts B and C)."""
     section = "intro"
     heading: str | None = None
     heading_buf: list[str] = []
@@ -128,19 +157,32 @@ def parse(doc: pymupdf.Document, max_words: int = 500) -> list[Chunk]:
                         heading_buf.append(text)
                     else:
                         heading_buf = [text]
-                    new_section = _section_for_heading(text, section)
+                    new_section = section if accompanying else _section_for_heading(text, section)
                     if new_section != section:
                         flush()
                         section = new_section
                         cur = _Para(None, section, pno, None)
                     heading = " ".join(heading_buf)
                     continue
-                is_label = (
-                    section in ("standard", "appendix_a", "appendix_b", "appendix_c")
-                    and x < MARGIN_MAX_X
-                    and font.startswith("Swift")
-                    and (PARA_RE.match(text) or (section == "appendix_a" and "Bold" in font))
-                )
+                if accompanying:
+                    margin_label = x < MARGIN_MAX_X and font.startswith("Swift") and ACCOMPANYING_RE.match(text.rstrip("".join(RANGE_DASH)))
+                    if margin_label and cur.ref and cur.ref.endswith(RANGE_DASH) and last_label and last_label[0] == pno and 0 < y - last_label[1] < 14:
+                        cur.ref = f"{cur.ref}{text}"  # second half of a range label, e.g. BC2.17A–BC2.17H
+                        last_label = (pno, y)
+                        continue
+                    if margin_label:
+                        flush()
+                        cur = _Para(text, accompanying_kind(text), pno, heading)
+                        last_label = (pno, y)
+                        continue
+                    is_label = False
+                else:
+                    is_label = (
+                        section in ("standard", "appendix_a", "appendix_b", "appendix_c")
+                        and x < MARGIN_MAX_X
+                        and font.startswith("Swift")
+                        and (PARA_RE.match(text) or (section == "appendix_a" and "Bold" in font))
+                    )
                 if is_label:
                     if section == "appendix_a" and last_label and last_label[0] == pno and 0 < y - last_label[1] < 13:
                         cur.ref = f"{cur.ref} {text}"

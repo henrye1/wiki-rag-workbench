@@ -57,19 +57,41 @@ def _outline(chunks) -> list[str]:
     return out
 
 
+# How each kind of paragraph from a document published with a Standard is marked in the text the wiki is built from
+KIND_LABELS = {
+    "example": "Illustrative example",
+    "implementation_guidance": "Implementation guidance",
+    "basis_for_conclusions": "Basis for Conclusions",
+    "dissenting_opinion": "Dissenting opinion",
+}
+UNRECOGNISED_IFRS = ("This PDF looks like an IFRS publication, but its paragraph numbering was not recognised: "
+                     "the text was kept page by page, without paragraph numbers.")
+NOT_IFRS = "This PDF does not have the IFRS layout: the text was kept page by page, without paragraph numbers."
+
+
 def from_pdf(name: str, data: bytes, max_words: int) -> Extracted:
     doc = pymupdf.open(stream=data, filetype="pdf")
     meta = {"pages": doc.page_count, **{k: v for k, v in (doc.metadata or {}).items() if v}}
-    if pdf_ifrs.looks_like_ifrs(doc):
+    chunks, layout = pdf_ifrs.parse_document(doc)
+    if layout == "standard":
         # Binding text only, labelled by paragraph number so notes can cite it
-        chunks = [c for c in pdf_ifrs.parse(doc) if c.source_type in ("standard", "appendix_a", "appendix_b")]
+        chunks = [c for c in chunks if c.source_type in ("standard", "appendix_a", "appendix_b")]
         blocks = [f"[{c.para_ref or 'p' + str(c.page)}] {c.content}" for c in chunks]
         meta["parser"] = "ifrs"
         meta["headings"] = [(c.heading or "").strip() for c in chunks]  # one per block, for routing to schema sections
         meta["outline"] = _outline(chunks)
+    elif layout == "accompanying":
+        # Parts B and C: numbered paragraphs, each marked with its kind (never presented as a requirement)
+        chunks = [c for c in chunks if c.source_type in KIND_LABELS]
+        blocks = [f"[{c.para_ref}] ({KIND_LABELS[c.source_type]}) {c.content}" for c in chunks]
+        meta["parser"] = "ifrs_accompanying"
+        meta["headings"] = [(c.heading or "").strip() for c in chunks]
+        meta["kinds"] = [c.source_type for c in chunks]
+        meta["outline"] = _outline(chunks)
     else:
         blocks = [f"[page {i}]\n{p.get_text()}" for i, p in enumerate(doc, start=1) if p.get_text().strip()]
         meta["parser"] = "pdf"
+        meta["warnings"] = [UNRECOGNISED_IFRS if pdf_ifrs.looks_like_ifrs(doc) else NOT_IFRS]
     text = "\n\n".join(blocks)
     return Extracted(_title_from(name), "pdf", text, _pack(blocks, max_words), meta)
 

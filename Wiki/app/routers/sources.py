@@ -39,7 +39,8 @@ async def _start(wiki: dict, ex: extract.Extracted, uri: str | None, mode: str,
         wiki["id"], "ingest", {"source": source["slug"], "mode": mode},
         lambda ctx: ingest.run_safe(ctx, wiki, source, ex, mode),
     )
-    return {"job_id": str(job_id), "source": source["slug"], "title": ex.title, "sections": len(ex.sections), "mode": mode}
+    return {"job_id": str(job_id), "source": source["slug"], "title": ex.title, "sections": len(ex.sections), "mode": mode,
+            "warnings": ex.meta.get("warnings", [])}
 
 
 @router.post("/wikis/{w}/sources", status_code=202)

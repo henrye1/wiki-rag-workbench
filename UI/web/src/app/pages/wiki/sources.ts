@@ -48,6 +48,7 @@ import { FileDrop } from '../../shared/file-drop';
       @if (started(); as s) {
         <p>Started ingest of <b>{{ s.title }}</b> ({{ s.sections }} sections, {{ s.mode }} mode). <a [routerLink]="['..', 'jobs']">Follow the job →</a></p>
       }
+      @if (started()?.warnings?.length) { @for (w of started().warnings; track w) { <p class="warn"><b>Warning:</b> {{ w }}</p> } }
       @if (error()) { <p class="error">{{ error() }}</p> }
     </div>
 

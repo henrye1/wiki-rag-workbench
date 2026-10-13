@@ -30,7 +30,7 @@ Schema change: edit migration, then `npx supabase db reset` (wipes data). `EMBED
 | POST | `/collections/{c}/bulk` | multipart `file` = query-set (`TOPIC n of N:` blocks); `?topics=1&topics=3` to subset, `?revise=false` to skip the self-check revision pass. JSON per topic: prose, source list, not addressed, word count, rendered markdown, citations, `draft_issues`/`issues` (rule checks) |
 | POST | `/bulk/parse` | dry run of query-set parsing (no LLM) |
 
-Source types: `standard`, `appendix_a`, `appendix_b`, `general` (binding/default) · `note`, `intro`, `appendix_c`, `back_matter` (excluded unless `include_editorial` or named in `source_types`).
+Source types: `standard`, `appendix_a`, `appendix_b`, `general` (binding/default) · `example`, `implementation_guidance`, `basis_for_conclusions`, `dissenting_opinion` (Parts B and C, recognised by their IE / IG / BC… / DO numbering; searched by default, labelled by kind) · `note`, `intro`, `appendix_c`, `back_matter` (excluded unless `include_editorial` or named in `source_types`). An upload whose layout is not recognised is chunked page by page and returns `warnings`.
 
 ## Examples
 ```powershell

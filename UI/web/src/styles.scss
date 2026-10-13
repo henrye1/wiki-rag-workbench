@@ -29,8 +29,10 @@ table.simple th { color: var(--mat-sys-on-surface-variant); font-weight: 500; }
 .scroll-x { overflow-x: auto; }
 .pill { display: inline-block; border-radius: 10px; padding: 0 8px; font-size: 12px; line-height: 20px; background: var(--mat-sys-secondary-container); color: var(--mat-sys-on-secondary-container); margin-right: 4px; }
 .pill.ok { background: #d7f2dd; color: #11542a; } .pill.warn { background: #fdecc8; color: #6b4300; } .pill.bad { background: #fde0dc; color: #8a1c10; }
+p.warn { background: #fdecc8; color: #6b4300; padding: 8px 12px; border-radius: 8px; }
 @media (prefers-color-scheme: dark) {
   .pill.ok { background: #1f3d29; color: #a7e3b8; } .pill.warn { background: #43361a; color: #f6d48b; } .pill.bad { background: #4a2420; color: #f5b4aa; }
+  p.warn { background: #43361a; color: #f6d48b; }
 }
 .error { color: var(--mat-sys-error); }
 mat-form-field.full { width: 100%; }

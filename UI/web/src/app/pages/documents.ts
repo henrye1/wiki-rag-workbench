@@ -70,6 +70,7 @@ type Editing = 'new' | 'rename' | 'delete' | null;
           @if (result(); as r) {
             <p>Ingested <b>{{ r.filename }}</b> into {{ r.collection }} ({{ r.parser }}): {{ r.chunks }} chunks
               @for (kv of entries(r.by_source_type); track kv[0]) { <span class="pill">{{ kv[0] }} {{ kv[1] }}</span> }</p>
+            @for (w of r.warnings ?? []; track w) { <p class="warn"><b>Warning:</b> {{ w }}</p> }
           }
         </div>
 

@@ -17,14 +17,24 @@ class DuplicateDocument(Exception):
         self.doc_id = doc_id
 
 
-def parse_file(filename: str, data: bytes) -> tuple[str, list[Chunk]]:
+UNRECOGNISED_IFRS = ("This PDF looks like an IFRS publication, but its paragraph numbering was not recognised: "
+                     "the text was kept as page-by-page chunks, without paragraph numbers.")
+NOT_IFRS = "This PDF does not have the IFRS layout: the text was kept as page-by-page chunks, without paragraph numbers."
+
+
+def parse_file(filename: str, data: bytes) -> tuple[str, list[Chunk], list[str]]:
+    """(parser, chunks, warnings). Text the IFRS reader cannot place is kept as generic chunks, with a warning."""
     max_words = get_settings().chunk_max_words
     if filename.lower().endswith(".pdf"):
         doc = pymupdf.open(stream=data, filetype="pdf")
-        if pdf_ifrs.looks_like_ifrs(doc):
-            return "ifrs", pdf_ifrs.parse(doc, max_words)
-        return "generic_pdf", chunk_plain([p.get_text() for p in doc], max_words)
-    return "text", chunk_plain([data.decode("utf-8", errors="replace")], max_words)
+        chunks, layout = pdf_ifrs.parse_document(doc, max_words)
+        if layout == "standard":
+            return "ifrs", chunks, []
+        if layout == "accompanying":
+            return "ifrs_accompanying", chunks, []
+        warning = UNRECOGNISED_IFRS if pdf_ifrs.looks_like_ifrs(doc) else NOT_IFRS
+        return "generic_pdf", chunk_plain([p.get_text() for p in doc], max_words), [warning]
+    return "text", chunk_plain([data.decode("utf-8", errors="replace")], max_words), []
 
 
 async def ingest(collection_id, filename: str, data: bytes) -> dict:
@@ -37,7 +47,7 @@ async def ingest(collection_id, filename: str, data: bytes) -> dict:
     if row:
         raise DuplicateDocument(row["id"])
 
-    parser, chunks = parse_file(filename, data)
+    parser, chunks, warnings = parse_file(filename, data)
     if not chunks:
         raise ValueError("No text extracted from document")
     vectors = await llm.embed([c.embed_text() for c in chunks])
@@ -66,4 +76,5 @@ async def ingest(collection_id, filename: str, data: bytes) -> dict:
     counts: dict[str, int] = {}
     for c in chunks:
         counts[c.source_type] = counts.get(c.source_type, 0) + 1
-    return {"document_id": str(doc["id"]), "filename": filename, "parser": parser, "chunks": len(chunks), "by_source_type": counts}
+    return {"document_id": str(doc["id"]), "filename": filename, "parser": parser, "chunks": len(chunks), "by_source_type": counts,
+            "warnings": warnings}
