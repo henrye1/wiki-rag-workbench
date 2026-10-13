@@ -2,8 +2,8 @@
 
   python -m app.attach_file <path/to/file>
 
-The document is found by the file's SHA-256 (the same fingerprint used to refuse duplicate ingests),
-so only the exact file that was ingested can be attached.
+Documents are found by the file's SHA-256 (the same fingerprint used to refuse duplicate ingests), so only the
+exact file that was ingested can be attached. It is attached in every collection that holds it.
 """
 import asyncio
 import hashlib
@@ -25,17 +25,21 @@ async def main(path: str):
     await open_pool()
     try:
         async with get_pool().connection() as conn:
-            doc = await (
-                await conn.execute("select id, filename from documents where sha256 = %s", (hashlib.sha256(data).hexdigest(),))
-            ).fetchone()
-        if not doc:
+            docs = await (
+                await conn.execute(
+                    """select d.id, d.filename, c.slug as collection from documents d join collections c on c.id = d.collection_id
+                       where d.sha256 = %s""", (hashlib.sha256(data).hexdigest(),),
+                )
+            ).fetchall()
+        if not docs:
             sys.exit("No ingested document matches this file: not attached")
-        rec = await storage.put(storage.object_path("rag", str(doc["id"]), doc["filename"]), data, storage.content_type(doc["filename"]))
-        if not rec:
-            sys.exit("upload failed (see log)")
-        async with get_pool().connection() as conn:
-            await conn.execute("update documents set file = %s where id = %s", (Jsonb(rec), doc["id"]))
-        print(f"attached {doc['filename']} ({len(data):,} bytes) -> {rec['bucket']}/{rec['path']}")
+        for doc in docs:  # the same file can be in several collections
+            rec = await storage.put(storage.object_path("rag", str(doc["id"]), doc["filename"]), data, storage.content_type(doc["filename"]))
+            if not rec:
+                sys.exit("upload failed (see log)")
+            async with get_pool().connection() as conn:
+                await conn.execute("update documents set file = %s where id = %s", (Jsonb(rec), doc["id"]))
+            print(f"attached {doc['filename']} ({len(data):,} bytes) in collection '{doc['collection']}' -> {rec['bucket']}/{rec['path']}")
     finally:
         await close_pool()
 

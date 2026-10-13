@@ -8,7 +8,9 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatSelectModule } from '@angular/material/select';
 import { Api, enc, errMsg } from '../core/api';
+import { RagCollections } from '../core/collections';
 import { CitationService } from '../shared/citation-service';
 import { FileDrop } from '../shared/file-drop';
 import { Markdown } from '../shared/markdown';
@@ -16,7 +18,7 @@ import { poller } from '../shared/poll';
 
 @Component({
   selector: 'app-bulk',
-  imports: [FormsModule, MatButtonModule, MatCheckboxModule, MatExpansionModule, MatFormFieldModule, MatIconModule, MatInputModule,
+  imports: [FormsModule, MatButtonModule, MatCheckboxModule, MatExpansionModule, MatFormFieldModule, MatIconModule, MatInputModule, MatSelectModule,
     MatProgressBarModule, FileDrop, Markdown],
   template: `
     <div class="page">
@@ -27,19 +29,25 @@ import { poller } from '../shared/poll';
         <app-file-drop accept=".txt,.md" label="Query-set file (optional locally: defaults to IFRS9_Requirement_Query_Set_BULK_5.txt)" (picked)="file.set($event)" />
         <div class="row opts">
           <mat-form-field appearance="outline" subscriptSizing="dynamic">
+            <mat-label>Collection</mat-label>
+            <mat-select [ngModel]="cols.current()" (ngModelChange)="cols.select($event)">
+              @for (c of cols.list(); track c.slug) { <mat-option [value]="c.slug">{{ c.name }}</mat-option> }
+            </mat-select>
+          </mat-form-field>
+          <mat-form-field appearance="outline" subscriptSizing="dynamic">
             <mat-label>Topics</mat-label>
             <input matInput [(ngModel)]="topics" placeholder="e.g. 1,3,5-7 (empty = all)" />
           </mat-form-field>
           <mat-checkbox [(ngModel)]="revise">Self-check revision pass</mat-checkbox>
           <span class="grow"></span>
-          <button mat-flat-button (click)="start()" [disabled]="running()"><mat-icon>play_arrow</mat-icon> Run</button>
+          <button mat-flat-button (click)="start()" [disabled]="running() || !cols.current()"><mat-icon>play_arrow</mat-icon> Run</button>
         </div>
         @if (error()) { <p class="error">{{ error() }}</p> }
       </div>
 
       @if (run(); as r) {
         <div class="row head">
-          <h3 class="grow">Run {{ r.id }} · {{ r.file }} · topics {{ r.topics.length ? r.topics.join(', ') : 'all' }}</h3>
+          <h3 class="grow">Run {{ r.id }} · {{ r.collection }} · {{ r.file }} · topics {{ r.topics.length ? r.topics.join(', ') : 'all' }}</h3>
           <span class="pill" [class.ok]="r.status === 'succeeded'" [class.bad]="r.status === 'failed'">{{ r.status }}</span>
         </div>
         @if (r.status === 'running') { <mat-progress-bar mode="indeterminate" /><p class="muted">Started {{ r.started }}. Results appear when the whole run finishes.</p> }
@@ -94,6 +102,7 @@ export class Bulk {
   private api = inject(Api);
   private clipboard = inject(Clipboard);
   readonly cites = inject(CitationService);
+  readonly cols = inject(RagCollections);
   topics = '1';
   revise = true;
   readonly file = signal<File | null>(null);
@@ -110,6 +119,7 @@ export class Bulk {
   }, 4000);
 
   constructor() {
+    void this.cols.refresh();
     this.api.get<any[]>('/api/bulk').then((h) => {
       this.history.set(h);
       if (h[0]) void this.open(h[0].id);
@@ -119,7 +129,7 @@ export class Bulk {
   async start() {
     this.error.set('');
     try {
-      const fields = { topics: this.topics, revise: String(this.revise) };
+      const fields = { collection: this.cols.current(), topics: this.topics, revise: String(this.revise) };
       const r = this.file()
         ? await this.api.upload('/api/bulk', this.file()!, undefined, fields)
         : await this.api.post('/api/bulk', toForm(fields));

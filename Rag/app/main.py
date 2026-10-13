@@ -7,7 +7,7 @@ from fastapi.security import APIKeyHeader
 
 from . import db
 from .config import get_settings
-from .routers import bulk, documents, query
+from .routers import bulk, collections, documents, query
 
 logging.basicConfig(level=logging.INFO)
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -28,6 +28,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="RAG API", version="0.1.0", lifespan=lifespan)
 auth = [Depends(require_api_key)]
+app.include_router(collections.router, dependencies=auth)
 app.include_router(documents.router, dependencies=auth)
 app.include_router(query.router, dependencies=auth)
 app.include_router(bulk.router, dependencies=auth)

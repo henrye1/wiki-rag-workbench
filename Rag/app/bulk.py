@@ -59,12 +59,12 @@ def parse_query_set(text: str) -> tuple[str, list[Topic]]:
     return rules, topics
 
 
-async def _retrieve(topic: Topic) -> list[dict]:
+async def _retrieve(topic: Topic, collection_id) -> list[dict]:
     s = get_settings()
     queries = [f"{topic.title}. {', '.join(topic.search_terms)}"] + topic.questions
     embeddings = await llm.embed(queries, task="RETRIEVAL_QUERY")
     results = await asyncio.gather(
-        *(retrieval.search(q, s.bulk_k_per_query, embedding=e) for q, e in zip(queries, embeddings))
+        *(retrieval.search(q, s.bulk_k_per_query, embedding=e, collection_id=collection_id) for q, e in zip(queries, embeddings))
     )
     # Round-robin merge so every question contributes its best hits before the cap
     seen: dict[int, dict] = {}
@@ -106,8 +106,8 @@ def check(topic: Topic, out: dict, by_id: dict) -> list[str]:
     return issues
 
 
-async def run_topic(rules: str, topic: Topic, revise: bool = True) -> dict:
-    rows = await _retrieve(topic)
+async def run_topic(rules: str, topic: Topic, collection_id, revise: bool = True) -> dict:
+    rows = await _retrieve(topic, collection_id)
     by_id = {retrieval.chunk_id(r): r for r in rows}
     context = retrieval.format_context(rows, with_ids=True)
     raw = await llm.generate(prompts.BULK_SYSTEM, prompts.bulk_prompt(rules, topic.block, context), schema=prompts.BULK_SCHEMA)
@@ -144,7 +144,7 @@ async def run_topic(rules: str, topic: Topic, revise: bool = True) -> dict:
     }
 
 
-async def run(text: str, only: list[int] | None = None, revise: bool = True) -> dict:
+async def run(text: str, collection_id, only: list[int] | None = None, revise: bool = True) -> dict:
     rules, topics = parse_query_set(text)
     if only:
         topics = [t for t in topics if t.number in only]
@@ -153,7 +153,7 @@ async def run(text: str, only: list[int] | None = None, revise: bool = True) -> 
     async def one(t: Topic):
         async with sem:
             try:
-                return await run_topic(rules, t, revise)
+                return await run_topic(rules, t, collection_id, revise)
             except Exception as e:  # keep other topics going
                 return {"topic_no": t.number, "title": t.title, "error": f"{type(e).__name__}: {e}"}
 

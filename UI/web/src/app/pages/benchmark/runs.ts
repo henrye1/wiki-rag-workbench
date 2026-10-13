@@ -29,6 +29,11 @@ import { poller } from '../../shared/poll';
         </div>
         <p class="muted small">Leave a file empty to reuse the one from the last run. Files are stored with the run in the database.</p>
         <div class="row">
+          <mat-form-field appearance="outline" subscriptSizing="dynamic" class="wiki"><mat-label>RAG collection</mat-label>
+            <mat-select [(ngModel)]="collection">
+              @for (c of collections(); track c.slug) { <mat-option [value]="c.slug">{{ c.name }} ({{ c.slug }})</mat-option> }
+            </mat-select></mat-form-field>
+          <span class="muted">vs</span>
           <mat-form-field appearance="outline" subscriptSizing="dynamic" class="wiki"><mat-label>Wiki</mat-label>
             <mat-select [(ngModel)]="wiki">
               @for (w of wikis(); track w.slug) { <mat-option [value]="w.slug">{{ w.name }} ({{ w.slug }})</mat-option> }
@@ -37,7 +42,7 @@ import { poller } from '../../shared/poll';
             <input matInput [(ngModel)]="topics" placeholder="e.g. 2 or 1-5 (empty = all 26)" /></mat-form-field>
           <mat-form-field appearance="outline" subscriptSizing="dynamic" class="runs"><mat-label>Runs</mat-label>
             <input matInput type="number" min="1" max="10" [(ngModel)]="runs" /></mat-form-field>
-          <button mat-flat-button (click)="start()" [disabled]="active() || !wiki"><mat-icon>play_arrow</mat-icon> Start</button>
+          <button mat-flat-button (click)="start()" [disabled]="active() || !wiki || !collection"><mat-icon>play_arrow</mat-icon> Start</button>
           <span class="muted small">Full run ≈ 26 × runs × (2 system answers + 1 Claude judgement). Needs RAG and the wiki populated.</span>
         </div>
         @if (active(); as a) {
@@ -56,12 +61,13 @@ import { poller } from '../../shared/poll';
         @else { <span class="muted small">Tick two runs to compare</span> }
       </div>
       <table class="simple">
-        <thead><tr><th></th><th>Run</th><th>Topics × runs</th><th>RAG sim / cov</th><th>Wiki sim / cov</th><th>Wins (rag / wiki / tie)</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Run</th><th>Compared</th><th>Topics × runs</th><th>RAG sim / cov</th><th>Wiki sim / cov</th><th>Wins (rag / wiki / tie)</th><th>Status</th><th></th></tr></thead>
         <tbody>
           @for (r of list(); track r.id) {
             <tr>
               <td><mat-checkbox [checked]="selected().includes(r.id)" (change)="toggle(r.id)" /></td>
               <td><a [routerLink]="[r.id]">{{ r.id }}</a><div class="muted small">{{ r.started | date: 'medium' }}</div></td>
+              <td class="small">{{ r.rag_collection || '—' }}<span class="muted"> vs </span>{{ r.wiki || '—' }}</td>
               <td>{{ r.topics }} × {{ r.runs }}</td>
               @if (r.summary?.by_system; as b) {
                 <td><b>{{ b.rag.similarity.mean }}</b> / {{ b.rag.coverage.mean }}%</td>
@@ -79,7 +85,7 @@ import { poller } from '../../shared/poll';
                 }
               </td>
             </tr>
-          } @empty { <tr><td colspan="8" class="muted">No runs yet.</td></tr> }
+          } @empty { <tr><td colspan="9" class="muted">No runs yet.</td></tr> }
         </tbody>
       </table>
     </div>
@@ -98,6 +104,8 @@ export class BenchRuns {
   readonly selected = signal<string[]>([]);
   readonly error = signal('');
   readonly wikis = signal<any[]>([]);
+  readonly collections = signal<any[]>([]);
+  collection = '';
   topics = '2';
   runs = 1;
   wiki = '';
@@ -120,6 +128,10 @@ export class BenchRuns {
       this.wikis.set(w);
       if (!this.wiki && w.length) this.wiki = w[0].slug;
     }).catch((e) => this.error.set(`Could not list wikis: ${errMsg(e)}`));
+    void this.api.ragCollections().then((c) => {
+      this.collections.set(c);
+      if (!this.collection && c.length) this.collection = c[0].slug;
+    }).catch((e) => this.error.set(`Could not list RAG collections: ${errMsg(e)}`));
   }
 
   async load(resume = false) {
@@ -139,6 +151,7 @@ export class BenchRuns {
       if (this.querySet) fd.append('query_set', this.querySet, this.querySet.name);
       fd.append('topics', this.topics);
       fd.append('runs', String(this.runs));
+      fd.append('collection', this.collection);
       fd.append('wiki', this.wiki);
       const r = await this.api.post('/api/bench/runs', fd);
       this.watch(r.id);

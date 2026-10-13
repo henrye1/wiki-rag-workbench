@@ -3,7 +3,7 @@
 This measures how closely the RAG API (`../Rag`) and the LLM Wiki API (`../Wiki`) answer the 26 topics in `Docs/IFRS9_Requirement_Query_Set_BULK_5.txt`. The reference is a human-written IFRS 9 assessment (a .docx kept in `Docs/`; set its path with `REFERENCE_DOCX` in `.env`). Claude (`claude-opus-5-5`) is the judge.
 
 ## Method
-1. **Inputs.** Each topic's question is its title plus Q1..Qn. The same text goes to RAG `POST /query` and Wiki `POST /wikis/{slug}/query`. Both systems answer with the same Gemini model at temperature 0.1.
+1. **Inputs.** Each topic's question is its title plus Q1..Qn. The same text goes to RAG `POST /collections/{c}/query` and Wiki `POST /wikis/{slug}/query`, for the RAG collection and wiki chosen for the run (`RAG_COLLECTION` and `WIKI_SLUG` for CLI runs). Both systems answer with the same Gemini model at temperature 0.1.
 2. **Reference.** Each topic's reference is the first row of its table in the docx: tables 1–26 map to topics 1–26. `python -m bench.data` checks this mapping.
 3. **Rubric.** Claude breaks each reference into atomic key points, once per topic, and tags each one:
    - `standard`: from IFRS 9/7 text
@@ -39,7 +39,7 @@ copy .env.example .env          # set ANTHROPIC_API_KEY, RAG_API_KEY, WIKI_API_K
 
 ## Output: `bench.runs` (database)
 One row per run: status, the uploaded inputs (query set, reference .docx), the run log, and `results` (JSON):
-- `config`: judge model and effort, runs, seed, git commit, and a snapshot of each system (RAG documents and chunk counts; Wiki page and source counts).
+- `config`: judge model and effort, runs, seed, git commit, and the RAG collection and wiki compared, and a snapshot of each system (the collection's documents and chunk counts; Wiki page and source counts).
 - `topics[n]`:
   - the question, reference and `key_points`
   - `runs[r]`: per system, the answer, sources, latency, per-point grades, similarity, coverage and contradictions; plus the winner, rationale and point notes

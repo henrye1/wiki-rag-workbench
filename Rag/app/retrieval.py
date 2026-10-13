@@ -22,14 +22,16 @@ async def search(
     include_types: list[str] | None = None,
     include_editorial: bool = False,
     embedding: list[float] | None = None,
+    collection_id=None,
 ) -> list[dict]:
+    """Hybrid search over one collection (all collections when collection_id is None)."""
     if embedding is None:
         embedding = await llm.embed_query(query)
     exclude = None if (include_editorial or include_types) else list(NON_BINDING_TYPES)
     async with get_pool().connection() as conn:
         cur = await conn.execute(
-            "select * from hybrid_search(%s, %s, %s, %s, %s)",
-            (query, np.asarray(embedding, dtype=np.float32), k, include_types, exclude),
+            "select * from hybrid_search(%s, %s, %s, %s, %s, p_collection_id => %s)",
+            (query, np.asarray(embedding, dtype=np.float32), k, include_types, exclude, collection_id),
         )
         return await cur.fetchall()
 

@@ -2,6 +2,7 @@
 import asyncio
 import datetime as dt
 import uuid
+from urllib.parse import quote
 
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 
@@ -13,13 +14,13 @@ _runs: dict[str, dict] = {}
 _tasks: set[asyncio.Task] = set()
 
 
-async def _execute(run_id: str, filename: str, data: bytes, topics: list[int], revise: bool):
+async def _execute(run_id: str, collection: str, filename: str, data: bytes, topics: list[int], revise: bool):
     s = get_settings()
     run = _runs[run_id]
     params = [("revise", str(revise).lower())] + [("topics", str(t)) for t in topics]
     try:
         resp = await client().post(
-            f"{s.rag_url}/bulk", params=params, files={"file": (filename, data, "text/plain")},
+            f"{s.rag_url}/collections/{quote(collection, safe='')}/bulk", params=params, files={"file": (filename, data, "text/plain")},
             headers={"X-API-Key": s.rag_api_key}, timeout=3600,
         )
         resp.raise_for_status()
@@ -30,8 +31,9 @@ async def _execute(run_id: str, filename: str, data: bytes, topics: list[int], r
 
 
 @router.post("", status_code=202)
-async def start(file: UploadFile | None = None, topics: str = Form(""), revise: bool = Form(True)):
-    """Start a bulk run. No file = the default query set. topics: '1,3,5-7' (empty = all)."""
+async def start(file: UploadFile | None = None, collection: str = Form(..., description="RAG collection to answer from"),
+                topics: str = Form(""), revise: bool = Form(True)):
+    """Start a bulk run on one RAG collection. No file = the default query set. topics: '1,3,5-7' (empty = all)."""
     s = get_settings()
     if file is not None:
         filename, data = file.filename or "query_set.txt", await file.read()
@@ -44,9 +46,9 @@ async def start(file: UploadFile | None = None, topics: str = Form(""), revise: 
         a, _, b = part.partition("-")
         nums += list(range(int(a), int(b or a) + 1))
     run_id = uuid.uuid4().hex[:12]
-    _runs[run_id] = {"id": run_id, "status": "running", "file": filename, "topics": nums, "revise": revise,
+    _runs[run_id] = {"id": run_id, "status": "running", "collection": collection, "file": filename, "topics": nums, "revise": revise,
                      "started": dt.datetime.now().isoformat(timespec="seconds"), "result": None, "error": None}
-    task = asyncio.create_task(_execute(run_id, filename, data, nums, revise))
+    task = asyncio.create_task(_execute(run_id, collection, filename, data, nums, revise))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
     return {"id": run_id}

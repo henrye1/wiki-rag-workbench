@@ -21,7 +21,9 @@ class Settings(BaseSettings):
     rag_api_key: str
     wiki_url: str = "http://127.0.0.1:8001"
     wiki_api_key: str
-    wiki_slug: str = "ifrs9"
+    # CLI only: what a new run compares (UI runs choose them; a resumed run uses what it stored)
+    rag_collection: str = ""
+    wiki_slug: str = ""
 
     # Results and uploaded inputs are stored in bench.runs
     database_url: str = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"  # local Supabase

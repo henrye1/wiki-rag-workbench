@@ -18,7 +18,7 @@ import { Api, errMsg } from '../core/api';
           <div class="card">
             <h3><span class="dot" [class.up]="s.rag.ok"></span> RAG</h3>
             <div class="stat">{{ chunks(s) | number }}</div>
-            <div class="muted">chunks in {{ s.rag.documents.length }} document(s)</div>
+            <div class="muted">chunks in {{ s.rag.documents.length }} document(s), {{ s.rag.collections.length }} collection(s)</div>
             <div class="row actions"><a mat-button routerLink="/documents">Documents</a><a mat-button routerLink="/bulk">Bulk run</a></div>
           </div>
           <div class="card">

@@ -34,8 +34,8 @@ npm start
 |---|---|
 | Home | Health and counts for RAG, Wiki and Benchmark |
 | Ask | One question to RAG and Wiki at once, both answers streaming side by side. Click a `[5.5.3]` citation to see the source paragraph, or a wiki link to preview the page. A Wiki answer can be saved as a page. |
-| RAG documents | Upload (drag and drop) or delete documents, with chunk counts |
-| Bulk requirements | Runs the query set through RAG `/bulk` as a background job, then shows each topic's block, rule-check issues, cited paragraphs and a copy-markdown button |
+| RAG documents | Create, rename and delete collections; upload (drag and drop) into the chosen collection or delete documents, with chunk counts |
+| Bulk requirements | Runs the query set through RAG `/collections/{c}/bulk` on the chosen collection as a background job, then shows each topic's block, rule-check issues, cited paragraphs and a copy-markdown button |
 | Wiki | Create or select a wiki, then use these tabs: Pages (browse, backlinks, sources, version diff and revert); Sources & ingest (file, URL or text; auto or review); Jobs; Changesets (diffs, apply or discard); Lint (structural, LLM, fix); Graph (link map); Schema & export |
 | Benchmark | List runs and start new ones with live progress; run explorer (summary, by-section chart, topic table sortable by gap); topic drill-down (key points × grades per run, answers side by side, judge's reasoning); compare two runs |
 

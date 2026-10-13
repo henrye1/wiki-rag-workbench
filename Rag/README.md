@@ -13,19 +13,21 @@ python -m venv .venv; .venv\Scripts\pip install -r requirements.txt
 copy .env.example .env     # set API_KEY, GEMINI_API_KEY
 .venv\Scripts\python run.py   # not uvicorn directly: Windows needs a selector event loop for psycopg async
 ```
-Swagger: http://127.0.0.1:8000/docs. Postman: import `postman/RAG_API.postman_collection.json`, set collection var `apiKey`. All endpoints except `/health` need header `X-API-Key`.
+Documents live in **collections** (like wikis): create one first (`POST /collections`, or the UI's RAG documents page); every upload and question names its collection. Swagger: http://127.0.0.1:8000/docs. Postman: import `postman/RAG_API.postman_collection.json`, set collection vars `apiKey` and `collection`. All endpoints except `/health` need header `X-API-Key`.
 
 Schema change: edit migration, then `npx supabase db reset` (wipes data). `EMBED_DIM` must match `vector(768)`.
 
 ## Endpoints
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/ingest` | multipart `file` (.pdf/.txt/.md). IFRS PDFs auto-detected; others chunked generically. 409 if already ingested. |
-| GET | `/documents` | list w/ chunk counts |
+| GET / POST | `/collections` | list (document and chunk counts) / create `{slug, name, description?}` |
+| PATCH / DELETE | `/collections/{c}` | rename `{name?, slug?, description?}` / delete with its documents, chunks and stored files |
+| POST | `/collections/{c}/documents` | multipart `file` (.pdf/.txt/.md) into collection `c`. IFRS PDFs auto-detected; others chunked generically. 409 if already in that collection. |
+| GET | `/collections/{c}/documents` | the collection's documents w/ chunk counts (`GET /documents`: all collections) |
 | DELETE | `/documents/{id}` | removes doc + chunks |
-| POST | `/query` | `{question, top_k?, source_types?, include_editorial?}` → `{answer, citations[]}` |
-| POST | `/query/stream` | same body; SSE events `token` (JSON string), `citations`, `done` |
-| POST | `/bulk` | multipart `file` = query-set (`TOPIC n of N:` blocks); `?topics=1&topics=3` to subset, `?revise=false` to skip the self-check revision pass. JSON per topic: prose, source list, not addressed, word count, rendered markdown, citations, `draft_issues`/`issues` (rule checks) |
+| POST | `/collections/{c}/query` | `{question, top_k?, source_types?, include_editorial?}` → `{answer, citations[]}`, searching only collection `c` |
+| POST | `/collections/{c}/query/stream` | same body; SSE events `token` (JSON string), `citations`, `done` |
+| POST | `/collections/{c}/bulk` | multipart `file` = query-set (`TOPIC n of N:` blocks); `?topics=1&topics=3` to subset, `?revise=false` to skip the self-check revision pass. JSON per topic: prose, source list, not addressed, word count, rendered markdown, citations, `draft_issues`/`issues` (rule checks) |
 | POST | `/bulk/parse` | dry run of query-set parsing (no LLM) |
 
 Source types: `standard`, `appendix_a`, `appendix_b`, `general` (binding/default) · `note`, `intro`, `appendix_c`, `back_matter` (excluded unless `include_editorial` or named in `source_types`).
@@ -33,10 +35,10 @@ Source types: `standard`, `appendix_a`, `appendix_b`, `general` (binding/default
 ## Examples
 ```powershell
 $h = @{ "X-API-Key" = "change-me" }
-curl.exe -H "X-API-Key: change-me" -F "file=@../Docs/13 - IFRS 9 Financial Instruments (Assessment).pdf" http://127.0.0.1:8000/ingest
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/query -Headers $h -ContentType application/json -Body '{"question":"When is the loss allowance measured at lifetime expected credit losses?"}'
-curl.exe -N -H "X-API-Key: change-me" -H "Content-Type: application/json" -d '{\"question\":\"Define credit loss\"}' http://127.0.0.1:8000/query/stream
-curl.exe -H "X-API-Key: change-me" -F "file=@../Docs/IFRS9_Requirement_Query_Set_BULK_5.txt" "http://127.0.0.1:8000/bulk?topics=1" -o topic1.json
+curl.exe -H "X-API-Key: change-me" -F "file=@../Docs/13 - IFRS 9 Financial Instruments (Assessment).pdf" http://127.0.0.1:8000/collections/ifrs9/documents
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/collections/ifrs9/query -Headers $h -ContentType application/json -Body '{"question":"When is the loss allowance measured at lifetime expected credit losses?"}'
+curl.exe -N -H "X-API-Key: change-me" -H "Content-Type: application/json" -d '{\"question\":\"Define credit loss\"}' http://127.0.0.1:8000/collections/ifrs9/query/stream
+curl.exe -H "X-API-Key: change-me" -F "file=@../Docs/IFRS9_Requirement_Query_Set_BULK_5.txt" "http://127.0.0.1:8000/collections/ifrs9/bulk?topics=1" -o topic1.json
 ```
 
 ## Layout

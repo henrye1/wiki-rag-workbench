@@ -9,6 +9,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../core/api';
+import { RagCollections } from '../core/collections';
 import { postSse } from '../core/sse';
 import { CitationService } from '../shared/citation-service';
 import { Markdown } from '../shared/markdown';
@@ -39,6 +40,12 @@ const emptyPane = (): Pane => ({ text: '', running: false, error: '', sources: [
       </mat-form-field>
       <div class="row">
         <mat-checkbox [(ngModel)]="useRag">RAG</mat-checkbox>
+        <mat-form-field appearance="outline" class="wiki-select" subscriptSizing="dynamic">
+          <mat-label>Collection</mat-label>
+          <mat-select [ngModel]="cols.current()" (ngModelChange)="cols.select($event)" [disabled]="!useRag">
+            @for (c of cols.list(); track c.slug) { <mat-option [value]="c.slug">{{ c.name }}</mat-option> }
+          </mat-select>
+        </mat-form-field>
         <mat-checkbox [(ngModel)]="useWiki">Wiki</mat-checkbox>
         <mat-form-field appearance="outline" class="wiki-select" subscriptSizing="dynamic">
           <mat-label>Wiki</mat-label>
@@ -48,7 +55,7 @@ const emptyPane = (): Pane => ({ text: '', running: false, error: '', sources: [
         </mat-form-field>
         <span class="grow"></span>
         @if (rag().running || wikiPane().running) { <button mat-stroked-button (click)="stop()"><mat-icon>stop</mat-icon> Stop</button> }
-        <button mat-flat-button (click)="ask()" [disabled]="!question.trim() || (!useRag && !useWiki)"><mat-icon>send</mat-icon> Ask</button>
+        <button mat-flat-button (click)="ask()" [disabled]="!question.trim() || (!(useRag && cols.current()) && !useWiki)"><mat-icon>send</mat-icon> Ask</button>
       </div>
 
       <div class="panes" [class.single]="!(shownRag && shownWiki)">
@@ -120,6 +127,7 @@ export class Ask {
   shownRag = false;
   shownWiki = false;
   readonly wikis = signal<any[]>([]);
+  readonly cols = inject(RagCollections);
   readonly rag = signal<Pane>(emptyPane());
   readonly wikiPane = signal<Pane>(emptyPane());
   readonly saving = signal(false);
@@ -127,6 +135,7 @@ export class Ask {
   private abort?: AbortController;
 
   constructor() {
+    void this.cols.refresh();
     this.api.wikis().then((w) => {
       this.wikis.set(w);
       this.wiki ||= w[0]?.slug ?? '';
@@ -138,10 +147,10 @@ export class Ask {
     if (!q) return;
     this.stop();
     this.abort = new AbortController();
-    this.shownRag = this.useRag;
+    this.shownRag = this.useRag && !!this.cols.current();
     this.shownWiki = this.useWiki && !!this.wiki;
     this.askedWiki = this.wiki;
-    if (this.shownRag) void this.stream('/api/rag/query/stream', this.rag, 'citations', q);
+    if (this.shownRag) void this.stream(`/api/rag/collections/${enc(this.cols.current())}/query/stream`, this.rag, 'citations', q);
     if (this.shownWiki) void this.stream(`/api/wiki/wikis/${enc(this.wiki)}/query/stream`, this.wikiPane, 'pages', q);
   }
 

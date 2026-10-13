@@ -19,6 +19,9 @@ export class Api {
   put<T = any>(url: string, body: any): Promise<T> {
     return firstValueFrom(this.http.put<T>(url, body));
   }
+  patch<T = any>(url: string, body: any): Promise<T> {
+    return firstValueFrom(this.http.patch<T>(url, body));
+  }
   delete<T = any>(url: string): Promise<T> {
     return firstValueFrom(this.http.delete<T>(url));
   }
@@ -42,8 +45,9 @@ export class Api {
   }
 
   // ---- RAG ----
-  ragDocuments() { return this.get<any[]>('/api/rag/documents'); }
-  ragChunks(paraRef: string) { return this.get<any[]>('/api/rag/chunks', { para_ref: paraRef }); }
+  ragCollections() { return this.get<any[]>('/api/rag/collections'); }
+  ragDocuments(collection: string) { return this.get<any[]>(`/api/rag/collections/${enc(collection)}/documents`); }
+  ragChunks(paraRef: string, collection?: string) { return this.get<any[]>('/api/rag/chunks', { para_ref: paraRef, collection }); }
 
   // ---- Wiki ----
   wikis() { return this.get<any[]>('/api/wiki/wikis'); }

@@ -59,7 +59,7 @@ def _progress(row: dict, cfg: dict | None, errors: dict | None = None) -> dict:
 @router.get("/runs")
 async def list_runs():
     rows = await _query(
-        f"""select id, status, updated_at, runs, topics, query_set_name, reference_name, {DONE_SQL},
+        f"""select id, status, updated_at, runs, topics, query_set_name, reference_name, rag_collection, wiki_slug, {DONE_SQL},
                    results->'config' as config, results->'summary' as summary, results->'errors' as errors,
                    jsonb_array_length(coalesce(results->'config'->'topics_selected', '[]'::jsonb)) as n_topics
             from bench.runs order by created_at desc"""
@@ -71,6 +71,7 @@ async def list_runs():
             "id": r["id"], "started": cfg.get("started"), "finished": cfg.get("finished"), "runs": cfg.get("runs") or r["runs"],
             "judge_model": cfg.get("judge_model"), "topics": r["n_topics"] or r["topics"] or "all",
             "query_set": r["query_set_name"], "reference": r["reference_name"],
+            "rag_collection": r["rag_collection"], "wiki": r["wiki_slug"],
             "summary": r["summary"], "progress": _progress(r, cfg, r["errors"]),
         })
     return out
@@ -134,17 +135,32 @@ async def _ensure_wiki(slug: str):
     r.raise_for_status()
 
 
+async def _ensure_collection(slug: str):
+    """Refuse a run up front when the RAG collection does not exist."""
+    s = get_settings()
+    if not slug:
+        raise HTTPException(400, "Choose the RAG collection to benchmark")
+    r = await client().get(f"{s.rag_url}/collections/{quote(slug, safe='')}/documents", headers={"X-API-Key": s.rag_api_key}, timeout=15)
+    if r.status_code == 404:
+        raise HTTPException(400, f"No RAG collection with slug '{slug}'")
+    r.raise_for_status()
+    if not r.json():
+        raise HTTPException(400, f"RAG collection '{slug}' has no documents")
+
+
 @router.post("/runs", status_code=202)
 async def start(
     reference: UploadFile | None = None,
     query_set: UploadFile | None = None,
     topics: str = Form("", description="e.g. 1,2,5-7 (empty = all)"),
     runs: int = Form(3, ge=1, le=10),
+    collection: str = Form(..., description="RAG collection under test"),
     wiki: str = Form(..., description="Wiki slug under test"),
 ):
-    """Start a run. Files left out are reused from the most recent run that has them."""
+    """Start a run comparing one RAG collection with one wiki. Files left out are reused from the most recent run that has them."""
     _ensure_idle()
-    wiki = wiki.strip()
+    collection, wiki = collection.strip(), wiki.strip()
+    await _ensure_collection(collection)
     await _ensure_wiki(wiki)
     ref, qs = await _read(reference, ".docx"), await _read(query_set, ".txt")
     if ref is None:
@@ -157,9 +173,9 @@ async def start(
         raise HTTPException(400, "Upload the reference assessment (.docx) and the query set (.txt) for the first run")
     run_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     await _query(
-        """insert into bench.runs (id, topics, runs, wiki_slug, query_set_name, query_set, reference_name, reference)
-           values (%s, %s, %s, %s, %s, %s, %s, %s)""",
-        (run_id, topics.replace(" ", ""), runs, wiki, qs[0], qs[1], ref[0], ref[1]),
+        """insert into bench.runs (id, topics, runs, rag_collection, wiki_slug, query_set_name, query_set, reference_name, reference)
+           values (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        (run_id, topics.replace(" ", ""), runs, collection, wiki, qs[0], qs[1], ref[0], ref[1]),
     )
     _spawn(run_id)
     return {"id": run_id}

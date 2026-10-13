@@ -78,7 +78,7 @@ Always start the Python services with `run.py`, not `uvicorn` directly: on Windo
 
 **First data**
 
-1. In the UI, open **RAG documents** and ingest the IFRS 9 PDF (about a minute; 927 chunks).
+1. In the UI, open **RAG documents**, create a collection (for example slug `ifrs9`) and ingest the IFRS 9 PDF into it (about a minute; 927 chunks).
 2. Open **Wiki**, create a wiki (for example slug `ifrs9`), go to **Sources & ingest**, upload the same PDF in *Apply automatically* mode and follow the job (a few minutes; about 16 pages).
 3. Try **Ask** with a question such as "When must lifetime expected credit losses be recognised?".
 
@@ -102,7 +102,8 @@ Each service reads its own `.env` file (never committed; copy `.env.example`). O
 | Wiki | `TEMPERATURE` | 0.2 (set to 0.1 here to match RAG) | Sampling |
 | Benchmark | `ANTHROPIC_API_KEY` | none | Claude judge |
 | Benchmark | `JUDGE_MODEL`, `JUDGE_EFFORT` | `claude-opus-5-5`, `high` | Judge model and reasoning effort |
-| Benchmark | `RAG_URL` / `RAG_API_KEY`, `WIKI_URL` / `WIKI_API_KEY` / `WIKI_SLUG` | `:8000`, `:8001`, `ifrs9` | Systems under test |
+| Benchmark | `RAG_URL` / `RAG_API_KEY`, `WIKI_URL` / `WIKI_API_KEY` | `:8000`, `:8001` | Systems under test |
+| Benchmark | `RAG_COLLECTION`, `WIKI_SLUG` | none | CLI runs only: the RAG collection and the wiki to compare (UI runs choose them; a resumed run uses what it stored) |
 | Benchmark | `REFERENCE_DOCX` | `../Docs/reference_assessment.docx` | Human-written assessment with the reference answers |
 | Benchmark | `RUNS`, `CONCURRENCY`, `SEED` | 3, 4, 42 | Repeats per topic, parallel topics, A/B shuffle seed |
 | UI server | `RAG_API_KEY`, `WIKI_API_KEY` (required) | none | Keys the server adds when it calls RAG and Wiki |
@@ -137,7 +138,7 @@ The IFRS 9 PDF yields 927 chunks: 256 Standard, 338 Application Guidance, 30 def
 
 ### Bulk requirement runs
 
-`POST /bulk` takes a query-set file made of `TOPIC n of N:` blocks (title, row label, word guide, leave-out line, search terms, questions) plus run rules. For each topic it:
+`POST /collections/{c}/bulk` takes a query-set file made of `TOPIC n of N:` blocks (title, row label, word guide, leave-out line, search terms, questions) plus run rules. For each topic it:
 
 1. Retrieves passages for the search terms and every question, merged round-robin up to 30 passages.
 2. Drafts the requirement block as structured JSON: prose paragraphs, source list, not-addressed list.
@@ -152,13 +153,15 @@ All require the `X-API-Key` header except `/health`. Interactive docs: <http://1
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/ingest` | Upload a document (multipart `file`) |
-| GET | `/documents` | List documents with chunk counts |
+| GET / POST | `/collections` | List collections (with document and chunk counts) / create one `{slug, name, description?}` |
+| PATCH / DELETE | `/collections/{c}` | Rename `{name?, slug?, description?}` / delete a collection with its documents, chunks and stored files |
+| POST | `/collections/{c}/documents` | Upload a document into a collection (multipart `file`); the same file can be in several collections, once per collection |
+| GET | `/collections/{c}/documents` | List a collection's documents with chunk counts (`GET /documents` lists all collections) |
 | DELETE | `/documents/{id}` | Remove a document and its chunks |
-| GET | `/chunks?para_ref=5.5.3` | Look up a paragraph by its reference (used by citation viewers) |
-| POST | `/query` | `{question, top_k?, source_types?, include_editorial?}` returns `{answer, citations}` |
-| POST | `/query/stream` | Same, streamed as server-sent events: `token`, `citations`, `done` |
-| POST | `/bulk?topics=1&revise=true` | Run a query-set file (multipart `file`) |
+| GET | `/chunks?para_ref=5.5.3&collection=c` | Look up a paragraph by its reference (used by citation viewers); `collection` optional |
+| POST | `/collections/{c}/query` | `{question, top_k?, source_types?, include_editorial?}` returns `{answer, citations}`, searching only that collection |
+| POST | `/collections/{c}/query/stream` | Same, streamed as server-sent events: `token`, `citations`, `done` |
+| POST | `/collections/{c}/bulk?topics=1&revise=true` | Run a query-set file (multipart `file`) on one collection |
 | POST | `/bulk/parse` | Dry run: show how a query-set file parses, no LLM calls |
 | GET | `/health` | Database check |
 
@@ -236,7 +239,7 @@ The Benchmark measures how close each system's answers are to a human expert's, 
 
 ### Method
 
-1. **Inputs.** Each of the 26 topics in the query set is sent as its title plus its questions (Q1 to Qn), identically, to RAG `/query` and Wiki `/query`.
+1. **Inputs.** Each of the 26 topics in the query set is sent as its title plus its questions (Q1 to Qn), identically, to RAG `/collections/{c}/query` and Wiki `/wikis/{w}/query`, for the RAG collection and wiki chosen for the run.
 2. **Reference.** Each topic's reference answer is the first row of its table in the human-written assessment (tables 1 to 26 map to topics 1 to 26; `python -m bench.data` checks the mapping by title).
 3. **Rubric.** Claude breaks each reference into atomic key points, once per topic, and tags each as `standard` (from the IFRS 9 or IFRS 7 text) or `beyond_standard` (industry practice, ITG or Basel guidance, examples). Neither system has the beyond-standard material, so scores are reported both ways.
 4. **Blind grading.** The two answers are labelled A and B in a seeded random order each run. Claude grades every key point for each answer as full, partial or missing, scores overall similarity 0 to 10, lists contradictions with the reference, and picks a winner.
@@ -279,7 +282,7 @@ The Workbench is the easiest way to use everything: open <http://127.0.0.1:8080>
 | --- | --- |
 | Home | See whether RAG, Wiki and the Benchmark are up, with document, page and latest score counts |
 | Ask (side by side) | Ask one question to RAG and the Wiki at once and watch both answers stream in. Tick either system off to ask only one. |
-| RAG documents | Upload documents by drag and drop, see chunk counts by source type, delete documents |
+| RAG documents | Create, rename and delete collections; upload documents into the chosen collection by drag and drop, see chunk counts by source type, delete documents |
 | Bulk requirements | Run requirement blocks for chosen topics through the RAG bulk pipeline and copy each finished block as markdown |
 | Wiki | Create or select a wiki, then work in its tabs (below) |
 | Benchmark | Start runs, watch progress, explore results, drill into topics and compare runs |

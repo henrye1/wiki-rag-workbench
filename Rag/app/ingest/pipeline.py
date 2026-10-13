@@ -27,11 +27,13 @@ def parse_file(filename: str, data: bytes) -> tuple[str, list[Chunk]]:
     return "text", chunk_plain([data.decode("utf-8", errors="replace")], max_words)
 
 
-async def ingest(filename: str, data: bytes) -> dict:
+async def ingest(collection_id, filename: str, data: bytes) -> dict:
     sha = hashlib.sha256(data).hexdigest()
     pool = get_pool()
     async with pool.connection() as conn:
-        row = await (await conn.execute("select id from documents where sha256 = %s", (sha,))).fetchone()
+        row = await (
+            await conn.execute("select id from documents where collection_id = %s and sha256 = %s", (collection_id, sha))
+        ).fetchone()
     if row:
         raise DuplicateDocument(row["id"])
 
@@ -43,7 +45,8 @@ async def ingest(filename: str, data: bytes) -> dict:
     async with pool.connection() as conn, conn.transaction():
         doc = await (
             await conn.execute(
-                "insert into documents (filename, sha256, parser) values (%s, %s, %s) returning id", (filename, sha, parser)
+                "insert into documents (collection_id, filename, sha256, parser) values (%s, %s, %s, %s) returning id",
+                (collection_id, filename, sha, parser),
             )
         ).fetchone()
         async with conn.cursor() as cur:
