@@ -10,6 +10,7 @@ import { MatSelectModule } from '@angular/material/select';
 import { Api, enc, errMsg } from '../core/api';
 import { RagCollections } from '../core/collections';
 import { FileDrop } from '../shared/file-drop';
+import { slugify } from '../shared/markdown';
 
 type Editing = 'new' | 'rename' | 'delete' | null;
 
@@ -38,13 +39,13 @@ type Editing = 'new' | 'rename' | 'delete' | null;
         @if (editing() === 'new' || editing() === 'rename') {
           <div class="row form">
             <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>Name</mat-label>
-              <input matInput [(ngModel)]="name" placeholder="e.g. IFRS 9 with examples" /></mat-form-field>
+              <input matInput [(ngModel)]="name" (ngModelChange)="nameChanged($event)" placeholder="e.g. IFRS 9 with examples" /></mat-form-field>
             <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>Slug</mat-label>
               <input matInput [(ngModel)]="slug" placeholder="e.g. ifrs9-examples" /></mat-form-field>
             <button mat-flat-button (click)="save()" [disabled]="!name.trim() || !slug.trim()">{{ editing() === 'new' ? 'Create' : 'Save' }}</button>
             <button mat-button (click)="edit(null)">Cancel</button>
           </div>
-          <p class="muted small">Slug: lowercase letters, digits and dashes. It identifies the collection in benchmark runs.</p>
+          <p class="muted small">The slug is made from the name (lowercase letters, digits and dashes) and can be edited. It identifies the collection in benchmark runs{{ editing() === 'rename' ? ', so renaming keeps it unless you change it' : '' }}.</p>
         }
         @if (editing() === 'delete') {
           <p class="error">Deletes collection <b>{{ cols.current() }}</b> with all its documents, their chunks and their stored files. This cannot be undone.</p>
@@ -144,6 +145,11 @@ export class Documents {
   }
 
   entries(o: Record<string, number>) { return Object.entries(o ?? {}); }
+
+  /** A new collection's slug follows its name, as for wikis (63 characters at most). */
+  nameChanged(name: string) {
+    if (this.editing() === 'new') this.slug = slugify(name).slice(0, 63).replace(/-+$/, '');
+  }
 
   edit(mode: Editing) {
     this.error.set('');
