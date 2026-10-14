@@ -227,6 +227,38 @@ def _not_covered(content: str, paras: list[str], what: str = "source paragraphs 
     return f"\n\nNot yet covered: ({what} that it does not cite) " + ", ".join(missing)
 
 
+ALSO_HEADING = "## Also recorded here"
+
+
+def _split_also(md: str) -> tuple[str, list[str]]:
+    """A page's text without its "Also recorded here" section, and that section's lines."""
+    m = re.search(rf"^{re.escape(ALSO_HEADING)}\s*$", md, re.M)
+    if not m:
+        return md, []
+    rest = md[m.end():]
+    end = re.search(r"^(?:#{1,2} |Not yet covered:)", rest, re.M)  # the section ends at the next heading or the gap note
+    section, after = (rest[: end.start()], rest[end.start():]) if end else (rest, "")
+    lines = [ln.strip() for ln in section.split("\n") if ln.strip()]
+    body = (md[: m.start()].rstrip() + ("\n\n" + after.strip() if after.strip() else "")).strip()
+    return body, lines
+
+
+def _with_also(body: str, lines: list[str]) -> str:
+    """The page text with its "Also recorded here" section, placed before a closing "Not yet covered" note."""
+    if not lines:
+        return body
+    section = f"{ALSO_HEADING}\n\n" + "\n".join(lines)
+    m = re.search(r"\n*^Not yet covered:.*\Z", body, re.M | re.S)
+    head, tail = (body[: m.start()], body[m.start():].strip()) if m else (body, "")
+    return "\n\n".join(x for x in (head.strip(), section, tail) if x)
+
+
+def _also_key(line: str) -> str:
+    """Lines citing the same paragraph of the same source are one entry (a later upload replaces it)."""
+    cites = sorted(f"{m.group(1)}|{m.group(2)}" for m in store.LINK_RE.finditer(line) if m.group(1).startswith("source-") and m.group(2))
+    return " ".join(cites) or _norm(line)
+
+
 def _join_parts(texts: list[str]) -> str:
     """Join a page's parts, dropping any block (paragraph, heading, list) that repeats one from an earlier part."""
     seen: set[str] = set()
@@ -430,6 +462,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     async def write(slug, title, ptype, focus, source_slug):
         cur = existing.get(slug)
         sec = sec_of.get(slug) if owner else None
+        # the page's "Also recorded here" lines are kept as they are; the writer sees (and rewrites) only the rest
+        cur_body, old_also = _split_also(cur["content_md"]) if cur and sec else (cur["content_md"] if cur else None, [])
         background, auto_gaps, page_material = [], False, material
         extra = also.get(sec["num"], []) if sec else []  # paragraphs also recorded here as one line each
         if sec:  # a section page writes up only its own paragraphs; a few related ones from other sections are context
@@ -459,7 +493,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                 outs.append(await llm.generate_json(
                     system,
                     prompts.with_schema(schema, prompts.write_page_prompt(
-                        slug=slug, title=title, ptype=ptype, focus=focus, existing_md=cur["content_md"] if cur else None,
+                        slug=slug, title=title, ptype=ptype, focus=focus, existing_md=cur_body,
                         material=page_material, linkable=linkable, source_slug=source_slug,
                         source_paragraphs="\n\n".join(group) or None, background_paragraphs="\n\n".join(background) or None,
                         auto_gaps=auto_gaps, part=part,
@@ -476,6 +510,10 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         if not outs and given:
             raise RuntimeError(f"every part of {slug} failed")
         content = _join_parts([o["content_md"] for o in outs])
+        if sec:
+            content = _split_also(content)[0]  # the section is rebuilt below from the kept and the new lines
+            if not given and cur:  # only lines to also record: the page itself stays as it is
+                content = cur_body
 
         def cited_only(text: str, refs: set[str]) -> str:
             """The blocks (or bullet lines) of a reply that cite one of refs, so an extra pass cannot rewrite the page."""
@@ -542,7 +580,9 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                         # one entry per line, also when the reply runs bullets together ("...|2.1]]- Designation: ...")
                         reply = re.sub(r"\]\]\s*[-*]\s+", "]]\n- ", out["content_md"])
                         kept = cited_only(reply, refs)
-                        lines += [ln.strip() for ln in kept.split("\n") if ln.strip() and not re.match(r"^#{1,4} ", ln)]
+                        # every paragraph comes from the source being uploaded, whichever source the reply names
+                        lines += [re.sub(r"\[\[source-[^\]|#]+\|", f"[[{source_slug}|", ln.strip())
+                                  for ln in kept.split("\n") if ln.strip() and not re.match(r"^#{1,4} ", ln)]
                         rec |= {"returned": out["content_md"], "kept_words": len(kept.split())}
                     except Exception as e:
                         log.warning("ingest: page %s also-record pass %s failed: %s", slug, attempt, e)
@@ -553,20 +593,23 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             lines = [ln if store.LINK_RE.search(ln.replace("[[source-", "")) is None or re.search(r"\[\[source-[^\]|]+\|", ln)
                      else re.sub(r"\[\[((?!source-)[^\]|#]+)\|([^\]]+)\]\]", lambda m: f"see [[{m.group(1)}]] [[{source_slug}|{m.group(2)}]]", ln)
                      for ln in lines]
-            if lines:
-                content = (content + "\n\n" if content else "") + "## Also recorded here\n\n" + "\n".join(lines)
             if still := [_ref(paras[i]) for i in extra if _uncited("\n".join(lines), [paras[i]])]:
                 missed.append({"page": slug, "paragraphs": list(dict.fromkeys(still)), "reason": "not recorded after two tries"})
 
+        if sec and (old_also or extra):  # earlier uploads' lines first; a line for the same paragraph is replaced
+            new = lines if extra else []
+            replaced = {_also_key(ln) for ln in new}
+            content = _with_also(content, [ln for ln in old_also if _also_key(ln) not in replaced] + new)
         if auto_gaps and given:
             content += _not_covered(content, given, "paragraphs of this section") or "\n\nNot yet covered: none"
         elif len(groups) > 1:
             content += _not_covered(content, given)
-        first = outs[0] if outs else {"title": title, "summary": f"{title}: items also recorded here",
+        first = outs[0] if outs else {"title": cur["title"] if cur else title,
+                                       "summary": cur["summary"] if cur else f"{title}: items also recorded here",
                                        "change_note": f"Also recorded from {ex.title}"}
         return Op(
             op="update" if cur else "create", slug=slug, title=first["title"] or title, type=ptype, summary=first["summary"],
-            content_md=content, tags=list(dict.fromkeys(t for o in outs for t in o["tags"])),
+            content_md=content, tags=list(dict.fromkeys(t for o in outs for t in o["tags"])) or (cur["tags"] if cur else []),
             base_version=cur["version"] if cur else None, change_note=first["change_note"],
         )
 

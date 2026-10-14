@@ -250,6 +250,8 @@ def also_record_prompt(*, slug: str, title: str, items: str, linkable: str, sour
     return (
         f"Add short entries to the wiki page `{slug}` (\"{title}\"). Each paragraph in <paragraphs> is written up in full on "
         "its main page (named after it) and is ALSO recorded here, without repeating it.\n"
+        f"Every paragraph in <paragraphs> comes from the source [[{source_slug}]]. Cite each one to that source, as "
+        f"[[{source_slug}|<paragraph number>]], and never to any other source page.\n"
         "For each paragraph write exactly ONE line, as a markdown bullet: what the entity decides, presumes, elects or "
         "estimates, in a few words, then a link to its main page, then the paragraph's citation, e.g.\n"
         f"- Policy choice: measure the loss allowance at lifetime expected credit losses: see [[main-page-slug]] [[{source_slug}|5.5.15]]\n"
