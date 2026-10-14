@@ -47,6 +47,8 @@ One row per run: status, the uploaded inputs (query set, reference .docx), the r
 - `summary`: per system, similarity, coverage and standard-only coverage (mean ± sd across topics); wins per run; similarity by docx section.
 - `errors`: topics that failed. Resume with `--run-id`.
 
+**Rubric.** Claude's key points for each topic are built once per reference file (identified by its SHA-256), saved in `bench.rubrics`, and reused by every run with that file, so runs are scored against the same checklist. A different reference file gets its own rubric on its first run. Rebuild a rubric on purpose with the Benchmark page's **Rebuild** button or `python -m bench.rubric rebuild <sha256>` (same judge prompt; it replaces the saved key points, so later runs are not directly comparable with earlier ones). `python -m bench.rubric list` shows the saved rubrics; `python -m bench.rubric seed <run-id>` saves the key points an earlier run built.
+
 Create the table once with `python -m bench.migrate` (Render runs it as a pre-deploy step). `python -m bench.import_results results/<dir>` imports runs saved as `results.json` by older versions.
 
 ## Cost

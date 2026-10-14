@@ -20,7 +20,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from . import judge, systems
+from . import judge, rubric, systems
 from .config import ROOT, get_settings
 from .data import Topic, load
 
@@ -67,6 +67,7 @@ class Store:
 
     def __init__(self, conn: psycopg.Connection, run_id: str, data: dict, log: str = ""):
         self.conn, self.run_id, self.data = conn, run_id, data
+        self.ref_sha = self.ref_name = None  # the reference file, whose saved rubric the run uses
         self.lines = log.splitlines()
         self.lock = asyncio.Lock()
 
@@ -99,9 +100,21 @@ async def run_topic(t: Topic, runs: int, store: Store, http: httpx.AsyncClient, 
     })
     async with sem:
         if "key_points" not in rec:
-            kp = await judge.key_points(t)
-            rec["key_points"] = kp["data"]["key_points"]
-            rec["key_points_usage"] = kp["usage"]
+            # The rubric is built once per reference file and reused, so every run is scored against the same key points
+            async with store.lock:
+                saved = await asyncio.to_thread(rubric.get, store.conn, store.ref_sha, t.number)
+            stale = bool(saved) and saved["topic_title"] != t.title  # the query set pairs this topic with another block
+            if stale:
+                store.log(f"  topic {t.number}: saved rubric is for '{saved['topic_title']}', building one for '{t.title}'")
+            if not saved or stale:
+                kp = await judge.key_points(t)
+                async with store.lock:
+                    await asyncio.to_thread(rubric.save, store.conn, store.ref_sha, store.ref_name, t.number, t.title,
+                                            kp["data"]["key_points"], kp["usage"], kp["model"], store.run_id, stale)
+                    saved = await asyncio.to_thread(rubric.get, store.conn, store.ref_sha, t.number)
+            rec["key_points"] = saved["key_points"]
+            rec["key_points_usage"] = saved["key_points_usage"]
+            rec["rubric"] = {"built_in": saved["source_run"], "saved_at": saved["created_at"].isoformat(timespec="seconds")}
             await store.save()
         points = rec["key_points"]
 
@@ -209,6 +222,7 @@ async def main():
     s.rag_collection, s.wiki_slug, s.sources = row["rag_collection"], row["wiki_slug"], row["sources"] or "all"
     runs = args.runs or row["runs"]
     store = Store(conn, run_id, row["results"] or {}, row["log"])
+    store.ref_sha, store.ref_name = rubric.sha256(row["reference"]), row["reference_name"]
     store.log(f"--- {dt.datetime.now().isoformat(timespec='seconds')} start")
     await store.save("running")
     beat = asyncio.create_task(store.heartbeat())
@@ -233,6 +247,7 @@ async def main():
                         "rag_collection": s.rag_collection, "wiki_slug": s.wiki_slug, "sources": s.sources,
                         "systems": await systems.describe(http),
                         "query_set": row["query_set_name"], "reference": row["reference_name"],
+                        "reference_sha256": store.ref_sha,
                     },
                     "topics": {},
                 }

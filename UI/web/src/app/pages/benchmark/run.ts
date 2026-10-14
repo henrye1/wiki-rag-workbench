@@ -23,6 +23,7 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki';
         }
         <p class="muted">Judge {{ d.config.judge_model }} ({{ d.config.judge_effort }}) · {{ d.config.runs }} run(s) per topic ·
           RAG: {{ ragDocs(d) }} · Wiki: {{ d.config.systems?.wiki?.wiki?.pages ?? '?' }} pages · commit {{ d.config.git_commit ?? '—' }}</p>
+        <p class="muted small">Rubric: {{ rubricLabel(d) }}</p>
 
         @if (d.summary; as s) {
           <div class="cards">
@@ -123,6 +124,12 @@ export class BenchRun {
 
   constructor() {
     effect(() => { this.api.get(`/api/bench/runs/${enc(this.id())}`).then((d) => this.data.set(d)).catch((e) => this.error.set(errMsg(e))); });
+  }
+
+  rubricLabel(d: any) {
+    const built = [...new Set(Object.values(d.topics ?? {}).map((t: any) => t.rubric?.built_in).filter(Boolean))];
+    if (!built.length) return 'built in this run (before rubrics were saved)';
+    return `saved rubric for ${d.config.reference ?? 'this reference'}, built in ${built.join(', ')}`;
   }
 
   ragDocs(d: any) {

@@ -103,17 +103,42 @@ async def status(run_id: str):
 
 def _ensure_idle():
     if any(p.poll() is None for p in _procs.values()):
-        raise HTTPException(409, "A benchmark run is already in progress")
+        raise HTTPException(409, "A benchmark run or rubric rebuild is already in progress")
 
 
-def _spawn(run_id: str):
+def _spawn(run_id: str, args: list[str] | None = None):
     s = get_settings()
     _ensure_idle()
     py = s.bench_python_path()
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", "DATABASE_URL": s.database_url,
            "RAG_URL": s.rag_url, "RAG_API_KEY": s.rag_api_key, "WIKI_URL": s.wiki_url, "WIKI_API_KEY": s.wiki_api_key}
     # Output goes to this server's log; the run also keeps its own log in bench.runs
-    _procs[run_id] = subprocess.Popen([str(py), "-m", "bench.run", "--run-id", run_id], cwd=s.bench_dir, env=env)
+    _procs[run_id] = subprocess.Popen([str(py), "-m", *(args or ["bench.run", "--run-id", run_id])], cwd=s.bench_dir, env=env)
+
+
+@router.get("/rubrics")
+async def list_rubrics():
+    """Saved rubrics (key points built once per reference file and reused by every run), newest first."""
+    rows = await _query(
+        """select reference_sha256, max(reference_name) as reference_name, count(*) as topics,
+                  sum(jsonb_array_length(key_points)) as key_points,
+                  sum((select count(*) from jsonb_array_elements(key_points) k where k->>'kind' = 'standard')) as standard,
+                  min(created_at) as built, max(created_at) as updated
+           from bench.rubrics group by reference_sha256 order by max(created_at) desc"""
+    )
+    for r in rows:
+        p = _procs.get(f"rubric-{r['reference_sha256']}")
+        r["rebuilding"] = bool(p and p.poll() is None)
+    return rows
+
+
+@router.post("/rubrics/{ref_sha}/rebuild", status_code=202)
+async def rebuild_rubric(ref_sha: str):
+    """Build the rubric for this reference file again (same judge prompt) and replace the saved one."""
+    if not await _query("select 1 from bench.rubrics where reference_sha256 = %s limit 1", (ref_sha,), one=True):
+        raise HTTPException(404, "No saved rubric for this reference file")
+    _spawn(f"rubric-{ref_sha}", ["bench.rubric", "rebuild", ref_sha])
+    return {"reference_sha256": ref_sha, "rebuilding": True}
 
 
 async def _read(f: UploadFile | None, ext: str) -> tuple[str, bytes] | None:

@@ -63,6 +63,28 @@ import { poller } from '../../shared/poll';
         @if (error()) { <p class="error">{{ error() }}</p> }
       </div>
 
+      <div class="card rubric">
+        <h3>Rubric</h3>
+        <p class="muted">Claude turns each topic's reference answer into key points once per reference file; every run with that file is
+          scored against the same saved key points. A new reference file gets its own rubric on its first run.</p>
+        <table class="simple">
+          <thead><tr><th>Reference file</th><th>Topics</th><th>Key points</th><th>Built</th><th></th></tr></thead>
+          <tbody>
+            @for (r of rubrics(); track r.reference_sha256) {
+              <tr>
+                <td>{{ r.reference_name }}<div class="muted small mono">{{ r.reference_sha256.slice(0, 12) }}…</div></td>
+                <td>{{ r.topics }}</td><td>{{ r.key_points }} <span class="muted small">({{ r.standard }} standard)</span></td>
+                <td class="small">{{ r.built | date: 'medium' }}@if (r.updated !== r.built) {<div class="muted">updated {{ r.updated | date: 'medium' }}</div>}</td>
+                <td class="actions">
+                  @if (r.rebuilding) { <span class="pill warn">Rebuilding…</span> }
+                  @else { <button mat-stroked-button (click)="rebuild(r)" [disabled]="active()" title="Build the key points again with the same judge prompt and replace the saved ones"><mat-icon>refresh</mat-icon> Rebuild</button> }
+                </td>
+              </tr>
+            } @empty { <tr><td colspan="5" class="muted">No saved rubric yet: the first run with a reference file builds and saves it.</td></tr> }
+          </tbody>
+        </table>
+      </div>
+
       <div class="row head">
         <h3 class="grow">Runs</h3>
         @if (selected().length === 2) { <button mat-stroked-button (click)="compare()"><mat-icon>compare_arrows</mat-icon> Compare selected</button> }
@@ -100,7 +122,7 @@ import { poller } from '../../shared/poll';
     </div>
   `,
   styles: `
-    .runs { width: 90px; } .sources { display: flex; align-items: center; gap: 8px; } .wiki { width: 240px; } .actions { white-space: nowrap; }
+    .runs { width: 90px; } .rubric { margin-top: 16px; } .mono { font-family: monospace; } .sources { display: flex; align-items: center; gap: 8px; } .wiki { width: 240px; } .actions { white-space: nowrap; }
     .files { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; } .small { font-size: 12px; } .head { margin-top: 20px; }
     .progress { margin-top: 12px; } .log { max-height: 160px; overflow: auto; white-space: pre-wrap; margin: 8px 0 0; }
   `,
@@ -114,6 +136,11 @@ export class BenchRuns {
   readonly error = signal('');
   readonly wikis = signal<any[]>([]);
   readonly collections = signal<any[]>([]);
+  readonly rubrics = signal<any[]>([]);
+  private rubricPoll = poller(async () => {
+    this.rubrics.set(await this.api.get('/api/bench/rubrics'));
+    return this.rubrics().some((r) => r.rebuilding);
+  }, 5000);
   collection = '';
   sources: 'standard' | 'all' = 'all';
   topics = '2';
@@ -134,6 +161,7 @@ export class BenchRuns {
 
   constructor() {
     void this.load(true);
+    this.rubricPoll.start();
     void this.api.wikis().then((w) => {
       this.wikis.set(w);
       if (!this.wiki && w.length) this.wiki = w[0].slug;
@@ -198,6 +226,18 @@ export class BenchRuns {
   }
 
   sourcesLabel(s: string | null) { return s === 'standard' ? 'Standard only' : s === 'all' ? 'All' : '—'; }
+
+  async rebuild(r: any) {
+    if (!confirm(`Rebuild the rubric for ${r.reference_name}? Claude builds the key points again for all ${r.topics} topics; `
+      + 'runs after this are scored against the new key points, so they are not directly comparable with earlier runs.')) return;
+    this.error.set('');
+    try {
+      await this.api.post(`/api/bench/rubrics/${enc(r.reference_sha256)}/rebuild`);
+      this.rubricPoll.start();
+    } catch (e) {
+      this.error.set(errMsg(e));
+    }
+  }
 
   toggle(id: string) {
     this.selected.update((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id].slice(-2)));
