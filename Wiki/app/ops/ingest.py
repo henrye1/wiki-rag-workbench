@@ -187,13 +187,30 @@ def _covers(label: str, ref: str) -> bool:
     return False
 
 
+_STUB = re.compile(r"\[?(?:This paragraph refers|These paragraphs refer)[^\]]*?not included in this edition\.?\]?", re.I)
+
+
+def _placeholder(para: str) -> bool:
+    """A paragraph that only says the edition leaves it out ("... not included in this edition."): nothing to write up."""
+    body = re.sub(r"^\[[^\]]+\]\s*(?:\([^)]*\)\s*)?", "", para)
+    if "included in this edition" not in body:
+        return False
+    rest = _STUB.sub(" ", body)
+    rest = re.sub(r"(?:not\s+)?included in this edition\.?\]?", " ", rest)  # the tail of a stub split across chunks
+    rest = re.sub(r"\[?(?:This paragraph refers|These paragraphs refer) to amendments that are not yet effective[^\]]*$",
+                  " ", rest, flags=re.I)  # the start of a stub that continues in the next chunk
+    rest = re.sub(rf"{REF_PAT}\s*[\u2013-]?", " ", rest)  # range labels such as 7.2.51–
+    return not re.search(r"[A-Za-z]{3,}", rest)
+
+
 def _uncited(content: str, paras: list[str]) -> list[str]:
-    """The labelled paragraphs in paras that no citation on the page names (each chunk of an uncited paragraph)."""
+    """The labelled paragraphs in paras that no citation on the page names (each chunk of an uncited paragraph).
+    Placeholders ("not included in this edition") are never counted as uncited."""
     labels = [m.group(2) for m in store.LINK_RE.finditer(content) if m.group(2)]
     out, cited = [], {}
     for p in paras:
         ref = _ref(p)
-        if not ref or re.fullmatch(r"p(age )?\d+", ref):
+        if not ref or re.fullmatch(r"p(age )?\d+", ref) or _placeholder(p):
             continue
         if ref not in cited:
             cited[ref] = any(_covers(label, ref) for label in labels)
@@ -330,6 +347,25 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         if unassigned:
             await ctx.progress(unassigned=unassigned)
 
+    # 2b. "Also record here" sections (the schema marks them ADDITIVE): a paragraph keeps its own section and is ALSO
+    # recorded on such a section's page as one short line, when it holds a presumption, election, policy choice,
+    # judgement or estimate
+    also: dict[int, list[int]] = {}
+    for sec in [x for x in sections if re.search(r"\bADDITIVE\b", x["brief"])] if owner else []:
+        cand = [i for i in range(len(paras)) if owner.get(i) != sec["num"] and not _placeholder(paras[i])]
+
+        async def pick(batch: list[int], sec=sec) -> list[int]:
+            lines = "\n".join(f"{i} | {' '.join(paras[i].split()[:200])}" for i in batch)
+            try:
+                out = await llm.generate_json(system, prompts.also_prompt(sec["brief"], lines), prompts.ALSO_SCHEMA)
+            except Exception as e:
+                log.warning("ingest: also-record batch for %s failed: %s", sec["name"], e)
+                return []
+            return [i for i in out["ids"] if i in batch]
+
+        picked = await llm.gather_limited(pick(cand[k : k + s.route_batch]) for k in range(0, len(cand), s.route_batch))
+        also[sec["num"]] = sorted({i for got in picked for i in got})
+
     # 3. Plan
     await ctx.progress(stage="plan")
     index = await store.compact_index(wiki_id)
@@ -377,6 +413,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     linkable = f"{index}\n{source['slug']} | source | {ex.title}\n{planned}"
     material = f"Source: {ex.title}\n\n{notes_md}"
     failed_pages: list[dict] = []
+    fill_passes: list[dict] = []  # what each extra writing pass was asked for and returned
+    missed: list[dict] = []  # paragraphs still not written up (or not also recorded) after the extra passes
 
     own: dict[int, list[int]] = {}
     for i, n in sorted(owner.items()):
@@ -393,10 +431,11 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         cur = existing.get(slug)
         sec = sec_of.get(slug) if owner else None
         background, auto_gaps, page_material = [], False, material
+        extra = also.get(sec["num"], []) if sec else []  # paragraphs also recorded here as one line each
         if sec:  # a section page writes up only its own paragraphs; a few related ones from other sections are context
             mine = own.get(sec["num"], [])
             given = [paras[i] for i in mine]
-            if not given:  # nothing from this source: leave an existing page alone, otherwise say the section is empty
+            if not given and not extra:  # nothing from this source: leave an existing page alone, otherwise say the section is empty
                 if cur:
                     return None
                 return Op(op="create", slug=slug, title=title, type=ptype, summary="Empty: no source content yet", tags=[],
@@ -405,13 +444,14 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             # its own paragraphs are its material; the notes cover every section and would leak other sections' points in
             auto_gaps, page_material = True, f"Source: {ex.title}"
             # labels removed: under the schema an uncitable paragraph cannot be written up
-            background = [re.sub(r"^\[[^\]]+\]\s*", "", p) for p in await relevant(sec["brief"], s.page_background_words, set(mine))]
+            background = [re.sub(r"^\[[^\]]+\]\s*", "", p)
+                          for p in await relevant(sec["brief"], s.page_background_words, set(mine) | set(extra))] if given else []
         elif owner:  # overview, source and other composed pages: every paragraph belongs to a section page, so context only
             given = []
             background = [re.sub(r"^\[[^\]]+\]\s*", "", p) for p in await relevant(f"{title}\n{focus}", s.page_background_words)]
         else:  # schema without fixed sections: the most relevant paragraphs
             given = await relevant(f"{title}\n{focus}", s.page_part_words if ptype in ("overview", "source") else s.page_source_words)
-        groups = _parts(given, s.page_part_words) or [[]]  # an empty page is written once
+        groups = _parts(given, s.page_part_words) or ([] if extra else [[]])  # an empty page is written once
         outs = []
         for n, group in enumerate(groups, start=1):
             part = (n, len(groups)) if len(groups) > 1 else None
@@ -433,37 +473,97 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                 # one failed part should not lose the rest of the page
                 log.warning("ingest: page %s part %s/%s failed: %s", slug, n, len(groups), e)
                 failed_pages.append({"slug": f"{slug} (part {n} of {len(groups)})", "error": f"{type(e).__name__}: {e}"})
-        if not outs:
+        if not outs and given:
             raise RuntimeError(f"every part of {slug} failed")
         content = _join_parts([o["content_md"] for o in outs])
-        if auto_gaps:  # own paragraphs the parts left out get one more pass
-            for group in _parts(_uncited(content, given), s.page_part_words):
-                refs = {_ref(p) for p in group}
-                try:
-                    out = await llm.generate_json(
-                        system,
-                        prompts.with_schema(schema, prompts.write_page_prompt(
-                            slug=slug, title=title, ptype=ptype, focus=focus, existing_md=None, material=page_material,
-                            linkable=linkable, source_slug=source_slug, source_paragraphs="\n\n".join(group),
-                            auto_gaps=True, fill=True, earlier_parts="\n".join(re.findall(r"^#{2,4} .*$", content, re.M)),
-                        )),
-                        prompts.PAGE_SCHEMA,
-                    )
-                    # keep only what cites a missing paragraph (headings kept), so the pass cannot rewrite the page
-                    blocks = [b for b in re.split(r"\n\s*\n", out["content_md"].strip()) if b.strip()]
-                    keep = [b for b in blocks if re.match(r"^#{2,4} ", b) or any(
-                        _covers(m.group(2), r) for m in store.LINK_RE.finditer(b) if m.group(2) for r in refs)]
-                    while keep and re.match(r"^#{2,4} ", keep[-1]):
-                        keep.pop()
-                    content = _join_parts([content, "\n\n".join(keep)])
-                except Exception as e:
-                    log.warning("ingest: page %s fill pass failed: %s", slug, e)
-                    failed_pages.append({"slug": f"{slug} (fill pass)", "error": f"{type(e).__name__}: {e}"})
+
+        def cited_only(text: str, refs: set[str]) -> str:
+            """The blocks (or bullet lines) of a reply that cite one of refs, so an extra pass cannot rewrite the page."""
+            blocks = [b for b in re.split(r"\n\s*\n|\n(?=\s*[-*] )", text.strip()) if b.strip()]
+            # a bare heading has no citation; a heading run together with its text ("...InstrumentsAn entity shall ...") does
+            bare = lambda b: re.match(r"^#{2,4} ", b) and not store.LINK_RE.search(b)
+            keep = [b for b in blocks if bare(b) or any(
+                _covers(m.group(2), r) for m in store.LINK_RE.finditer(b) if m.group(2) for r in refs)]
+            while keep and bare(keep[-1]):
+                keep.pop()
+            return "\n\n".join(keep)
+
+        if auto_gaps:  # own paragraphs the parts left out get an extra pass, and one more try if still missing
+            for attempt in (1, 2):
+                missing = _uncited(content, given)
+                if not missing:
+                    break
+                for group in _parts(missing, s.page_part_words):
+                    refs = {_ref(p) for p in group}
+                    rec = {"page": slug, "attempt": attempt, "asked": sorted(refs)}
+                    try:
+                        out = await llm.generate_json(
+                            system,
+                            prompts.with_schema(schema, prompts.write_page_prompt(
+                                slug=slug, title=title, ptype=ptype, focus=focus, existing_md=None, material=page_material,
+                                linkable=linkable, source_slug=source_slug, source_paragraphs="\n\n".join(group),
+                                auto_gaps=True, fill=True, earlier_parts="\n".join(re.findall(r"^#{2,4} .*$", content, re.M)),
+                            )),
+                            prompts.FILL_SCHEMA,
+                        )
+                        kept = cited_only(out["content_md"], refs)
+                        content = _join_parts([content, kept])
+                        rec |= {"returned": out["content_md"], "kept_words": len(kept.split())}
+                    except Exception as e:
+                        log.warning("ingest: page %s fill pass %s failed: %s", slug, attempt, e)
+                        rec["error"] = f"{type(e).__name__}: {e}"
+                    rec["still_missing"] = sorted({_ref(p) for p in _uncited(content, group)})
+                    fill_passes.append(rec)
+            if still := list(dict.fromkeys(_ref(p) for p in _uncited(content, given))):
+                missed.append({"page": slug, "paragraphs": still, "reason": "not written up after two extra passes"})
+
+        if extra:  # one short line per also-recorded paragraph, linking to its main page
+            main_page = {x["num"]: sl for sl, x in sec_of.items()}
+
+            def item(i: int) -> str:
+                link = f"(main page: [[{main_page.get(owner.get(i), 'overview')}]])"
+                return re.sub(r"^(\[[^\]]+\])", lambda m: f"{m.group(1)} {link}", paras[i], count=1)
+
+            lines: list[str] = []
+            for attempt in (1, 2):
+                todo = [i for i in extra if _uncited("\n".join(lines), [paras[i]])]
+                if not todo:
+                    break
+                for group in _parts([item(i) for i in todo], s.page_part_words):
+                    refs = {_ref(p) for p in group}
+                    rec = {"page": slug, "attempt": attempt, "kind": "also recorded", "asked": sorted(refs)}
+                    try:
+                        out = await llm.generate_json(
+                            system,
+                            prompts.with_schema(schema, prompts.also_record_prompt(
+                                slug=slug, title=title, items="\n\n".join(group), linkable=linkable, source_slug=source_slug)),
+                            prompts.FILL_SCHEMA,
+                        )
+                        # one entry per line, also when the reply runs bullets together ("...|2.1]]- Designation: ...")
+                        reply = re.sub(r"\]\]\s*[-*]\s+", "]]\n- ", out["content_md"])
+                        kept = cited_only(reply, refs)
+                        lines += [ln.strip() for ln in kept.split("\n") if ln.strip() and not re.match(r"^#{1,4} ", ln)]
+                        rec |= {"returned": out["content_md"], "kept_words": len(kept.split())}
+                    except Exception as e:
+                        log.warning("ingest: page %s also-record pass %s failed: %s", slug, attempt, e)
+                        rec["error"] = f"{type(e).__name__}: {e}"
+                    fill_passes.append(rec)
+            # a line that folds the main page and the paragraph number into one link ([[main-page|4.3.7]]) gets the
+            # usual form: see [[main-page]] [[source|4.3.7]]
+            lines = [ln if store.LINK_RE.search(ln.replace("[[source-", "")) is None or re.search(r"\[\[source-[^\]|]+\|", ln)
+                     else re.sub(r"\[\[((?!source-)[^\]|#]+)\|([^\]]+)\]\]", lambda m: f"see [[{m.group(1)}]] [[{source_slug}|{m.group(2)}]]", ln)
+                     for ln in lines]
+            if lines:
+                content = (content + "\n\n" if content else "") + "## Also recorded here\n\n" + "\n".join(lines)
+            if still := [_ref(paras[i]) for i in extra if _uncited("\n".join(lines), [paras[i]])]:
+                missed.append({"page": slug, "paragraphs": list(dict.fromkeys(still)), "reason": "not recorded after two tries"})
+
         if auto_gaps and given:
             content += _not_covered(content, given, "paragraphs of this section") or "\n\nNot yet covered: none"
         elif len(groups) > 1:
             content += _not_covered(content, given)
-        first = outs[0]
+        first = outs[0] if outs else {"title": title, "summary": f"{title}: items also recorded here",
+                                       "change_note": f"Also recorded from {ex.title}"}
         return Op(
             op="update" if cur else "create", slug=slug, title=first["title"] or title, type=ptype, summary=first["summary"],
             content_md=content, tags=list(dict.fromkeys(t for o in outs for t in o["tags"])),
@@ -491,6 +591,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         raise RuntimeError(f"Page writing failed for every page: {failed_pages[:3]}")
     if failed_pages:
         await ctx.progress(failed_pages=failed_pages)
+    if missed:
+        await ctx.progress(missed_paragraphs=missed)
     # Links to pages that will not exist (never planned, or failed) become plain text; the source stays linkable
     valid = set(existing) | {o.slug for o in ops} | {source["slug"]}
     for o in ops:
@@ -506,7 +608,9 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     await store.add_log(wiki_id, "ingest", ex.title, detail + f"\n\nMode: {mode} ({result['status']})")
     label = lambda i: _ref(paras[i]) or f"paragraph {i + 1}"
     routing = {f"{x['num']:02d} {x['name']}": [label(i) for i in own.get(x["num"], [])] for x in sections} if owner else {}
-    return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "routing": routing, "unassigned": unassigned, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
+    also_recorded = {f"{x['num']:02d} {x['name']}": [label(i) for i in also[x["num"]]] for x in sections if x["num"] in also}
+    return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "routing": routing, "unassigned": unassigned,
+            "also_recorded": also_recorded, "missed_paragraphs": missed, "fill_passes": fill_passes, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
 
 
 async def run_safe(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: str) -> dict:
