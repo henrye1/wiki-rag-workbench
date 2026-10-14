@@ -4,12 +4,15 @@ import asyncio
 import datetime as dt
 import os
 import subprocess
+from typing import Literal
+from urllib.parse import quote
 
 import psycopg
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 from psycopg.rows import dict_row
 
 from .config import get_settings
+from .proxy import client
 
 router = APIRouter(prefix="/api/bench", tags=["benchmark"])
 _procs: dict[str, subprocess.Popen] = {}
@@ -57,7 +60,7 @@ def _progress(row: dict, cfg: dict | None, errors: dict | None = None) -> dict:
 @router.get("/runs")
 async def list_runs():
     rows = await _query(
-        f"""select id, status, updated_at, runs, topics, query_set_name, reference_name, {DONE_SQL},
+        f"""select id, status, updated_at, runs, topics, query_set_name, reference_name, rag_collection, wiki_slug, sources, {DONE_SQL},
                    results->'config' as config, results->'summary' as summary, results->'errors' as errors,
                    jsonb_array_length(coalesce(results->'config'->'topics_selected', '[]'::jsonb)) as n_topics
             from bench.runs order by created_at desc"""
@@ -69,6 +72,7 @@ async def list_runs():
             "id": r["id"], "started": cfg.get("started"), "finished": cfg.get("finished"), "runs": cfg.get("runs") or r["runs"],
             "judge_model": cfg.get("judge_model"), "topics": r["n_topics"] or r["topics"] or "all",
             "query_set": r["query_set_name"], "reference": r["reference_name"],
+            "rag_collection": r["rag_collection"], "wiki": r["wiki_slug"], "sources": r["sources"],
             "summary": r["summary"], "progress": _progress(r, cfg, r["errors"]),
         })
     return out
@@ -83,9 +87,11 @@ async def _row(run_id: str, cols: str) -> dict:
 
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str):
-    row = await _row(run_id, "results")
+    row = await _row(run_id, "results, rag_collection, wiki_slug, sources")
     data = row["results"] or {}
     data["progress"] = _progress(row, data.get("config"), data.get("errors"))
+    # what the run compared, from the run row (results of older runs do not record it)
+    data["compared"] = {"rag_collection": row["rag_collection"], "wiki": row["wiki_slug"], "sources": row["sources"]}
     return data
 
 
@@ -97,17 +103,42 @@ async def status(run_id: str):
 
 def _ensure_idle():
     if any(p.poll() is None for p in _procs.values()):
-        raise HTTPException(409, "A benchmark run is already in progress")
+        raise HTTPException(409, "A benchmark run or rubric rebuild is already in progress")
 
 
-def _spawn(run_id: str):
+def _spawn(run_id: str, args: list[str] | None = None):
     s = get_settings()
     _ensure_idle()
     py = s.bench_python_path()
     env = {**os.environ, "PYTHONIOENCODING": "utf-8", "DATABASE_URL": s.database_url,
            "RAG_URL": s.rag_url, "RAG_API_KEY": s.rag_api_key, "WIKI_URL": s.wiki_url, "WIKI_API_KEY": s.wiki_api_key}
     # Output goes to this server's log; the run also keeps its own log in bench.runs
-    _procs[run_id] = subprocess.Popen([str(py), "-m", "bench.run", "--run-id", run_id], cwd=s.bench_dir, env=env)
+    _procs[run_id] = subprocess.Popen([str(py), "-m", *(args or ["bench.run", "--run-id", run_id])], cwd=s.bench_dir, env=env)
+
+
+@router.get("/rubrics")
+async def list_rubrics():
+    """Saved rubrics (key points built once per reference file and reused by every run), newest first."""
+    rows = await _query(
+        """select reference_sha256, max(reference_name) as reference_name, count(*) as topics,
+                  sum(jsonb_array_length(key_points)) as key_points,
+                  sum((select count(*) from jsonb_array_elements(key_points) k where k->>'kind' = 'standard')) as standard,
+                  min(created_at) as built, max(created_at) as updated
+           from bench.rubrics group by reference_sha256 order by max(created_at) desc"""
+    )
+    for r in rows:
+        p = _procs.get(f"rubric-{r['reference_sha256']}")
+        r["rebuilding"] = bool(p and p.poll() is None)
+    return rows
+
+
+@router.post("/rubrics/{ref_sha}/rebuild", status_code=202)
+async def rebuild_rubric(ref_sha: str):
+    """Build the rubric for this reference file again (same judge prompt) and replace the saved one."""
+    if not await _query("select 1 from bench.rubrics where reference_sha256 = %s limit 1", (ref_sha,), one=True):
+        raise HTTPException(404, "No saved rubric for this reference file")
+    _spawn(f"rubric-{ref_sha}", ["bench.rubric", "rebuild", ref_sha])
+    return {"reference_sha256": ref_sha, "rebuilding": True}
 
 
 async def _read(f: UploadFile | None, ext: str) -> tuple[str, bytes] | None:
@@ -121,16 +152,45 @@ async def _read(f: UploadFile | None, ext: str) -> tuple[str, bytes] | None:
     return f.filename, data
 
 
+async def _ensure_wiki(slug: str):
+    """Refuse a run up front when the wiki does not exist, instead of failing on every topic."""
+    s = get_settings()
+    if not slug:
+        raise HTTPException(400, "Choose the wiki to benchmark")
+    r = await client().get(f"{s.wiki_url}/wikis/{quote(slug, safe='')}", headers={"X-API-Key": s.wiki_api_key}, timeout=15)
+    if r.status_code == 404:
+        raise HTTPException(400, f"No wiki with slug '{slug}'")
+    r.raise_for_status()
+
+
+async def _ensure_collection(slug: str):
+    """Refuse a run up front when the RAG collection does not exist."""
+    s = get_settings()
+    if not slug:
+        raise HTTPException(400, "Choose the RAG collection to benchmark")
+    r = await client().get(f"{s.rag_url}/collections/{quote(slug, safe='')}/documents", headers={"X-API-Key": s.rag_api_key}, timeout=15)
+    if r.status_code == 404:
+        raise HTTPException(400, f"No RAG collection with slug '{slug}'")
+    r.raise_for_status()
+    if not r.json():
+        raise HTTPException(400, f"RAG collection '{slug}' has no documents")
+
+
 @router.post("/runs", status_code=202)
 async def start(
     reference: UploadFile | None = None,
     query_set: UploadFile | None = None,
     topics: str = Form("", description="e.g. 1,2,5-7 (empty = all)"),
     runs: int = Form(3, ge=1, le=10),
-    wiki: str = Form("ifrs9", description="Wiki slug under test"),
+    collection: str = Form(..., description="RAG collection under test"),
+    wiki: str = Form(..., description="Wiki slug under test"),
+    sources: Literal["standard", "all"] = Form(..., description="Both systems use the same: standard = Part A only; all = Parts A, B and C"),
 ):
-    """Start a run. Files left out are reused from the most recent run that has them."""
+    """Start a run comparing one RAG collection with one wiki. Files left out are reused from the most recent run that has them."""
     _ensure_idle()
+    collection, wiki = collection.strip(), wiki.strip()
+    await _ensure_collection(collection)
+    await _ensure_wiki(wiki)
     ref, qs = await _read(reference, ".docx"), await _read(query_set, ".txt")
     if ref is None:
         last = await _query("select reference_name, reference from bench.runs where reference is not null order by created_at desc limit 1", one=True)
@@ -142,9 +202,9 @@ async def start(
         raise HTTPException(400, "Upload the reference assessment (.docx) and the query set (.txt) for the first run")
     run_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     await _query(
-        """insert into bench.runs (id, topics, runs, wiki_slug, query_set_name, query_set, reference_name, reference)
-           values (%s, %s, %s, %s, %s, %s, %s, %s)""",
-        (run_id, topics.replace(" ", ""), runs, wiki.strip() or "ifrs9", qs[0], qs[1], ref[0], ref[1]),
+        """insert into bench.runs (id, topics, runs, rag_collection, wiki_slug, sources, query_set_name, query_set, reference_name, reference)
+           values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        (run_id, topics.replace(" ", ""), runs, collection, wiki, sources, qs[0], qs[1], ref[0], ref[1]),
     )
     _spawn(run_id)
     return {"id": run_id}

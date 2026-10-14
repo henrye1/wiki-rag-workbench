@@ -4,6 +4,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { RouterLink } from '@angular/router';
 import { Api, errMsg } from '../core/api';
+import { RagCollections } from '../core/collections';
 import { CitationService, CitationTarget } from './citation-service';
 import { Markdown } from './markdown';
 
@@ -52,6 +53,7 @@ import { Markdown } from './markdown';
 export class CitationPanel {
   readonly svc = inject(CitationService);
   private api = inject(Api);
+  private cols = inject(RagCollections);
   readonly chunks = signal<any[]>([]);
   readonly page = signal<any>(null);
   readonly loading = signal(false);
@@ -67,10 +69,23 @@ export class CitationPanel {
     });
   }
 
+  /** The paragraph in the chosen collection; if it is not there (e.g. an answer from another collection), any collection. */
+  private async ragChunks(ref: string) {
+    const c = this.cols.current();
+    if (c) {
+      try {
+        return await this.api.ragChunks(ref, c);
+      } catch (e: any) {
+        if (e?.status !== 404) throw e;
+      }
+    }
+    return this.api.ragChunks(ref);
+  }
+
   private async load(t: CitationTarget) {
     this.loading.set(true);
     try {
-      if (t.kind === 'rag') this.chunks.set(await this.api.ragChunks(t.ref));
+      if (t.kind === 'rag') this.chunks.set(await this.ragChunks(t.ref));
       else this.page.set(await this.api.page(t.wiki, t.slug));
     } catch (e: any) {
       this.error.set(e?.status === 404 ? (t.kind === 'rag' ? `No indexed paragraph "${t.ref}".` : 'This page does not exist yet.') : errMsg(e));

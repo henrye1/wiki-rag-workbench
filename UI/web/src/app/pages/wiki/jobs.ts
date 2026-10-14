@@ -23,6 +23,9 @@ import { poller } from '../../shared/poll';
               <span class="muted">{{ stage(j) }}</span>
               @if (j.progress?.failed_sections?.length) { <div class="error">{{ j.progress.failed_sections.length }} section(s) failed</div> }
               @if (j.progress?.failed_pages?.length) { <div class="error" [title]="j.progress.failed_pages[0].error">{{ j.progress.failed_pages.length }} page(s) skipped: @for (f of j.progress.failed_pages; track f.slug) { {{ f.slug }} } </div> }
+              @for (m of j.progress?.missed_paragraphs ?? []; track m.page) {
+                <div class="error" [title]="m.reason">Not written up on {{ m.page }}: {{ m.paragraphs.join(', ') }} ({{ m.reason }})</div>
+              }
             </td>
             <td>{{ j.created_at | date: 'short' }}</td>
             <td>

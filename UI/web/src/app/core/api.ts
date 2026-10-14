@@ -19,8 +19,23 @@ export class Api {
   put<T = any>(url: string, body: any): Promise<T> {
     return firstValueFrom(this.http.put<T>(url, body));
   }
+  patch<T = any>(url: string, body: any): Promise<T> {
+    return firstValueFrom(this.http.patch<T>(url, body));
+  }
   delete<T = any>(url: string): Promise<T> {
     return firstValueFrom(this.http.delete<T>(url));
+  }
+  /** Open a stored original file in a new tab. The API returns a short-lived signed URL; the tab opens first so popup blockers allow it. */
+  async openFile(url: string): Promise<void> {
+    const tab = window.open('', '_blank');
+    try {
+      const r = await this.get<{ url: string }>(url);
+      if (tab) tab.location.href = r.url;
+      else window.open(r.url, '_blank');
+    } catch (e) {
+      tab?.close();
+      throw e;
+    }
   }
   upload<T = any>(url: string, file: File, params?: Record<string, any>, fields?: Record<string, string>): Promise<T> {
     const fd = new FormData();
@@ -30,8 +45,9 @@ export class Api {
   }
 
   // ---- RAG ----
-  ragDocuments() { return this.get<any[]>('/api/rag/documents'); }
-  ragChunks(paraRef: string) { return this.get<any[]>('/api/rag/chunks', { para_ref: paraRef }); }
+  ragCollections() { return this.get<any[]>('/api/rag/collections'); }
+  ragDocuments(collection: string) { return this.get<any[]>(`/api/rag/collections/${enc(collection)}/documents`); }
+  ragChunks(paraRef: string, collection?: string) { return this.get<any[]>('/api/rag/chunks', { para_ref: paraRef, collection }); }
 
   // ---- Wiki ----
   wikis() { return this.get<any[]>('/api/wiki/wikis'); }

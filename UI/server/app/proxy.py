@@ -33,7 +33,7 @@ def target(service: str) -> tuple[str, str]:
     raise HTTPException(404, "Unknown service")
 
 
-@router.api_route("/api/{service}/{path:path}", methods=["GET", "POST", "PUT", "DELETE"], include_in_schema=False)
+@router.api_route("/api/{service}/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)
 async def proxy(service: str, path: str, request: Request):
     base, key = target(service)
     headers = {"X-API-Key": key}

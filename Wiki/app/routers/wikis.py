@@ -8,6 +8,7 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from psycopg.errors import UniqueViolation
 from pydantic import BaseModel, Field
 
+from .. import storage
 from ..db import get_pool
 from ..wiki import store
 from .deps import wiki_dep
@@ -63,8 +64,14 @@ async def get_wiki(wiki: dict = Depends(wiki_dep)):
 
 @router.delete("/wikis/{w}", status_code=204)
 async def delete_wiki(wiki: dict = Depends(wiki_dep)):
+    """Delete a wiki with everything in it, including its sources' stored files."""
     async with get_pool().connection() as conn:
+        files = await (
+            await conn.execute("select meta->'file' as file from wiki.sources where wiki_id = %s and meta ? 'file'", (wiki["id"],))
+        ).fetchall()
         await conn.execute("delete from wiki.wikis where id = %s", (wiki["id"],))
+    for f in files:
+        await storage.remove(f["file"])
 
 
 @router.get("/wikis/{w}/schema", response_class=PlainTextResponse)

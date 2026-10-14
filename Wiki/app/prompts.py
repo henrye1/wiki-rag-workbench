@@ -1,4 +1,6 @@
 """Prompts and JSON schemas for wiki operations. The wiki's own schema doc is always included."""
+import re
+
 
 MAINTAINER_SYSTEM = """You are the maintainer of a persistent, interlinked markdown wiki.
 You follow the wiki's schema document exactly. You only write what the provided material supports.
@@ -111,6 +113,16 @@ PAGE_SCHEMA = {
     "required": ["title", "summary", "tags", "content_md", "change_note"],
 }
 
+# An extra pass adds to a written page: same shape, but its text is only the new part (a "full page" description makes
+# the model rewrite the whole page instead)
+FILL_SCHEMA = {
+    **PAGE_SCHEMA,
+    "properties": {
+        **PAGE_SCHEMA["properties"],
+        "content_md": {"type": "string", "description": "ONLY the new text for the requested paragraphs, to be appended to the page"},
+    },
+}
+
 
 def write_page_prompt(
     *, slug: str, title: str, ptype: str, focus: str, existing_md: str | None, material: str,
@@ -152,10 +164,13 @@ def write_page_prompt(
         if background_paragraphs else ""
     )
     if fill:
+        refs = ", ".join(dict.fromkeys(re.findall(r"^\[([^\]]+)\]", source_paragraphs or "", re.M)))
         current = (
             "This page is already written, but it does not yet cover the paragraphs in <source_paragraphs>. Write only "
             "those paragraphs, to be added to the end of the page: no introduction, no summary, and nothing about any "
             "other paragraph. Use one of the page's headings below or a new one.\n"
+            f"Write ONLY about paragraph(s) {refs}: a few sentences each, and every sentence must cite one of them. "
+            "Do not rewrite the page or write about any other paragraph.\n"
             f"<page_headings>\n{earlier_parts or '(none)'}\n</page_headings>\n"
         )
     elif part:
@@ -210,6 +225,38 @@ ROUTE_SCHEMA = {
     },
     "required": ["assignments"],
 }
+
+
+# ---------- ingest: "also record here" sections (additive) ----------
+
+ALSO_SCHEMA = {
+    "type": "object",
+    "properties": {"ids": {"type": "array", "items": {"type": "integer"}, "description": "Ids of the paragraphs to also record"}},
+    "required": ["ids"],
+}
+
+
+def also_prompt(brief: str, lines: str) -> str:
+    return (
+        "The section below is an \"also record here\" section: a paragraph stays on its own section's page and is ALSO "
+        "recorded here. From the paragraphs below, return the ids of those that contain a presumption, an election, a "
+        "policy choice, a judgement or an estimate that the Standard leaves to the entity, as the section brief describes. "
+        "Leave out paragraphs that contain none.\n\n"
+        f"<section_brief>\n{brief}\n</section_brief>\n\n<paragraphs>\nid | text\n{lines}\n</paragraphs>"
+    )
+
+
+def also_record_prompt(*, slug: str, title: str, items: str, linkable: str, source_slug: str) -> str:
+    return (
+        f"Add short entries to the wiki page `{slug}` (\"{title}\"). Each paragraph in <paragraphs> is written up in full on "
+        "its main page (named after it) and is ALSO recorded here, without repeating it.\n"
+        "For each paragraph write exactly ONE line, as a markdown bullet: what the entity decides, presumes, elects or "
+        "estimates, in a few words, then a link to its main page, then the paragraph's citation, e.g.\n"
+        f"- Policy choice: measure the loss allowance at lifetime expected credit losses: see [[main-page-slug]] [[{source_slug}|5.5.15]]\n"
+        "Cite each paragraph exactly as the wiki schema requires, with its paragraph number. Nothing else: no heading, no "
+        "introduction, no full restatement.\n\n"
+        f"<linkable_pages>\n{linkable}\n</linkable_pages>\n\n<paragraphs>\n{items}\n</paragraphs>"
+    )
 
 
 def route_prompt(briefs: str, lines: str, outline: str = "", note: str = "") -> str:

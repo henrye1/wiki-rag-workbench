@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     embed_batch: int = 100
     temperature: float = 0.2
     database_url: str = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"  # local Supabase
+    # Original uploads in Supabase Storage (off unless the secret key is set; the URL defaults to DATABASE_URL's project)
+    supabase_url: str = ""
+    supabase_secret_key: str = ""
+    storage_bucket: str = "sources"
     db_pool_max: int = 10  # keep low on hosted Postgres (connection limits)
 
     section_words: int = 3000  # source split size for note extraction

@@ -78,7 +78,7 @@ Always start the Python services with `run.py`, not `uvicorn` directly: on Windo
 
 **First data**
 
-1. In the UI, open **RAG documents** and ingest the IFRS 9 PDF (about a minute; 927 chunks).
+1. In the UI, open **RAG documents**, create a collection (for example slug `ifrs9`) and ingest the IFRS 9 PDF into it (about a minute; 927 chunks).
 2. Open **Wiki**, create a wiki (for example slug `ifrs9`), go to **Sources & ingest**, upload the same PDF in *Apply automatically* mode and follow the job (a few minutes; about 16 pages).
 3. Try **Ask** with a question such as "When must lifetime expected credit losses be recognised?".
 
@@ -96,12 +96,15 @@ Each service reads its own `.env` file (never committed; copy `.env.example`). O
 | RAG | `BULK_CONCURRENCY`, `BULK_K_PER_QUERY`, `BULK_MAX_CHUNKS` | 3, 6, 30 | Bulk run parallelism and retrieval budget |
 | Wiki | `API_KEY`, `GEMINI_API_KEY` (required) | none | As for RAG |
 | Wiki | `DATABASE_URL` | local Supabase `:54322` | Same database, `wiki` schema |
+| RAG, Wiki | `SUPABASE_SECRET_KEY`, `SUPABASE_URL`, `STORAGE_BUCKET` | empty, from `DATABASE_URL`, `sources` | Optional: keep each uploaded file in a private Supabase Storage bucket, opened from the UI with **View original** (signed links valid for one hour). Files ingested earlier can be attached with `python -m app.attach_file` in `Rag/` or `Wiki/` |
 | Wiki | `MAX_PAGES_PER_INGEST` | 17 | Cap on pages one ingest creates or updates, including the source page (15 sections + overview + source) |
 | Wiki | `LLM_CONCURRENCY`, `JOB_WORKERS` | 4, 2 | Parallel LLM calls per job; jobs running at once |
 | Wiki | `TEMPERATURE` | 0.2 (set to 0.1 here to match RAG) | Sampling |
 | Benchmark | `ANTHROPIC_API_KEY` | none | Claude judge |
 | Benchmark | `JUDGE_MODEL`, `JUDGE_EFFORT` | `claude-opus-5-5`, `high` | Judge model and reasoning effort |
-| Benchmark | `RAG_URL` / `RAG_API_KEY`, `WIKI_URL` / `WIKI_API_KEY` / `WIKI_SLUG` | `:8000`, `:8001`, `ifrs9` | Systems under test |
+| Benchmark | `RAG_URL` / `RAG_API_KEY`, `WIKI_URL` / `WIKI_API_KEY` | `:8000`, `:8001` | Systems under test |
+| Benchmark | `RAG_COLLECTION`, `WIKI_SLUG` | none | CLI runs only: the RAG collection and the wiki to compare (UI runs choose them; a resumed run uses what it stored) |
+| Benchmark | `SOURCES` | `all` | CLI runs only: `standard` (both systems use only the Standard, Part A) or `all` (Parts A, B and C). Both systems always get the same setting; it is stored with the run and shown on its results |
 | Benchmark | `REFERENCE_DOCX` | `../Docs/reference_assessment.docx` | Human-written assessment with the reference answers |
 | Benchmark | `RUNS`, `CONCURRENCY`, `SEED` | 3, 4, 42 | Repeats per topic, parallel topics, A/B shuffle seed |
 | UI server | `RAG_API_KEY`, `WIKI_API_KEY` (required) | none | Keys the server adds when it calls RAG and Wiki |
@@ -122,6 +125,8 @@ The RAG API answers each question from scratch: it finds the paragraphs of the S
    - Appendix A defined terms become chunks keyed `Appendix A: <term>`.
    - Editorial material ([Refer], [Note], [Link] boxes, IFRIC agenda decisions, E-footnotes) is separated from the binding text and stored as `note` chunks.
    - Each chunk is tagged with a source type: `standard`, `appendix_a`, `appendix_b` (Application Guidance), `note`, `intro`, `appendix_c` or `back_matter`.
+   - Documents published with a Standard (Parts B and C of the IFRS volumes, any Standard) are recognised by their own paragraph numbers and tagged by kind: `example` (IE…), `implementation_guidance` (IG…), `basis_for_conclusions` (BC…, BCZ…, BCIN…, BCE…) and `dissenting_opinion` (DO…). They are searched by default, each passage labelled with its kind. A Standard (Part A) is read exactly as before.
+   - A PDF whose layout is not recognised is kept as page-by-page chunks, and the upload returns a warning (shown in the UI).
    - Paragraphs longer than 500 words are split at sentence boundaries.
    - Other PDFs and text files are split into overlapping ~400-word windows (`general`).
 3. **Embed** each chunk with Gemini (768-dimension vectors) and store it in Postgres with a full-text index.
@@ -136,7 +141,7 @@ The IFRS 9 PDF yields 927 chunks: 256 Standard, 338 Application Guidance, 30 def
 
 ### Bulk requirement runs
 
-`POST /bulk` takes a query-set file made of `TOPIC n of N:` blocks (title, row label, word guide, leave-out line, search terms, questions) plus run rules. For each topic it:
+`POST /collections/{c}/bulk` takes a query-set file made of `TOPIC n of N:` blocks (title, row label, word guide, leave-out line, search terms, questions) plus run rules. For each topic it:
 
 1. Retrieves passages for the search terms and every question, merged round-robin up to 30 passages.
 2. Drafts the requirement block as structured JSON: prose paragraphs, source list, not-addressed list.
@@ -151,13 +156,15 @@ All require the `X-API-Key` header except `/health`. Interactive docs: <http://1
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/ingest` | Upload a document (multipart `file`) |
-| GET | `/documents` | List documents with chunk counts |
+| GET / POST | `/collections` | List collections (with document and chunk counts) / create one `{slug, name, description?}` |
+| PATCH / DELETE | `/collections/{c}` | Rename `{name?, slug?, description?}` / delete a collection with its documents, chunks and stored files |
+| POST | `/collections/{c}/documents` | Upload a document into a collection (multipart `file`); the same file can be in several collections, once per collection |
+| GET | `/collections/{c}/documents` | List a collection's documents with chunk counts (`GET /documents` lists all collections) |
 | DELETE | `/documents/{id}` | Remove a document and its chunks |
-| GET | `/chunks?para_ref=5.5.3` | Look up a paragraph by its reference (used by citation viewers) |
-| POST | `/query` | `{question, top_k?, source_types?, include_editorial?}` returns `{answer, citations}` |
-| POST | `/query/stream` | Same, streamed as server-sent events: `token`, `citations`, `done` |
-| POST | `/bulk?topics=1&revise=true` | Run a query-set file (multipart `file`) |
+| GET | `/chunks?para_ref=5.5.3&collection=c` | Look up a paragraph by its reference (used by citation viewers); `collection` optional |
+| POST | `/collections/{c}/query` | `{question, top_k?, source_types?, include_editorial?}` returns `{answer, citations}`, searching only that collection |
+| POST | `/collections/{c}/query/stream` | Same, streamed as server-sent events: `token`, `citations`, `done` |
+| POST | `/collections/{c}/bulk?topics=1&revise=true` | Run a query-set file (multipart `file`) on one collection |
 | POST | `/bulk/parse` | Dry run: show how a query-set file parses, no LLM calls |
 | GET | `/health` | Database check |
 
@@ -183,7 +190,7 @@ The Wiki does the reading once: when a source is added, the LLM turns it into wi
 
 ### Ingest
 
-1. **Extract.** The source becomes text split into sections of about 3,000 words. IFRS PDFs reuse the RAG paragraph parser and keep only binding text.
+1. **Extract.** The source becomes text split into sections of about 3,000 words. IFRS PDFs reuse the RAG paragraph parser: from a Standard (Part A) only the binding text is kept; from a document published with it (Part B or C) every numbered paragraph is kept and marked with its kind, e.g. `[IE1] (Illustrative example)`, `[BC5.190] (Basis for Conclusions)`. Illustrative examples go straight to the schema's examples section. A PDF whose layout is not recognised is kept page by page, with a warning.
 2. **Notes.** Each section is summarised, following the schema, into claims the source asserts, open questions it only poses, and entities and concepts. Questions are never turned into claims, so a questionnaire produces open questions, not facts. A section the model refuses to process (Gemini blocks verbatim reproduction of copyrighted text) is split in half and retried.
 3. **Route.** If the schema defines fixed sections (`### 01. <name>` briefs), every source paragraph goes to exactly one section. Paragraphs carrying an issuer example label ("Example 1", "Instrument A", "Scenario 2") go to the worked-examples section, and nothing else does. The LLM assigns the rest, following the briefs' hand-off rules and seeing each paragraph's heading and the source's numbered outline, so a topic such as hedge accounting (chapter 6 and B6) stays together. Paragraphs it misses get a second round; any still missing go where most of their paragraph group went, else to the closest section brief. The job result lists which paragraphs went where (`routing`) and any the LLM did not assign itself (`unassigned`).
 4. **Plan.** The LLM sees the schema, the current index and the existing pages most related to the new material, and picks the pages to create or update. Every schema section gets a page and `overview` is the only top-level page; the source page counts toward the limit of 17.
@@ -191,6 +198,15 @@ The Wiki does the reading once: when a source is added, the LLM turns it into wi
 6. **Commit.** The edits become a changeset: applied now (*auto*) or left pending (*review*). Applying stores versions, rebuilds links and search chunks, and records which sources each page draws on.
 
 The IFRS 9 PDF (26 sections) produces 17 pages.
+
+### Sources: Standard only or All
+
+The Ask and Benchmark pages have a **Sources** switch, applied to RAG and the Wiki alike (in a benchmark run both systems always get the same setting, stored with the run and shown on its results and in comparisons):
+
+- **Standard only:** only the Standard itself (Part A). RAG searches only `standard`, `appendix_a` and `appendix_b` passages. The Wiki reads the same pages but keeps only the statements cited to a source read as a Standard; statements cited to Parts B or C, and uncited text, are left out.
+- **All:** Parts A, B and C (examples, implementation guidance, Basis for Conclusions).
+
+With a collection or wiki that holds only Part A, both settings give the same RAG retrieval.
 
 ### Query
 
@@ -235,7 +251,7 @@ The Benchmark measures how close each system's answers are to a human expert's, 
 
 ### Method
 
-1. **Inputs.** Each of the 26 topics in the query set is sent as its title plus its questions (Q1 to Qn), identically, to RAG `/query` and Wiki `/query`.
+1. **Inputs.** Each of the 26 topics in the query set is sent as its title plus its questions (Q1 to Qn), identically, to RAG `/collections/{c}/query` and Wiki `/wikis/{w}/query`, for the RAG collection and wiki chosen for the run.
 2. **Reference.** Each topic's reference answer is the first row of its table in the human-written assessment (tables 1 to 26 map to topics 1 to 26; `python -m bench.data` checks the mapping by title).
 3. **Rubric.** Claude breaks each reference into atomic key points, once per topic, and tags each as `standard` (from the IFRS 9 or IFRS 7 text) or `beyond_standard` (industry practice, ITG or Basel guidance, examples). Neither system has the beyond-standard material, so scores are reported both ways.
 4. **Blind grading.** The two answers are labelled A and B in a seeded random order each run. Claude grades every key point for each answer as full, partial or missing, scores overall similarity 0 to 10, lists contradictions with the reference, and picks a winner.
@@ -278,7 +294,7 @@ The Workbench is the easiest way to use everything: open <http://127.0.0.1:8080>
 | --- | --- |
 | Home | See whether RAG, Wiki and the Benchmark are up, with document, page and latest score counts |
 | Ask (side by side) | Ask one question to RAG and the Wiki at once and watch both answers stream in. Tick either system off to ask only one. |
-| RAG documents | Upload documents by drag and drop, see chunk counts by source type, delete documents |
+| RAG documents | Create, rename and delete collections; upload documents into the chosen collection by drag and drop, see chunk counts by source type, delete documents |
 | Bulk requirements | Run requirement blocks for chosen topics through the RAG bulk pipeline and copy each finished block as markdown |
 | Wiki | Create or select a wiki, then work in its tabs (below) |
 | Benchmark | Start runs, watch progress, explore results, drill into topics and compare runs |

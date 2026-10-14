@@ -18,7 +18,7 @@ copy .env.example .env                  # set API_KEY, GEMINI_API_KEY
 
 ## Concepts
 - **Wiki**: an independent knowledge base. You can have several, each with its own **schema** (the conventions doc every LLM call follows; edit it with `PUT /wikis/{w}/schema`).
-- **Source**: raw, immutable input (PDF, DOCX, MD/TXT, URL or pasted text). IFRS-layout PDFs reuse the Rag paragraph parser.
+- **Source**: raw, immutable input (PDF, DOCX, MD/TXT, URL or pasted text). IFRS-layout PDFs reuse the Rag paragraph parser (Standards, and their Parts B and C by IE / IG / BC… / DO numbering); a PDF whose layout is not recognised is kept page by page and the upload returns a warning.
 - **Page**: an LLM-maintained markdown page with a type (overview, topic, concept, entity, comparison, synthesis or source). Links use `[[slug]]` or `[[slug|label]]`. Every change is stored as a version.
 - **Changeset**: the proposed page edits from an ingest, a saved query or a lint fix.
   - `mode=auto` applies it straight away; `mode=review` leaves it pending.
@@ -34,7 +34,7 @@ copy .env.example .env                  # set API_KEY, GEMINI_API_KEY
 | `POST /wikis/{w}/sources?mode=` | upload file → `{job_id}` |
 | `POST /wikis/{w}/sources/url?mode=`, `/sources/text?mode=` | ingest a URL / pasted text |
 | `GET /wikis/{w}/sources`, `GET/DELETE /wikis/{w}/sources/{slug}` | raw sources |
-| `POST /wikis/{w}/query` `{question, save?, mode?}` | cited answer; `save` files it as a synthesis page |
+| `POST /wikis/{w}/query` `{question, save?, mode?, sources?}` | cited answer; `save` files it as a synthesis page; `sources`: `all` (default) or `standard` (only statements cited to a Standard, Part A) |
 | `POST /wikis/{w}/query/stream` | SSE events: `token`, `pages`, `done` |
 | `POST /wikis/{w}/lint` `{llm?, fix?, mode?}` | structural checks run immediately; with `llm` or `fix` it becomes a job |
 | `GET /jobs/{id}`, `GET /wikis/{w}/jobs` | job status, progress, result |

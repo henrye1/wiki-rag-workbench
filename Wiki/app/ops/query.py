@@ -1,8 +1,10 @@
 """Query: index + hybrid search -> read pages -> cited answer; optionally file the answer back as a synthesis page."""
+import re
 from collections.abc import AsyncIterator
 
 from .. import llm, prompts
 from ..config import get_settings
+from ..db import get_pool
 from ..wiki import search, store
 from ..wiki.store import Op, slugify
 
@@ -23,6 +25,56 @@ async def _select_pages(wiki: dict, question: str) -> list[dict]:
     return [pages[x] for x in order if x in pages]
 
 
+# "Sources: Standard only": keep only statements cited to a Standard (Part A); a page can also hold material from
+# documents published with it (Parts B and C), which cite their own sources
+_SOURCE_CITE = re.compile(r"\[\[(source-[^\]|#]+)")
+_STATEMENT = re.compile(r"(?:\[\[source-[^\]]+\]\][\s,;]*)+[.;:]?")  # a statement ends with its citation group
+_HEADING = re.compile(r"^\s*#{1,6} ")
+
+
+async def _standard_slugs(wiki_id) -> set[str]:
+    """Sources read as a Standard (Part A) by the IFRS reader."""
+    async with get_pool().connection() as conn:
+        rows = await (await conn.execute("select slug from wiki.sources where wiki_id = %s and meta->>'parser' = 'ifrs'", (wiki_id,))).fetchall()
+    return {r["slug"] for r in rows}
+
+
+def standard_only(md: str, standard: set[str]) -> str:
+    """The page text keeping headings and only the statements whose source citations are all to a Standard."""
+    lines = []
+    for line in md.split("\n"):
+        if not line.strip() or _HEADING.match(line):
+            lines.append(line)
+            continue
+        parts, pos = [], 0
+        for m in _STATEMENT.finditer(line):
+            parts.append(line[pos : m.end()])
+            pos = m.end()
+        kept = [p for p in parts if (cited := set(_SOURCE_CITE.findall(p))) and cited <= standard]
+        if kept:
+            lines.append("".join(kept).strip())
+    out: list[str] = []  # drop headings left with nothing under them
+    for i, line in enumerate(lines):
+        if _HEADING.match(line):
+            rest = next((x for x in lines[i + 1 :] if x.strip()), "")
+            if not rest or (_HEADING.match(rest) and len(rest) - len(rest.lstrip("#")) <= len(line) - len(line.lstrip("#"))):
+                continue
+        out.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+
+
+async def _restrict(wiki: dict, pages: list[dict], sources: str) -> list[dict]:
+    if sources != "standard":
+        return pages
+    standard = await _standard_slugs(wiki["id"])
+    out = []
+    for p in pages:
+        md = standard_only(p["content_md"], standard)
+        if _SOURCE_CITE.search(md):
+            out.append({**p, "content_md": md})
+    return out
+
+
 def _pages_md(pages: list[dict]) -> str:
     return "\n\n".join(f"<page slug=\"{p['slug']}\" title=\"{p['title']}\" type=\"{p['type']}\">\n{p['content_md']}\n</page>" for p in pages)
 
@@ -32,24 +84,25 @@ def _cited(answer: str, pages: list[dict]) -> list[dict]:
     return [{"slug": p["slug"], "title": p["title"], "cited": p["slug"] in linked} for p in pages]
 
 
-async def answer(wiki: dict, question: str, save: bool = False, mode: str = "auto") -> dict:
-    pages = await _select_pages(wiki, question)
+async def answer(wiki: dict, question: str, save: bool = False, mode: str = "auto", sources: str = "all") -> dict:
+    pages = await _restrict(wiki, await _select_pages(wiki, question), sources)
     if not pages:
-        text = "The wiki has no pages relevant to this question yet."
+        text = ("The wiki has no Standard (Part A) material relevant to this question." if sources == "standard"
+                else "The wiki has no pages relevant to this question yet.")
     else:
         text = await llm.generate(prompts.QUERY_SYSTEM, prompts.with_schema(wiki["schema_md"], prompts.query_prompt(question, _pages_md(pages))))
     result = {"answer": text, "pages": _cited(text, pages)}
     saved = await save_answer(wiki, question, text, mode) if save and pages else None
     if saved:
         result["saved"] = saved
-    await store.add_log(wiki["id"], "query", question[:200], "Pages read: " + ", ".join(f"[[{p['slug']}]]" for p in pages)
+    await store.add_log(wiki["id"], "query", question[:200], f"Sources: {sources}. Pages read: " + ", ".join(f"[[{p['slug']}]]" for p in pages)
                         + (f"\n\nSaved as [[{saved['slug']}]] ({saved['status']})" if saved else ""))
     return result
 
 
-async def stream_answer(wiki: dict, question: str) -> tuple[list[dict], AsyncIterator[str]]:
-    pages = await _select_pages(wiki, question)
-    await store.add_log(wiki["id"], "query", question[:200], "Pages read: " + ", ".join(f"[[{p['slug']}]]" for p in pages))
+async def stream_answer(wiki: dict, question: str, sources: str = "all") -> tuple[list[dict], AsyncIterator[str]]:
+    pages = await _restrict(wiki, await _select_pages(wiki, question), sources)
+    await store.add_log(wiki["id"], "query", question[:200], f"Sources: {sources}. Pages read: " + ", ".join(f"[[{p['slug']}]]" for p in pages))
     return pages, llm.stream(prompts.QUERY_SYSTEM, prompts.with_schema(wiki["schema_md"], prompts.query_prompt(question, _pages_md(pages))))
 
 

@@ -2,9 +2,14 @@ from dataclasses import dataclass
 
 # Binding text of the Standard (allowed by default in retrieval)
 BINDING_TYPES = ("standard", "appendix_a", "appendix_b", "general")
+# The Standard itself (Part A): what "Sources: Standard only" allows
+STANDARD_TYPES = ("standard", "appendix_a", "appendix_b")
+# Documents published with a Standard (Parts B and C), by paragraph-number prefix (IE, IG, BC..., DO).
+# Not part of the Standard, but searched by default: each passage is labelled with its kind.
+ACCOMPANYING_TYPES = ("example", "implementation_guidance", "basis_for_conclusions", "dissenting_opinion")
 # Editorial / non-binding text (excluded unless explicitly requested)
 NON_BINDING_TYPES = ("note", "intro", "appendix_c", "back_matter")
-ALL_TYPES = BINDING_TYPES + NON_BINDING_TYPES
+ALL_TYPES = BINDING_TYPES + ACCOMPANYING_TYPES + NON_BINDING_TYPES
 
 
 @dataclass

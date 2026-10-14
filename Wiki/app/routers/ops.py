@@ -1,5 +1,6 @@
 import difflib
 import json
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,6 +20,8 @@ class QueryIn(BaseModel):
     question: str = Field(min_length=3)
     save: bool = Field(False, description="File the answer back into the wiki as a synthesis page")
     mode: Mode = "auto"
+    sources: Literal["standard", "all"] = Field(
+        "all", description="standard = only statements cited to the Standard itself (Part A); all = also Parts B and C")
 
 
 class LintIn(BaseModel):
@@ -29,12 +32,12 @@ class LintIn(BaseModel):
 
 @router.post("/wikis/{w}/query")
 async def ask(body: QueryIn, wiki: dict = Depends(wiki_dep)):
-    return await query.answer(wiki, body.question, body.save, body.mode)
+    return await query.answer(wiki, body.question, body.save, body.mode, body.sources)
 
 
 @router.post("/wikis/{w}/query/stream")
 async def ask_stream(body: QueryIn, wiki: dict = Depends(wiki_dep)):
-    pages, tokens = await query.stream_answer(wiki, body.question)
+    pages, tokens = await query.stream_answer(wiki, body.question, body.sources)
 
     async def events():
         parts = []
