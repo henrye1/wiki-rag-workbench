@@ -14,7 +14,7 @@ from ..config import get_settings
 from ..db import get_pool
 from ..jobs import JobContext
 from ..sources.extract import Extracted
-from ..wiki import search, store
+from ..wiki import citecheck, search, store
 from ..wiki.store import Op, slugify
 
 log = logging.getLogger(__name__)
@@ -640,6 +640,10 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     valid = set(existing) | {o.slug for o in ops} | {source["slug"]}
     for o in ops:
         o.content_md = _unlink(o.content_md, valid)
+    # every citation must name a source that holds the clause it cites
+    citations = await citecheck.check_ops(wiki_id, ops)
+    if citations["corrected"] or citations["flagged"]:
+        await ctx.progress(citations=citations)
 
     # 5. Commit
     await ctx.progress(stage="commit")
@@ -653,7 +657,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     routing = {f"{x['num']:02d} {x['name']}": [label(i) for i in own.get(x["num"], [])] for x in sections} if owner else {}
     also_recorded = {f"{x['num']:02d} {x['name']}": [label(i) for i in also[x["num"]]] for x in sections if x["num"] in also}
     return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "routing": routing, "unassigned": unassigned,
-            "also_recorded": also_recorded, "missed_paragraphs": missed, "fill_passes": fill_passes, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
+            "also_recorded": also_recorded, "missed_paragraphs": missed, "citations": citations, "fill_passes": fill_passes, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
 
 
 async def run_safe(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: str) -> dict:

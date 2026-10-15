@@ -6,7 +6,7 @@ from .. import llm, prompts
 from ..config import get_settings
 from ..db import get_pool
 from ..jobs import JobContext
-from ..wiki import search, store
+from ..wiki import citecheck, search, store
 from ..wiki.store import Op, slugify
 
 EXEMPT_ORPHAN = ("overview",)
@@ -168,7 +168,10 @@ async def fix(wiki: dict, report: dict, llm_report: dict | None, ctx: JobContext
         [write_new(k, v) for k, v in new_items] + [add_links(k, v) for k, v in link_items]
     )
     ops = [o for o in ops if o]
-    return await store.commit(wiki_id, "lint", "Lint fixes", ops, mode, job_id=ctx.id)
+    citations = await citecheck.check_ops(wiki_id, ops)  # every citation must name a source that holds the clause
+    if citations["corrected"] or citations["flagged"]:
+        await ctx.progress(citations=citations)
+    return {**await store.commit(wiki_id, "lint", "Lint fixes", ops, mode, job_id=ctx.id), "citations": citations}
 
 
 async def run(ctx: JobContext, wiki: dict, use_llm: bool, do_fix: bool, mode: str) -> dict:

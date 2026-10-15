@@ -15,7 +15,7 @@ import pymupdf
 from .models import ACCOMPANYING_TYPES, Chunk
 from .text import clean, split_long
 
-PARA_RE = re.compile(r"^(?:B|C|BCZ?|IE|IG)?\d+(?:\.\d+)*[A-Z]{0,2}$")
+PARA_RE = re.compile(r"^(?:B[A-Z]\.|B|C|BCZ?|IE|IG)?\d+(?:\.\d+)*[A-Z]{0,2}$")  # B[A-Z]. = lettered sections of Appendix B (BA.1)
 # Documents published with a Standard (Parts B and C of the IFRS bound volumes), numbered by prefix:
 # IE = illustrative example, IG = implementation guidance, BC/BCZ/BCIN/BCE/... = Basis for Conclusions, DO = dissenting opinion
 ACCOMPANYING_RE = re.compile(r"^(IE|IG|BC[A-Z]{0,3}|DO)(?:\d+|\.\d+)(?:\.\d+)*[A-Z]{0,2}$")

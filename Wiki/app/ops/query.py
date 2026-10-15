@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from .. import llm, prompts
 from ..config import get_settings
 from ..db import get_pool
-from ..wiki import search, store
+from ..wiki import citecheck, search, store
 from ..wiki.store import Op, slugify
 
 
@@ -120,5 +120,6 @@ async def save_answer(wiki: dict, question: str, answer_md: str, mode: str) -> d
         slug, n = f"{base}-{n}", n + 1
     op = Op(op="create", slug=slug, title=out["title"], type="synthesis", summary=out["summary"],
             content_md=out["content_md"], tags=out["tags"], change_note=f"Filed from query: {question[:150]}")
+    citations = await citecheck.check_ops(wiki_id, [op])  # every citation must name a source that holds the clause
     res = await store.commit(wiki_id, "query", f"Save answer: {out['title']}", [op], mode)
-    return {"slug": slug, "status": res["status"], "changeset_id": res.get("changeset_id")}
+    return {"slug": slug, "status": res["status"], "changeset_id": res.get("changeset_id"), "citations": citations}
