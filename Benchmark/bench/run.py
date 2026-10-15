@@ -193,9 +193,9 @@ def _new_run(conn: psycopg.Connection, topics: str, runs: int) -> str:
         sys.exit("SOURCES must be 'standard' (Part A only) or 'all' (Parts A, B and C)")
     run_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     conn.execute(
-        """insert into bench.runs (id, topics, runs, rag_collection, wiki_slug, sources, query_set_name, query_set, reference_name, reference)
-           values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-        (run_id, topics, runs, s.rag_collection, s.wiki_slug, s.sources, s.query_set.name, s.query_set.read_bytes(),
+        """insert into bench.runs (id, topics, runs, rag_collection, wiki_slug, sources, use_saved, query_set_name, query_set, reference_name, reference)
+           values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        (run_id, topics, runs, s.rag_collection, s.wiki_slug, s.sources, s.use_saved, s.query_set.name, s.query_set.read_bytes(),
          s.reference_docx.name, s.reference_docx.read_bytes()),
     )
     return run_id
@@ -220,6 +220,7 @@ async def main():
     if not row["rag_collection"]:
         sys.exit(f"Run {run_id} has no RAG collection")
     s.rag_collection, s.wiki_slug, s.sources = row["rag_collection"], row["wiki_slug"], row["sources"] or "all"
+    s.use_saved = row["use_saved"] is not False  # older runs (null) read every page, saved answers included
     runs = args.runs or row["runs"]
     store = Store(conn, run_id, row["results"] or {}, row["log"])
     store.ref_sha, store.ref_name = rubric.sha256(row["reference"]), row["reference_name"]
@@ -244,7 +245,7 @@ async def main():
                         "judge_model": s.judge_model, "judge_effort": s.judge_effort, "runs": runs, "seed": s.seed,
                         "topics_selected": [t.number for t in topics], "expected_judgements": len(topics) * runs,
                         "question_format": "topic title + Q1..Qn, sent identically to RAG /collections/{c}/query and Wiki /wikis/{w}/query",
-                        "rag_collection": s.rag_collection, "wiki_slug": s.wiki_slug, "sources": s.sources,
+                        "rag_collection": s.rag_collection, "wiki_slug": s.wiki_slug, "sources": s.sources, "use_saved_answers": s.use_saved,
                         "systems": await systems.describe(http),
                         "query_set": row["query_set_name"], "reference": row["reference_name"],
                         "reference_sha256": store.ref_sha,

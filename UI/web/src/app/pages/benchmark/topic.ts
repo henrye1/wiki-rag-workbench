@@ -71,6 +71,7 @@ const SYMBOL: Record<string, string> = { full: '✅', partial: '⚠️', missing
                 }
                 <app-md [text]="r.systems[sys].answer" [cites]="sys === 'rag'" />
                 <div class="muted small">Sources: {{ r.systems[sys].sources.join(', ') || '—' }}</div>
+                @if (sys === 'wiki') { <div class="muted small">Saved answers read: {{ (r.systems[sys].saved_answers_read ?? []).join(', ') || 'none' }}</div> }
               </div>
             }
           </div>

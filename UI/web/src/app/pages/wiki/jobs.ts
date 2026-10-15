@@ -29,6 +29,9 @@ import { poller } from '../../shared/poll';
               @for (f of j.progress?.citations?.flagged ?? []; track $index) {
                 <div class="error">Citation to check on {{ f.page }}: {{ f.source }} | {{ f.label }} ({{ f.reason }}){{ f.count > 1 ? ' ×' + f.count : '' }}</div>
               }
+              @for (f of j.progress?.saved_answers_to_check ?? []; track f.slug) {
+                <div class="error">Saved answer needs checking: {{ f.slug }} ({{ f.paragraphs.join(', ') }} rewritten on {{ f.pages.join(', ') }})</div>
+              }
               @for (m of j.progress?.missed_paragraphs ?? []; track m.page) {
                 <div class="error" [title]="m.reason">Not written up on {{ m.page }}: {{ m.paragraphs.join(', ') }} ({{ m.reason }})</div>
               }

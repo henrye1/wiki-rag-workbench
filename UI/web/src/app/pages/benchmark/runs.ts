@@ -46,6 +46,7 @@ import { poller } from '../../shared/poll';
               <mat-button-toggle value="all">All</mat-button-toggle>
             </mat-button-toggle-group>
           </div>
+          <mat-checkbox [(ngModel)]="useSaved" title="The wiki also reads relevant saved answers (synthesis pages filed with Save), in addition to its normal pages">Use saved answers</mat-checkbox>
           <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>Topics</mat-label>
             <input matInput [(ngModel)]="topics" placeholder="e.g. 2 or 1-5 (empty = all 26)" /></mat-form-field>
           <mat-form-field appearance="outline" subscriptSizing="dynamic" class="runs"><mat-label>Runs</mat-label>
@@ -91,7 +92,7 @@ import { poller } from '../../shared/poll';
         @else { <span class="muted small">Tick two runs to compare</span> }
       </div>
       <table class="simple">
-        <thead><tr><th></th><th>Run</th><th>Compared</th><th>Sources</th><th>Topics × runs</th><th>RAG sim / cov</th><th>Wiki sim / cov</th><th>Wins (rag / wiki / tie)</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Run</th><th>Compared</th><th>Sources</th><th>Saved answers</th><th>Topics × runs</th><th>RAG sim / cov</th><th>Wiki sim / cov</th><th>Wins (rag / wiki / tie)</th><th>Status</th><th></th></tr></thead>
         <tbody>
           @for (r of list(); track r.id) {
             <tr>
@@ -99,6 +100,7 @@ import { poller } from '../../shared/poll';
               <td><a [routerLink]="[r.id]">{{ r.id }}</a><div class="muted small">{{ r.started | date: 'medium' }}</div></td>
               <td class="small">{{ r.rag_collection || '—' }}<span class="muted"> vs </span>{{ r.wiki || '—' }}</td>
               <td><span class="pill">{{ sourcesLabel(r.sources) }}</span></td>
+              <td><span class="pill">{{ r.use_saved === true ? 'On' : r.use_saved === false ? 'Off' : '—' }}</span></td>
               <td>{{ r.topics }} × {{ r.runs }}</td>
               @if (r.summary?.by_system; as b) {
                 <td><b>{{ b.rag.similarity.mean }}</b> / {{ b.rag.coverage.mean }}%</td>
@@ -143,6 +145,7 @@ export class BenchRuns {
   }, 5000);
   collection = '';
   sources: 'standard' | 'all' = 'all';
+  useSaved = true;
   topics = '2';
   runs = 1;
   wiki = '';
@@ -191,6 +194,7 @@ export class BenchRuns {
       fd.append('runs', String(this.runs));
       fd.append('collection', this.collection);
       fd.append('sources', this.sources);
+      fd.append('use_saved', String(this.useSaved));
       fd.append('wiki', this.wiki);
       const r = await this.api.post('/api/bench/runs', fd);
       this.watch(r.id);

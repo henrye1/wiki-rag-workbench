@@ -21,6 +21,7 @@ copy .env.example .env                  # set API_KEY, GEMINI_API_KEY
 - **Source**: raw, immutable input (PDF, DOCX, MD/TXT, URL or pasted text). IFRS-layout PDFs reuse the Rag paragraph parser (Standards, and their Parts B and C by IE / IG / BC… / DO numbering); a PDF whose layout is not recognised is kept page by page and the upload returns a warning.
 - **Page**: an LLM-maintained markdown page with a type (overview, topic, concept, entity, comparison, synthesis or source). Links use `[[slug]]` or `[[slug|label]]`. Every change is stored as a version.
 - **Changeset**: the proposed page edits from an ingest, a saved query or a lint fix.
+- **Saved answer**: a synthesis page filed with Save. It is never one of the pages chosen for a question; up to two saved answers relevant to the question are read in addition, as earlier answers to check against those pages (never cited). Uploads never use synthesis pages as material or rewrite them. When an applied change rewrites what a page says about a paragraph a saved answer cites, the saved answer is flagged **needs checking** (shown on the page, the pages list and the Jobs screen; cleared with *Mark as checked*).
   - `mode=auto` applies it straight away; `mode=review` leaves it pending.
   - At apply time, an op is skipped as a **conflict** if its page changed after the op was written.
 - **Job**: ingest and LLM lint run in the background. Poll `GET /jobs/{id}`. Jobs on the same wiki run one at a time.
@@ -34,7 +35,7 @@ copy .env.example .env                  # set API_KEY, GEMINI_API_KEY
 | `POST /wikis/{w}/sources?mode=` | upload file → `{job_id}` |
 | `POST /wikis/{w}/sources/url?mode=`, `/sources/text?mode=` | ingest a URL / pasted text |
 | `GET /wikis/{w}/sources`, `GET/DELETE /wikis/{w}/sources/{slug}` | raw sources |
-| `POST /wikis/{w}/query` `{question, save?, mode?, sources?}` | cited answer; `save` files it as a synthesis page; `sources`: `all` (default) or `standard` (only statements cited to a Standard, Part A) |
+| `POST /wikis/{w}/query` `{question, save?, mode?, sources?, use_saved?}` | cited answer; `save` files it as a synthesis page; `sources`: `all` (default) or `standard` (only statements cited to a Standard, Part A); `use_saved` (default true): also read relevant saved answers |
 | `POST /wikis/{w}/query/stream` | SSE events: `token`, `pages`, `done` |
 | `POST /wikis/{w}/lint` `{llm?, fix?, mode?}` | structural checks run immediately; with `llm` or `fix` it becomes a job |
 | `GET /jobs/{id}`, `GET /wikis/{w}/jobs` | job status, progress, result |

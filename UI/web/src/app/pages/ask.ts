@@ -91,7 +91,8 @@ const emptyPane = (): Pane => ({ text: '', running: false, error: '', sources: [
             @if (wikiPane().sources.length) {
               <div class="sources"><span class="muted">Pages read:</span>
                 @for (p of wikiPane().sources; track p.slug) {
-                  <button class="chip" [class.dim]="!p.cited" (click)="cites.openWiki(askedWiki, p.slug)">{{ p.title }}</button>
+                  <button class="chip" [class.dim]="!p.cited" [class.saved]="p.saved" (click)="cites.openWiki(askedWiki, p.slug)"
+                          [title]="p.saved ? 'Saved answer, read in addition to the pages' : ''">{{ p.saved ? 'Saved answer: ' : '' }}{{ p.title }}</button>
                 }
               </div>
             }
@@ -119,7 +120,7 @@ const emptyPane = (): Pane => ({ text: '', running: false, error: '', sources: [
     .sources { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
     .chip { border: 1px solid var(--mat-sys-outline-variant); background: var(--mat-sys-surface-container); color: inherit;
             border-radius: 12px; padding: 2px 10px; cursor: pointer; font-size: 12.5px; }
-    .chip.dim { opacity: .6; }
+    .chip.dim { opacity: .6; } .chip.saved { border-style: dashed; }
     .save { margin-top: 12px; }
     .small { font-size: 12px; } .sources { display: flex; align-items: center; gap: 8px; }`,
 })

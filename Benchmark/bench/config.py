@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     rag_collection: str = ""
     wiki_slug: str = ""
     sources: str = "all"  # "standard" (Part A only) or "all" (Parts A, B and C); always the same for both systems
+    use_saved: bool = True  # the wiki also reads relevant saved answers (synthesis pages filed with Save)
 
     # Results and uploaded inputs are stored in bench.runs
     database_url: str = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"  # local Supabase

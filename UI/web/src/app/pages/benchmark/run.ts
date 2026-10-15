@@ -19,6 +19,7 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki';
         @if (d.compared; as c) {
           <p class="compared"><b>{{ c.rag_collection || '—' }}</b> <span class="muted">vs</span> <b>{{ c.wiki || '—' }}</b> ·
             Sources: <span class="pill">{{ c.sources === 'standard' ? 'Standard only' : c.sources === 'all' ? 'All' : '—' }}</span>
+            · Saved answers: <span class="pill">{{ c.use_saved === true ? 'On' : c.use_saved === false ? 'Off' : 'not recorded' }}</span>
             <span class="muted small">(the same for both systems)</span></p>
         }
         <p class="muted">Judge {{ d.config.judge_model }} ({{ d.config.judge_effort }}) · {{ d.config.runs }} run(s) per topic ·
@@ -64,7 +65,7 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki';
         </div>
         <div class="scroll-x">
           <table class="simple">
-            <thead><tr><th>#</th><th>Topic</th><th>Points (std)</th><th>RAG sim</th><th>RAG cov</th><th>Wiki sim</th><th>Wiki cov</th><th>Gap</th><th>Wins r/w/t</th></tr></thead>
+            <thead><tr><th>#</th><th>Topic</th><th>Points (std)</th><th>RAG sim</th><th>RAG cov</th><th>Wiki sim</th><th>Wiki cov</th><th>Gap</th><th>Wins r/w/t</th><th>Saved answers read (wiki)</th></tr></thead>
             <tbody>
               @for (t of topics(); track t.number) {
                 <tr>
@@ -75,6 +76,7 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki';
                   <td><b>{{ t.wiki | number: '1.1-1' }}</b></td><td>{{ t.wikiCov | number: '1.0-0' }}%</td>
                   <td [class.pos]="t.gap > 0" [class.neg]="t.gap < 0">{{ t.gap > 0 ? '+' : '' }}{{ t.gap | number: '1.1-1' }}</td>
                   <td>{{ t.wins.rag }} / {{ t.wins.wiki }} / {{ t.wins.tie }}</td>
+                  <td class="small">@for (s of t.saved; track s) { <div>{{ s }}</div> } @empty { <span class="muted">none</span> }</td>
                 </tr>
               }
             </tbody>
@@ -115,6 +117,7 @@ export class BenchRun {
         points: t.key_points?.length ?? 0, std: (t.key_points ?? []).filter((p: any) => p.kind === 'standard').length,
         rag, wiki, ragCov: a.rag?.coverage?.mean, wikiCov: a.wiki?.coverage?.mean,
         gap: rag !== null && wiki !== null ? rag - wiki : 0, wins: a.wins ?? { rag: 0, wiki: 0, tie: 0 },
+        saved: [...new Set(Object.values<any>(t.runs ?? {}).flatMap((r) => r.systems?.wiki?.saved_answers_read ?? []))],
       };
     });
     const key = this.sort();

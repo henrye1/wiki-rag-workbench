@@ -19,6 +19,14 @@ import { Markdown } from '../../shared/markdown';
           <h2>{{ p.title }}</h2>
           <div class="muted meta"><span class="pill">{{ p.type }}</span>@for (t of p.tags; track t) { <span class="pill">{{ t }}</span> }
             v{{ p.version }} · updated {{ p.updated_at | date: 'medium' }}</div>
+          @if (p.saved_answer) { <p class="muted small">Saved answer: read when answering in addition to the wiki's pages, never as a source.</p> }
+          @if (p.needs_checking; as f) {
+            <div class="error flag">
+              <b>Needs checking</b> (since {{ f.since | date: 'medium' }}): what the wiki says about
+              {{ f.paragraphs.join(', ') }} changed in {{ f.pages.join(', ') }} ({{ f.why }}).
+              <button mat-stroked-button (click)="markChecked()">Mark as checked</button>
+            </div>
+          }
           @if (p.summary) { <p class="muted"><em>{{ p.summary }}</em></p> }
           <app-md [text]="p.content_md" [wiki]="w()" [existing]="existing()" wikiLinks="navigate" [cites]="false" />
         </article>
@@ -59,6 +67,7 @@ import { Markdown } from '../../shared/markdown';
     }
   `,
   styles: `
+    .flag { margin: 8px 0; padding: 8px 12px; border: 1px solid var(--mat-sys-error); border-radius: 8px; } .small { font-size: 12px; }
     .layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 24px; }
     @media (max-width: 1000px) { .layout { grid-template-columns: 1fr; } }
     h2 { font: var(--mat-sys-headline-small); margin: 12px 0 4px; }
@@ -102,6 +111,15 @@ export class WikiPage {
     const old = await this.api.get(`/api/wiki/wikis/${enc(this.w())}/pages/${enc(this.slug())}/versions/${v}`);
     this.selected.set(old);
     this.diff.set(unifiedDiff(old.content_md, this.page().content_md));
+  }
+
+  async markChecked() {
+    try {
+      await this.api.delete(`/api/wiki/wikis/${enc(this.w())}/pages/${enc(this.slug())}/needs-checking`);
+      await this.load(this.w(), this.slug());
+    } catch (e) {
+      this.error.set(errMsg(e));
+    }
   }
 
   async revert(v: number) {

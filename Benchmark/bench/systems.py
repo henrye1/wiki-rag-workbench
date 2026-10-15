@@ -35,8 +35,10 @@ async def ask(client: httpx.AsyncClient, system: str, question: str) -> dict:
         sources = [c.get("para_ref") or c.get("chunk_id") for c in data.get("citations", [])]
     else:
         data = await _post(client, f"{s.wiki_url}/wikis/{s.wiki_slug}/query", s.wiki_api_key,
-                           {"question": question, "save": False, "sources": s.sources})
+                           {"question": question, "save": False, "sources": s.sources, "use_saved": s.use_saved})
         sources = [p["slug"] for p in data.get("pages", []) if p.get("cited")]
+        read = [p["slug"] for p in data.get("pages", []) if p.get("saved")]  # saved answers read with the pages
+        return {"answer": data["answer"], "sources": sources, "saved_answers_read": read, "latency_s": round(time.perf_counter() - t0, 2)}
     return {"answer": data["answer"], "sources": sources, "latency_s": round(time.perf_counter() - t0, 2)}
 
 

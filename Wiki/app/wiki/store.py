@@ -9,6 +9,7 @@ from .. import llm, storage
 from ..config import get_settings
 from ..db import get_pool
 from ..sources.text import split_long
+from . import saved
 
 PAGE_TYPES = ("overview", "topic", "concept", "entity", "comparison", "synthesis", "source")
 LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]")
@@ -166,6 +167,7 @@ async def apply_changeset(changeset_id: UUID, force: bool = False) -> dict:
     embedded = {slug: [(c, next(vec_iter)) for c in chunks] for slug, chunks in to_embed.items()}
 
     applied, conflicts = [], []
+    changes: dict[str, set] = {}  # page -> paragraphs whose write-up this changeset changes (for saved answers)
     async with get_pool().connection() as conn, conn.transaction():
         for o in ops:
             page = await (
@@ -178,6 +180,8 @@ async def apply_changeset(changeset_id: UUID, force: bool = False) -> dict:
                 if o.base_version is not None and page["version"] != o.base_version:
                     conflicts.append({"slug": o.slug, "reason": f"page is at v{page['version']}, op written against v{o.base_version}"})
                     continue
+            if (o.type or (page or {}).get("type")) != "synthesis":
+                changes[o.slug] = saved.changed_clauses(page["content_md"] if page else "", "" if o.op == "delete" else o.content_md or "")
             if o.op == "delete":
                 if page:
                     await conn.execute("delete from wiki.pages where id = %s", (page["id"],))
@@ -216,11 +220,14 @@ async def apply_changeset(changeset_id: UUID, force: bool = False) -> dict:
                 )
             applied.append({"slug": o.slug, "op": action, "version": row["version"]})
         await conn.execute("update wiki.changesets set status='applied', applied_at=now() where id=%s", (changeset_id,))
+        applied_slugs = {a["slug"] for a in applied}
+        to_check = await saved.flag_changed(conn, wiki_id, {k: v for k, v in changes.items() if k in applied_slugs},
+                                            cs["summary"] or cs["kind"])
         detail = "\n".join(f"- {a['op']} [[{a['slug']}]]" for a in applied)
         if conflicts:
             detail += "\n\nConflicts (skipped):\n" + "\n".join(f"- [[{c['slug']}]]: {c['reason']}" for c in conflicts)
         await add_log(wiki_id, "apply", cs["summary"] or f"{cs['kind']} changeset", detail, conn=conn)
-    return {"changeset_id": str(changeset_id), "applied": applied, "conflicts": conflicts}
+    return {"changeset_id": str(changeset_id), "applied": applied, "conflicts": conflicts, "saved_answers_to_check": to_check}
 
 
 async def _reindex_page(conn, wiki_id: UUID, page_id: UUID, md: str, chunks: list[tuple[str, list[float]]]):
@@ -302,9 +309,9 @@ async def render_index(wiki: dict) -> str:
     return "\n".join(lines)
 
 
-async def compact_index(wiki_id: UUID, limit_chars: int = 60000) -> str:
+async def compact_index(wiki_id: UUID, limit_chars: int = 60000, exclude_types: tuple[str, ...] = ()) -> str:
     """Compact catalog for LLM prompts: slug | type | title | summary."""
-    pages = await list_pages(wiki_id)
+    pages = [p for p in await list_pages(wiki_id) if p["type"] not in exclude_types]
     out, size = [], 0
     for p in pages:
         line = f"{p['slug']} | {p['type']} | {p['title']} | {p['summary']}"

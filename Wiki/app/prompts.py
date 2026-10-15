@@ -300,6 +300,25 @@ def query_prompt(question: str, pages_md: str) -> str:
     return f"<wiki_pages>\n{pages_md}\n</wiki_pages>\n\nQuestion: {question}"
 
 
+def select_saved_prompt(question: str, listing: str) -> str:
+    return (
+        "These are saved answers: earlier questions answered from the wiki and filed back into it. Pick at most 2 that "
+        "answer the same question or a closely related one, so they can be read alongside the wiki pages. Return their "
+        "slugs; return none if none is clearly related.\n\n"
+        f"<saved_answers>\nslug | title | summary\n{listing}\n</saved_answers>\n\nQuestion: {question}"
+    )
+
+
+def query_saved_prompt(question: str, pages_md: str, saved_md: str) -> str:
+    return (
+        f"<wiki_pages>\n{pages_md}\n</wiki_pages>\n\n<saved_answers>\n{saved_md}\n</saved_answers>\n\n"
+        "The saved answers are earlier answers filed back into the wiki, given only as a guide. Check every point against "
+        "the wiki pages: state only what the wiki pages support, citing the wiki pages and their source paragraphs as usual. "
+        "Never cite a saved answer, and do not repeat a point from a saved answer that the wiki pages do not support.\n\n"
+        f"Question: {question}"
+    )
+
+
 def save_answer_prompt(question: str, answer: str, linkable: str) -> str:
     return (
         "Turn this question and answer into a synthesis page for the wiki. Keep every citation link. "

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..db import get_pool
-from ..wiki import store
+from ..wiki import saved, store
 from ..wiki.store import PAGE_TYPES, Op
 from .deps import wiki_dep
 
@@ -19,9 +19,15 @@ class PageIn(BaseModel):
     change_note: str = "Manual edit"
 
 
+async def _saved_and_flags(wiki_id) -> tuple[set[str], dict[str, dict]]:
+    async with get_pool().connection() as conn:
+        return {r["slug"] for r in await saved.saved_answers(conn, wiki_id)}, await saved.flags(conn, wiki_id)
+
+
 @router.get("/wikis/{w}/pages")
 async def list_pages(wiki: dict = Depends(wiki_dep)):
-    return await store.list_pages(wiki["id"])
+    keep, flags = await _saved_and_flags(wiki["id"])
+    return [{**p, "saved_answer": p["slug"] in keep, "needs_checking": flags.get(p["slug"])} for p in await store.list_pages(wiki["id"])]
 
 
 async def _page_or_404(wiki: dict, slug: str) -> dict:
@@ -34,7 +40,17 @@ async def _page_or_404(wiki: dict, slug: str) -> dict:
 @router.get("/wikis/{w}/pages/{slug}")
 async def get_page(slug: str, wiki: dict = Depends(wiki_dep)):
     page = await _page_or_404(wiki, slug)
-    return {**page, "backlinks": await store.backlinks(wiki["id"], slug), "sources": await store.page_sources(page["id"])}
+    keep, flags = await _saved_and_flags(wiki["id"])
+    return {**page, "backlinks": await store.backlinks(wiki["id"], slug), "sources": await store.page_sources(page["id"]),
+            "saved_answer": slug in keep, "needs_checking": flags.get(slug)}
+
+
+@router.delete("/wikis/{w}/pages/{slug}/needs-checking", status_code=204)
+async def mark_checked(slug: str, wiki: dict = Depends(wiki_dep)):
+    """Clear a saved answer's "needs checking" flag once it has been checked."""
+    page = await _page_or_404(wiki, slug)
+    async with get_pool().connection() as conn:
+        await conn.execute("delete from wiki.page_flags where page_id = %s and kind = 'needs_checking'", (page["id"],))
 
 
 @router.put("/wikis/{w}/pages/{slug}")

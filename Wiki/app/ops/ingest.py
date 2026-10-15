@@ -400,8 +400,9 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
 
     # 3. Plan
     await ctx.progress(stage="plan")
-    index = await store.compact_index(wiki_id)
-    hits = await search.search_many(wiki_id, _names(notes), k=3)
+    # synthesis pages (answers filed back from queries) are never source material: not offered to the planner
+    index = await store.compact_index(wiki_id, exclude_types=("synthesis",))
+    hits = [h for h in await search.search_many(wiki_id, _names(notes), k=3) if h["type"] != "synthesis"]
     candidates = "\n".join(f"{h['slug']} | {h['type']} | {h['title']} | {h['summary']}" for h in hits[:40]) or "(none)"
     plan = await llm.generate_json(
         system,
@@ -414,6 +415,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         slug = slugify(p["slug"])
         if slug in seen or (p["type"] == "overview" and slug != "overview"):  # `overview` is the only top-level page
             continue
+        if p["type"] == "synthesis" or existing.get(slug, {}).get("type") == "synthesis":
+            continue  # only queries file synthesis pages; an upload never writes or rewrites one
         seen.add(slug)
         items.append({**p, "slug": slug, "action": "update" if slug in existing else "create"})
     if "overview" not in seen:
@@ -649,6 +652,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     await ctx.progress(stage="commit")
     summary = f"Ingest: {ex.title}"
     result = await store.commit(wiki_id, "ingest", summary, ops, mode, job_id=ctx.id, source_id=source["id"])
+    if result.get("saved_answers_to_check"):
+        await ctx.progress(saved_answers_to_check=result["saved_answers_to_check"])
     detail = f"Source [[{source['slug']}]] ({ex.kind}, {len(ex.sections)} sections). {plan['source_summary']}\n" + "\n".join(
         f"- {o.op} [[{o.slug}]]: {o.change_note}" for o in ops
     )
