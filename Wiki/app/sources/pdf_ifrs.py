@@ -20,6 +20,11 @@ PARA_RE = re.compile(r"^(?:B|C|BCZ?|IE|IG)?\d+(?:\.\d+)*[A-Z]{0,2}$")
 # IE = illustrative example, IG = implementation guidance, BC/BCZ/BCIN/BCE/... = Basis for Conclusions, DO = dissenting opinion
 ACCOMPANYING_RE = re.compile(r"^(IE|IG|BC[A-Z]{0,3}|DO)(?:\d+|\.\d+)(?:\.\d+)*[A-Z]{0,2}$")
 ACCOMPANYING_KINDS = {"IE": "example", "IG": "implementation_guidance", "DO": "dissenting_opinion"}  # BC... -> basis_for_conclusions
+# Implementation guidance numbers its questions in their headings ("A.1 Practice of settling net: ..."), not in the margin
+IG_HEADING_RE = re.compile(r"^([A-G])\.(\d+)\s+\S")
+IG_TITLE_RE = re.compile(r"^Guidance on implementing\b", re.I)  # its title; the note under it says the guidance is not part of the Standard
+IG_INTRO = "IG introduction"
+PLACEHOLDER = "not included in this edition"
 RANGE_DASH = ("\u2013", "-")  # "BC2.17A–" continued by "BC2.17H" on the next line: a range of deleted paragraphs
 EDITORIAL_BRACKETS = re.compile(r"\[(?:Refer|Note|Link|now)\b[^\]]*\]", re.I)
 MARGIN_MAX_X = 150
@@ -163,6 +168,22 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
                         section = new_section
                         cur = _Para(None, section, pno, None)
                     heading = " ".join(heading_buf)
+                    if accompanying:
+                        m = IG_HEADING_RE.match(text) if len(heading_buf) == 1 else None
+                        if m:  # a guidance question starts here: label it IG A.1, IG B.2, ...
+                            flush()
+                            cur = _Para(f"IG {m.group(1)}.{m.group(2)}", "implementation_guidance", pno, heading)
+                        elif IG_TITLE_RE.match(text) and len(heading_buf) == 1:
+                            # the guidance's title: the note under it (that the guidance accompanies, but is not part of, the
+                            # Standard) is kept as its own block; a contents list under an earlier copy of the title is dropped
+                            if cur.ref != IG_INTRO:
+                                flush()
+                            cur = _Para(IG_INTRO, "implementation_guidance", pno, heading)
+                        elif cur.ref and cur.ref.startswith("IG ") and len(heading_buf) > 1 and cur.heading == " ".join(heading_buf[:-1]):
+                            cur.heading = heading  # the heading runs over two lines
+                        elif PLACEHOLDER in " ".join(cur.body):
+                            flush()  # a placeholder holds only its own note: text after the next heading is not part of it
+                            cur = _Para(None, section, pno, heading)
                     continue
                 if accompanying:
                     margin_label = x < MARGIN_MAX_X and font.startswith("Swift") and ACCOMPANYING_RE.match(text.rstrip("".join(RANGE_DASH)))
