@@ -36,7 +36,7 @@ async def _select_pages(wiki: dict, question: str) -> list[dict]:
 async def _select_saved(wiki: dict, question: str) -> list[dict]:
     """Saved answers to the same or a closely related question (at most 2), read in addition to the pages."""
     async with get_pool().connection() as conn:
-        rows = await saved.saved_answers(conn, wiki["id"])
+        rows = await saved.saved_answers(conn, wiki["id"], readable_only=True)
     if not rows:
         return []
     listing = "\n".join(f"{r['slug']} | {r['title']} | {r['summary']}" for r in rows)

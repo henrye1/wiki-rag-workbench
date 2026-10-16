@@ -21,11 +21,21 @@ import { Markdown } from '../../shared/markdown';
             v{{ p.version }} · updated {{ p.updated_at | date: 'medium' }}</div>
           @if (p.saved_answer) { <p class="muted small">Saved answer: read when answering in addition to the wiki's pages, never as a source.</p> }
           @if (p.needs_checking; as f) {
-            <div class="error flag">
-              <b>Needs checking</b> (since {{ f.since | date: 'medium' }}): what the wiki says about
-              {{ f.paragraphs.join(', ') }} changed in {{ f.pages.join(', ') }} ({{ f.why }}).
-              <button mat-stroked-button (click)="markChecked()">Mark as checked</button>
-            </div>
+            @if (f.kind === 'citation_problems') {
+              <div class="error flag">
+                <b>Needs checking</b> (since {{ f.since | date: 'medium' }}): {{ f.why }}. Ask and the benchmark do not read it
+                until it is saved again with no citation problems.
+                <ul>@for (x of f.problems ?? []; track $index) { <li>{{ x.kind }}: <code>{{ x.link }}</code> — {{ x.detail }}</li> }</ul>
+              </div>
+            }
+            @let changed = f.kind === 'needs_checking' ? f : f.also;
+            @if (changed) {
+              <div class="error flag">
+                <b>Needs checking</b> (since {{ changed.since | date: 'medium' }}): what the wiki says about
+                {{ changed.paragraphs.join(', ') }} changed in {{ changed.pages.join(', ') }} ({{ changed.why }}).
+                <button mat-stroked-button (click)="markChecked()">Mark as checked</button>
+              </div>
+            }
           }
           @if (p.summary) { <p class="muted"><em>{{ p.summary }}</em></p> }
           <app-md [text]="p.content_md" [wiki]="w()" [existing]="existing()" wikiLinks="navigate" [cites]="false" />

@@ -18,14 +18,31 @@ SAVED_SQL = (
 CITE_RE = re.compile(r"\[\[(source-[^\]|#]+)(?:#[^\]|]*)?\|([^\]]+)\]\]")
 
 
-async def saved_answers(conn, wiki_id: UUID) -> list[dict]:
+async def saved_answers(conn, wiki_id: UUID, readable_only: bool = False) -> list[dict]:
+    """Saved answers; readable_only leaves out those saved with citation problems (not read until saved again cleanly)."""
+    blocked = (" and not exists (select 1 from wiki.page_flags f where f.page_id = p.id and f.kind = 'citation_problems')"
+               if readable_only else "")
     return await (
         await conn.execute(
             f"select p.id, p.slug, p.title, p.summary, p.type, p.content_md, p.updated_at from wiki.pages p "
-            f"where p.wiki_id = %s and {SAVED_SQL} order by p.updated_at desc",
+            f"where p.wiki_id = %s and {SAVED_SQL}{blocked} order by p.updated_at desc",
             (wiki_id,),
         )
     ).fetchall()
+
+
+async def set_citation_problems(conn, page_id, problems: list[dict]) -> None:
+    """A synthesis saved with citation problems is flagged and not read; saving it again without problems clears it."""
+    if not problems:
+        await conn.execute("delete from wiki.page_flags where page_id = %s and kind = 'citation_problems'", (page_id,))
+        return
+    detail = {"why": f"saved with {len(problems)} citation problem(s)", "paragraphs": [x["link"] for x in problems][:50],
+              "pages": [], "problems": problems[:50]}
+    await conn.execute(
+        """insert into wiki.page_flags (page_id, kind, detail) values (%s, 'citation_problems', %s)
+           on conflict (page_id, kind) do update set detail = excluded.detail, updated_at = now()""",
+        (page_id, Jsonb(detail)),
+    )
 
 
 def _statements(md: str) -> dict[tuple[str, str], set[str]]:
@@ -75,11 +92,17 @@ async def flag_changed(conn, wiki_id: UUID, changes: dict[str, set[tuple[str, st
 
 
 async def flags(conn, wiki_id: UUID) -> dict[str, dict]:
+    """Pages that need checking: saved with citation problems (shown first; not read) or a cited paragraph rewritten."""
     rows = await (
         await conn.execute(
-            """select p.slug, f.detail, f.updated_at from wiki.page_flags f join wiki.pages p on p.id = f.page_id
-               where p.wiki_id = %s and f.kind = 'needs_checking'""",
+            """select p.slug, f.kind, f.detail, f.updated_at from wiki.page_flags f join wiki.pages p on p.id = f.page_id
+               where p.wiki_id = %s and f.kind in ('needs_checking', 'citation_problems')
+               order by (f.kind = 'citation_problems')""",
             (wiki_id,),
         )
     ).fetchall()
-    return {r["slug"]: {**r["detail"], "since": r["updated_at"].isoformat(timespec="seconds")} for r in rows}
+    out: dict[str, dict] = {}
+    for r in rows:  # citation problems come last, so they win; the other flag is kept alongside
+        entry = {**r["detail"], "kind": r["kind"], "since": r["updated_at"].isoformat(timespec="seconds")}
+        out[r["slug"]] = {**entry, "also": out[r["slug"]]} if r["slug"] in out else entry
+    return out

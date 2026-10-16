@@ -28,7 +28,7 @@ const TYPES = ['overview', 'topic', 'concept', 'entity', 'comparison', 'synthesi
             <tr>
               <td class="t"><a [routerLink]="[p.slug]">{{ p.title }}</a>
                 @if (p.saved_answer) { <span class="pill">saved answer</span> }
-                @if (p.needs_checking) { <span class="pill bad" [title]="p.needs_checking.paragraphs.join(', ')">needs checking</span> }</td>
+                @if (p.needs_checking) { <span class="pill bad" [title]="p.needs_checking.why + ': ' + p.needs_checking.paragraphs.join(', ')">needs checking</span> }</td>
               <td class="muted">{{ p.summary }}</td>
               <td class="muted nowrap">v{{ p.version }} · {{ p.updated_at | date: 'short' }}</td>
             </tr>

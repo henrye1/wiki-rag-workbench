@@ -112,8 +112,8 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
             <mat-icon>summarize</mat-icon> Create synthesis</button>
           @if (synthBusy() && !draft()) { <span class="muted small">Drafting…</span> }
           @if (synthSaved(); as s) {
-            <span class="muted">Saved as <a [routerLink]="['/wiki', s.wiki, 'pages', s.slug]">{{ s.slug }}</a>
-              {{ s.problems?.length ? '(' + s.problems.length + ' citation problem(s) noted)' : '' }}</span>
+            <span class="muted">Saved as <a [routerLink]="['/wiki', s.wiki, 'pages', s.slug]">{{ s.slug }}</a></span>
+            @if (s.needs_checking) { <span class="pill bad" title="Ask and the benchmark do not read it until it is saved again with no citation problems">needs checking: {{ s.problems.length }} citation problem(s)</span> }
           }
           @if (synthError()) { <span class="error">{{ synthError() }}</span> }
         </div>
@@ -149,6 +149,7 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
             <div class="row">
               <button mat-flat-button (click)="saveSynthesis()" [disabled]="synthBusy() || !d.title.trim() || !d.content_md.trim()">
                 {{ d.confirm && d.problems?.length ? 'Save anyway (' + d.problems.length + ' problem(s))' : 'Save' }}</button>
+              @if (d.confirm && d.problems?.length) { <span class="warn small">Saved with problems, it is marked "needs checking" and not read by Ask or the benchmark until saved again without problems.</span> }
               <button mat-stroked-button (click)="recheck()" [disabled]="synthBusy()">Check again</button>
               <button mat-button (click)="draft.set(null)" [disabled]="synthBusy()">Cancel</button>
               @if (synthBusy()) { <span class="muted small">Checking…</span> }

@@ -91,4 +91,7 @@ async def save(wiki: dict, page: dict, answers: list[dict]) -> dict:
     res = await store.commit(wiki["id"], "query", f"Synthesis: {page['title']}", [op], "auto")
     if res.get("conflicts"):
         raise ValueError(f"The page changed while you were editing: {res['conflicts'][0]['reason']}")
-    return {"slug": page["slug"], "status": res["status"], **result}
+    async with get_pool().connection() as conn:  # saved with problems: needs checking, and not read until saved cleanly
+        row = await (await conn.execute("select id from wiki.pages where wiki_id = %s and slug = %s", (wiki["id"], page["slug"]))).fetchone()
+        await saved.set_citation_problems(conn, row["id"], result["problems"])
+    return {"slug": page["slug"], "status": res["status"], "needs_checking": bool(result["problems"]), **result}
