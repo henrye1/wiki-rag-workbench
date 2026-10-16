@@ -319,6 +319,32 @@ def query_saved_prompt(question: str, pages_md: str, saved_md: str) -> str:
     )
 
 
+SYNTHESIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string", "description": "A concise descriptive title for what the chat established"},
+        "summary": {"type": "string", "description": "One line for the index"},
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "content_md": {"type": "string", "description": "The consolidated summary (markdown, no top-level # title, no list of the questions)"},
+    },
+    "required": ["title", "summary", "tags", "content_md"],
+}
+
+
+def synthesis_prompt(chat_title: str, answers: str) -> str:
+    return (
+        f"These are the wiki's answers to the questions of one chat (\"{chat_title}\"), oldest first. Write ONE consolidated "
+        "summary of what they establish, organised by topic, for a synthesis page.\n"
+        "- Use only what the answers say: no outside knowledge, no new facts, no conclusions they do not draw.\n"
+        "- Keep each statement's citations exactly as they appear in the answers (same [[...]] links, same labels); cite "
+        "nothing that is not in the answers. Where answers repeat a point, state it once.\n"
+        "- If answers differ or one is narrower than another, say so rather than merging them.\n"
+        "- Do not list the questions or the dates: they are recorded on the page separately.\n"
+        "- Write plain markdown (headings, paragraphs, - bullet lists); never HTML tags such as <ul> or <li>.\n\n"
+        f"<answers>\n{answers}\n</answers>"
+    )
+
+
 def save_answer_prompt(question: str, answer: str, linkable: str) -> str:
     return (
         "Turn this question and answer into a synthesis page for the wiki. Keep every citation link. "

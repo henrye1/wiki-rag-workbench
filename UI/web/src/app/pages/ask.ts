@@ -106,6 +106,56 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
           </div>
         </div>
 
+        <div class="row synth">
+          <button mat-stroked-button (click)="createSynthesis()" [disabled]="!canSynthesize() || synthBusy() || !!draft()"
+                  [title]="canSynthesize() ? 'Draft one summary of this chat from its wiki answers' : 'The chat has no wiki answers yet'">
+            <mat-icon>summarize</mat-icon> Create synthesis</button>
+          @if (synthBusy() && !draft()) { <span class="muted small">Drafting…</span> }
+          @if (synthSaved(); as s) {
+            <span class="muted">Saved as <a [routerLink]="['/wiki', s.wiki, 'pages', s.slug]">{{ s.slug }}</a>
+              {{ s.problems?.length ? '(' + s.problems.length + ' citation problem(s) noted)' : '' }}</span>
+          }
+          @if (synthError()) { <span class="error">{{ synthError() }}</span> }
+        </div>
+        @if (draft(); as d) {
+          <div class="card draft">
+            <div class="row"><h3 class="grow">Synthesis draft · {{ d.wiki }}</h3>
+              <span class="muted small">{{ d.answers.length }} wiki answer(s){{ d.other ? ' · ' + d.other + ' from another wiki left out' : '' }}</span></div>
+            <p class="muted small">Page <b>{{ d.slug }}</b>{{ d.exists ? ' already exists (v' + d.version + '): saving updates it' : ' (new)' }}.
+              Nothing is saved until you press Save.</p>
+            <div class="row">
+              <mat-form-field class="grow" appearance="outline" subscriptSizing="dynamic"><mat-label>Title</mat-label>
+                <input matInput [(ngModel)]="d.title" (ngModelChange)="draftEdited()" /></mat-form-field>
+              <mat-form-field class="grow" appearance="outline" subscriptSizing="dynamic"><mat-label>Summary</mat-label>
+                <input matInput [(ngModel)]="d.summary" (ngModelChange)="draftEdited()" /></mat-form-field>
+            </div>
+            <div class="row"><span class="grow"></span>
+              <mat-button-toggle-group [(ngModel)]="preview" hideSingleSelectionIndicator>
+                <mat-button-toggle [value]="false">Edit</mat-button-toggle><mat-button-toggle [value]="true">Preview</mat-button-toggle>
+              </mat-button-toggle-group></div>
+            @if (preview) { <div class="previewbox"><app-md [text]="d.content_md" [wiki]="d.wiki" [cites]="false" /></div> }
+            @else {
+              <textarea class="editor" [(ngModel)]="d.content_md" (ngModelChange)="draftEdited()" spellcheck="false"></textarea>
+            }
+            <div class="problems">
+              @if (d.content_md !== d.checkedText) { <p class="warn small">Edited since the last check: it is checked again before saving.</p> }
+              @if (d.problems?.length) {
+                <b>Citation problems ({{ d.problems.length }})</b>
+                <ul>@for (p of d.problems; track $index) {
+                  <li><span class="pill bad">{{ p.kind }}</span> <code>{{ p.link }}</code> — {{ p.detail }}{{ p.count > 1 ? ' (×' + p.count + ')' : '' }}</li>
+                }</ul>
+              } @else { <p class="muted small">No citation problems found.</p> }
+            </div>
+            <div class="row">
+              <button mat-flat-button (click)="saveSynthesis()" [disabled]="synthBusy() || !d.title.trim() || !d.content_md.trim()">
+                {{ d.confirm && d.problems?.length ? 'Save anyway (' + d.problems.length + ' problem(s))' : 'Save' }}</button>
+              <button mat-stroked-button (click)="recheck()" [disabled]="synthBusy()">Check again</button>
+              <button mat-button (click)="draft.set(null)" [disabled]="synthBusy()">Cancel</button>
+              @if (synthBusy()) { <span class="muted small">Checking…</span> }
+            </div>
+          </div>
+        }
+
         <div class="thread">
           @for (m of messages(); track $index; let i = $index) {
             <div class="msg">
@@ -152,15 +202,6 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
                         @for (pg of p.pages; track pg.slug) {
                           <button class="chip" [class.dim]="!pg.cited" [class.saved]="pg.saved" (click)="cites.openWiki(m.wiki_slug ?? '', pg.slug)"
                                   [title]="pg.saved ? 'Saved answer, read in addition to the pages' : ''">{{ pg.saved ? 'Saved answer: ' : '' }}{{ pg.title }}</button>
-                        }
-                      </div>
-                    }
-                    @if (!p.running && p.answer && !p.error) {
-                      <div class="row save">
-                        @if (p.saved; as s) {
-                          <span class="muted">Saved as <a [routerLink]="['/wiki', m.wiki_slug, s.status === 'applied' ? 'pages' : 'changesets', s.status === 'applied' ? s.slug : s.changeset_id]">{{ s.slug }}</a> ({{ s.status }})</span>
-                        } @else {
-                          <button mat-stroked-button (click)="save(i)" [disabled]="saving()"><mat-icon>bookmark_add</mat-icon> Save answer as wiki page</button>
                         }
                       </div>
                     }
@@ -211,7 +252,13 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
     .chips { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
     .chip { border: 1px solid var(--mat-sys-outline-variant); background: var(--mat-sys-surface-container); color: inherit; border-radius: 12px; padding: 2px 10px; cursor: pointer; font-size: 12.5px; }
     .chip.dim { opacity: .6; } .chip.saved { border-style: dashed; }
-    .save { margin-top: 12px; }
+    .synth { margin-top: 12px; gap: 12px; align-items: center; }
+    .draft { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .draft h3 { margin: 0; }
+    .editor { width: 100%; min-height: 360px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.45;
+              background: var(--mat-sys-surface-container); color: inherit; border: 1px solid var(--mat-sys-outline-variant); border-radius: 8px; padding: 10px; box-sizing: border-box; }
+    .previewbox { border: 1px solid var(--mat-sys-outline-variant); border-radius: 8px; padding: 4px 14px; max-height: 520px; overflow: auto; }
+    .problems ul { margin: 6px 0 0; padding-left: 18px; } .problems li { margin: 3px 0; }
     .composer { position: sticky; bottom: 0; display: flex; gap: 8px; align-items: flex-start; padding: 12px 0; background: var(--mat-sys-surface); margin-top: 16px; }
     .composer .full { flex: 1; }
     .small { font-size: 12px; } .warn { color: #8a5a00; }`,
@@ -233,7 +280,11 @@ export class Ask {
   readonly chatId = signal<string | null>(null);
   readonly messages = signal<Msg[]>([]);
   readonly busy = signal(false);
-  readonly saving = signal(false);
+  readonly draft = signal<any>(null);
+  readonly synthBusy = signal(false);
+  readonly synthError = signal('');
+  readonly synthSaved = signal<any>(null);
+  preview = false;
   readonly error = signal('');
   readonly renaming = signal<string | null>(null);
   readonly deleting = signal<string | null>(null);
@@ -269,6 +320,8 @@ export class Ask {
     this.chatId.set(null);
     this.remember(null);
     this.messages.set([]);
+    this.draft.set(null);
+    this.synthSaved.set(null);
     this.question = '';
     this.error.set('');
   }
@@ -280,6 +333,8 @@ export class Ask {
       const c = await this.api.get<any>(`/api/ask/chats/${enc(id)}`);
       this.chatId.set(id);
       this.remember(id);
+      this.draft.set(null);
+      this.synthSaved.set(null);
       this.messages.set(c.messages.map((m: any) => ({ ...m, rag: stored(m.rag), wiki: stored(m.wiki) })));
       const last = c.messages[c.messages.length - 1];
       if (last) {  // carry on with the last message's settings
@@ -390,16 +445,73 @@ export class Ask {
     }
   }
 
-  async save(i: number) {
-    const m = this.messages()[i];
-    this.saving.set(true);
+  /** The chat's wiki answers for a synthesis: the latest wiki's, oldest first; RAG-only and failed answers are skipped. */
+  synthAnswers() {
+    const ok = this.messages().filter((m) => m.wiki && !m.wiki.running && !m.wiki.error && m.wiki.answer.trim() && m.created_at);
+    const wiki = ok.length ? ok[ok.length - 1].wiki_slug : null;
+    const mine = ok.filter((m) => m.wiki_slug === wiki);
+    return {
+      wiki, other: ok.length - mine.length,
+      answers: mine.map((m) => ({ searched: m.searched, answer: m.wiki!.answer, sources: m.sources, date: m.created_at! })),
+    };
+  }
+
+  canSynthesize() { return !this.busy() && !!this.chatId() && this.synthAnswers().answers.length > 0; }
+
+  async createSynthesis() {
+    const { wiki, other, answers } = this.synthAnswers();
+    if (!wiki || !answers.length) return;
+    this.synthBusy.set(true);
+    this.synthError.set('');
+    this.synthSaved.set(null);
     try {
-      const r = await this.api.post(`/api/wiki/wikis/${enc(m.wiki_slug!)}/query`, { question: m.searched, save: true, mode: 'auto', sources: m.sources });
-      this.patch(i, (x) => ({ ...x, wiki: { ...x.wiki!, saved: r.saved } }));
+      const title = this.chats().find((c) => c.id === this.chatId())?.title ?? '';
+      const d = await this.api.post<any>(`/api/wiki/wikis/${enc(wiki)}/synthesis/draft`, { chat_id: this.chatId(), chat_title: title, answers });
+      this.draft.set({ ...d, wiki, answers, other, checkedText: d.content_md, confirm: false });
     } catch (e) {
-      this.patch(i, (x) => ({ ...x, wiki: { ...x.wiki!, error: errMsg(e) } }));
+      this.synthError.set(errMsg(e));
     } finally {
-      this.saving.set(false);
+      this.synthBusy.set(false);
+    }
+  }
+
+  draftEdited() { this.draft.update((d) => ({ ...d, confirm: false })); }
+
+  async checkDraft(): Promise<any> {
+    const d = this.draft();
+    const r = await this.api.post<any>(`/api/wiki/wikis/${enc(d.wiki)}/synthesis/check`, { content_md: d.content_md, answers: d.answers });
+    this.draft.update((x) => ({ ...x, problems: r.problems, checkedText: x.content_md }));
+    return r;
+  }
+
+  async recheck() {
+    this.synthBusy.set(true);
+    try { await this.checkDraft(); } catch (e) { this.synthError.set(errMsg(e)); } finally { this.synthBusy.set(false); }
+  }
+
+  /** Save: check the (edited) text again first; with problems, ask once more before saving. */
+  async saveSynthesis() {
+    this.synthBusy.set(true);
+    this.synthError.set('');
+    try {
+      const d0 = this.draft();
+      if (d0.content_md !== d0.checkedText || !d0.confirm) {
+        const r = await this.checkDraft();
+        if (r.problems.length && !d0.confirm) {
+          this.draft.update((x) => ({ ...x, confirm: true }));
+          return;
+        }
+      }
+      const d = this.draft();
+      const r = await this.api.post<any>(`/api/wiki/wikis/${enc(d.wiki)}/synthesis`, {
+        slug: d.slug, title: d.title, summary: d.summary, tags: d.tags, content_md: d.content_md, answers: d.answers,
+      });
+      this.synthSaved.set({ ...r, wiki: d.wiki });
+      this.draft.set(null);
+    } catch (e) {
+      this.synthError.set(errMsg(e));
+    } finally {
+      this.synthBusy.set(false);
     }
   }
 }

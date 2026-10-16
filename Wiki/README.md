@@ -37,6 +37,9 @@ copy .env.example .env                  # set API_KEY, GEMINI_API_KEY
 | `GET /wikis/{w}/sources`, `GET/DELETE /wikis/{w}/sources/{slug}` | raw sources |
 | `POST /wikis/{w}/query` `{question, save?, mode?, sources?, use_saved?}` | cited answer; `save` files it as a synthesis page; `sources`: `all` (default) or `standard` (only statements cited to a Standard, Part A); `use_saved` (default true): also read relevant saved answers |
 | `POST /wikis/{w}/query/stream` | SSE events: `token`, `pages`, `done` |
+| `POST /wikis/{w}/synthesis/draft` `{chat_id, chat_title, answers}` | one consolidated summary of an Ask chat's wiki answers, with its citation problems; nothing is saved |
+| `POST /wikis/{w}/synthesis/check` `{content_md, answers}` | check an edited draft again: citation check, citations not in the wiki answers, missing pages |
+| `POST /wikis/{w}/synthesis` | save the draft as a synthesis page (`<framework>-synthesis-<chat id>`, a saved answer); the same chat updates the same page |
 | `POST /wikis/{w}/lint` `{llm?, fix?, mode?}` | structural checks run immediately; with `llm` or `fix` it becomes a job |
 | `GET /jobs/{id}`, `GET /wikis/{w}/jobs` | job status, progress, result |
 | `GET /wikis/{w}/pages`, `GET/PUT/DELETE .../pages/{slug}` | read pages or edit by hand (`base_version` → 409 if stale) |

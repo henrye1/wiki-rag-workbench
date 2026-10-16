@@ -9,7 +9,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from .. import jobs
 from ..db import get_pool
-from ..ops import lint, query
+from ..ops import lint, query, synthesis
 from ..wiki import store
 from .deps import Mode, wiki_dep
 
@@ -24,6 +24,52 @@ class QueryIn(BaseModel):
         "all", description="standard = only statements cited to the Standard itself (Part A); all = also Parts B and C")
     use_saved: bool = Field(True, description="Also read relevant saved answers (synthesis pages filed with Save), "
                                               "in addition to the pages chosen for the question")
+
+
+class SynthAnswer(BaseModel):
+    searched: str
+    answer: str
+    sources: Literal["standard", "all"]
+    date: str = Field(description="When the answer was made (ISO)")
+
+
+class SynthDraftIn(BaseModel):
+    chat_id: str = Field(min_length=4)
+    chat_title: str = ""
+    answers: list[SynthAnswer] = Field(min_length=1, description="The chat's wiki answers, oldest first (never RAG answers)")
+
+
+class SynthCheckIn(BaseModel):
+    content_md: str
+    answers: list[SynthAnswer] = Field(min_length=1)
+
+
+class SynthSaveIn(SynthCheckIn):
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]*-synthesis-[a-z0-9]+$")
+    title: str = Field(min_length=1)
+    summary: str = ""
+    tags: list[str] = []
+
+
+@router.post("/wikis/{w}/synthesis/draft")
+async def synthesis_draft(body: SynthDraftIn, wiki: dict = Depends(wiki_dep)):
+    """Draft one synthesis page from a chat's wiki answers, with its citation problems. Nothing is saved."""
+    return await synthesis.draft(wiki, body.chat_id, body.chat_title, [a.model_dump() for a in body.answers])
+
+
+@router.post("/wikis/{w}/synthesis/check")
+async def synthesis_check(body: SynthCheckIn, wiki: dict = Depends(wiki_dep)):
+    """Check an (edited) draft again. Nothing is saved."""
+    return await synthesis.check(wiki, body.content_md, [a.model_dump() for a in body.answers])
+
+
+@router.post("/wikis/{w}/synthesis", status_code=201)
+async def synthesis_save(body: SynthSaveIn, wiki: dict = Depends(wiki_dep)):
+    """Save the draft as a synthesis page (a saved answer); the same chat updates the same page."""
+    try:
+        return await synthesis.save(wiki, body.model_dump(exclude={"answers"}), [a.model_dump() for a in body.answers])
+    except ValueError as e:
+        raise HTTPException(409, str(e))
 
 
 class LintIn(BaseModel):
