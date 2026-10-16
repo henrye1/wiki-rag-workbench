@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # Results and uploaded inputs are stored in bench.runs
     database_url: str = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"  # local Supabase
 
-    runs: int = 3
+    runs: int = 2  # repetitions per topic
     concurrency: int = 4  # parallel topics (each topic = 2 system calls + 1 judge call)
     seed: int = 42
 

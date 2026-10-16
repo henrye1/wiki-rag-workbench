@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -31,6 +32,30 @@ async def _retry(fn, attempts: int = 5):
             await asyncio.sleep(delay)
 
 
+# Token use of the calls made while answering one request (the benchmark records it to work out cost per query).
+# A request starts a list with track_usage(); calls made for it (also in tasks it starts) add to that list.
+_usage: contextvars.ContextVar[list | None] = contextvars.ContextVar("llm_usage", default=None)
+
+
+def track_usage() -> list:
+    calls: list = []
+    _usage.set(calls)
+    return calls
+
+
+def _record(entry: dict) -> None:
+    calls = _usage.get()
+    if calls is not None:
+        calls.append(entry)
+
+
+def _record_generation(step: str, resp) -> None:
+    u = getattr(resp, "usage_metadata", None)
+    _record({"step": step, "model": get_settings().gemini_chat_model,
+             "input_tokens": getattr(u, "prompt_token_count", None), "output_tokens": getattr(u, "candidates_token_count", None),
+             "thinking_tokens": getattr(u, "thoughts_token_count", None)})
+
+
 def _normalize(v: list[float]) -> list[float]:
     a = np.asarray(v, dtype=np.float32)
     n = np.linalg.norm(a)
@@ -45,6 +70,8 @@ async def embed(texts: list[str], task: str = "RETRIEVAL_DOCUMENT") -> list[list
         cfg = types.EmbedContentConfig(task_type=task, output_dimensionality=s.embed_dim)
         resp = await _retry(lambda: client().aio.models.embed_content(model=s.gemini_embed_model, contents=batch, config=cfg))
         out.extend(_normalize(e.values) for e in resp.embeddings)
+        _record({"step": "embed", "model": s.gemini_embed_model, "texts": len(batch), "chars": sum(len(t) for t in batch),
+                 "input_tokens": None, "output_tokens": None})
     return out
 
 
@@ -61,6 +88,7 @@ async def generate(system: str, prompt: str, schema: dict | None = None) -> str:
     resp = await _retry(
         lambda: client().aio.models.generate_content(model=get_settings().gemini_chat_model, contents=prompt, config=_cfg(system, **kw))
     )
+    _record_generation("json" if schema else "answer", resp)
     cand = resp.candidates[0] if resp.candidates else None
     if not resp.text:
         reason = (cand.finish_reason if cand else None) or getattr(resp.prompt_feedback, "block_reason", None)

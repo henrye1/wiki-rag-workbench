@@ -40,12 +40,16 @@ def _cited(answer: str, rows: list[dict]) -> list[dict]:
 
 @router.post("/collections/{c}/query")
 async def query(q: QueryIn, col: dict = Depends(collection_dep)):
-    """Answer from the passages of one collection."""
+    """Answer from the passages of one collection. `read` lists every passage given to the model (after the Sources
+    setting); `usage` lists the AI calls made for it, with their tokens."""
+    usage = llm.track_usage()
     rows = await _retrieve(q, col)
+    read = [{"chunk_id": retrieval.chunk_id(r), "para_ref": r["para_ref"], "source_type": r["source_type"], "page": r["page"],
+             "document_id": str(r["document_id"]), "content": r["content"]} for r in rows]
     if not rows:
-        return {"answer": "No relevant passages found.", "citations": []}
+        return {"answer": "No relevant passages found.", "citations": [], "read": [], "usage": usage}
     answer = await llm.generate(prompts.QUERY_SYSTEM, prompts.query_prompt(q.question, retrieval.format_context(rows)))
-    return {"answer": answer, "citations": _cited(answer, rows)}
+    return {"answer": answer, "citations": _cited(answer, rows), "read": read, "usage": usage}
 
 
 @router.post("/collections/{c}/query/stream")

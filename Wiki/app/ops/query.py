@@ -2,6 +2,7 @@
 
 Synthesis pages are never chosen as one of the pages for a question. Saved answers (synthesis pages filed with the
 Save button) relevant to the question are read in addition, as earlier answers to check against those pages."""
+import hashlib
 import re
 from collections.abc import AsyncIterator
 
@@ -119,15 +120,22 @@ def _prompt(wiki: dict, question: str, pages: list[dict], extra: list[dict]) -> 
     return prompts.with_schema(wiki["schema_md"], ask)
 
 
+def _read_record(pages: list[dict]) -> list[dict]:
+    """What was given to the model: each page's version and a hash of its text after the Sources setting."""
+    return [{"slug": p["slug"], "title": p["title"], "type": p["type"], "version": p.get("version"), "saved": bool(p.get("saved")),
+             "words": len(p["content_md"].split()), "sha256": hashlib.sha256(p["content_md"].encode()).hexdigest()} for p in pages]
+
+
 async def answer(wiki: dict, question: str, save: bool = False, mode: str = "auto", sources: str = "all",
                  use_saved: bool = True) -> dict:
+    usage = llm.track_usage()
     pages, extra = await _read(wiki, question, sources, use_saved)
     if not pages:
         text = ("The wiki has no Standard (Part A) material relevant to this question." if sources == "standard"
                 else "The wiki has no pages relevant to this question yet.")
     else:
         text = await llm.generate(prompts.QUERY_SYSTEM, _prompt(wiki, question, pages, extra))
-    result = {"answer": text, "pages": _cited(text, pages + extra)}
+    result = {"answer": text, "pages": _cited(text, pages + extra), "read": _read_record(pages + extra), "usage": list(usage)}
     saved = await save_answer(wiki, question, text, mode) if save and pages else None
     if saved:
         result["saved"] = saved

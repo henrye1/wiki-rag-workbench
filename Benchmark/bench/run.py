@@ -119,9 +119,14 @@ async def run_topic(t: Topic, runs: int, store: Store, http: httpx.AsyncClient, 
         points = rec["key_points"]
 
         for r in range(1, runs + 1):
-            if str(r) in rec["runs"] and "judgement" in rec["runs"][str(r)]:
+            if str(r) in rec["runs"] and rec["runs"][str(r)].get("judgement"):
                 continue
-            answers = dict(zip(systems.SYSTEMS, await asyncio.gather(*(systems.ask(http, sys_, t.question_text()) for sys_ in systems.SYSTEMS))))
+            # answers are saved before grading, so a run whose grading failed is graded later without asking again
+            answers = (rec["runs"].get(str(r)) or {}).get("answers")
+            if not answers:
+                answers = dict(zip(systems.SYSTEMS, await asyncio.gather(*(systems.ask(http, sys_, t.question_text()) for sys_ in systems.SYSTEMS))))
+                rec["runs"][str(r)] = {"answers": answers, "judgement": False}
+                await store.save()
             order = list(systems.SYSTEMS)
             random.Random(f"{s.seed}-{t.number}-{r}").shuffle(order)  # blind A/B assignment
             label = {"A": order[0], "B": order[1]}
@@ -246,6 +251,7 @@ async def main():
                         "topics_selected": [t.number for t in topics], "expected_judgements": len(topics) * runs,
                         "question_format": "topic title + Q1..Qn, sent identically to RAG /collections/{c}/query and Wiki /wikis/{w}/query",
                         "rag_collection": s.rag_collection, "wiki_slug": s.wiki_slug, "sources": s.sources, "use_saved_answers": s.use_saved,
+                        "capture": "read+usage v1",  # each answer records what was read and its AI calls' tokens
                         "systems": await systems.describe(http),
                         "query_set": row["query_set_name"], "reference": row["reference_name"],
                         "reference_sha256": store.ref_sha,

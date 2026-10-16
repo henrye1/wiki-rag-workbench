@@ -24,7 +24,7 @@ async def saved_answers(conn, wiki_id: UUID, readable_only: bool = False) -> lis
                if readable_only else "")
     return await (
         await conn.execute(
-            f"select p.id, p.slug, p.title, p.summary, p.type, p.content_md, p.updated_at from wiki.pages p "
+            f"select p.id, p.slug, p.title, p.summary, p.type, p.content_md, p.version, p.updated_at from wiki.pages p "
             f"where p.wiki_id = %s and {SAVED_SQL}{blocked} order by p.updated_at desc",
             (wiki_id,),
         )

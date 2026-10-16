@@ -147,7 +147,7 @@ export class BenchRuns {
   sources: 'standard' | 'all' = 'all';
   useSaved = true;
   topics = '2';
-  runs = 1;
+  runs = 2;
   wiki = '';
   reference: File | null = null;
   querySet: File | null = null;

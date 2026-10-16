@@ -21,7 +21,7 @@ MAX_UPLOAD = 20 * 1024 * 1024
 
 # Judged-run count straight from the results JSON
 DONE_SQL = """(select count(*) from jsonb_each(coalesce(results->'topics', '{}'::jsonb)) t,
-                 jsonb_each(coalesce(t.value->'runs', '{}'::jsonb)) r where r.value ? 'judgement')::int as done"""
+                 jsonb_each(coalesce(t.value->'runs', '{}'::jsonb)) r where (r.value->>'judgement')::boolean is true)::int as done"""
 
 
 def _query(sql: str, params: tuple = (), one: bool = False):
@@ -181,7 +181,7 @@ async def start(
     reference: UploadFile | None = None,
     query_set: UploadFile | None = None,
     topics: str = Form("", description="e.g. 1,2,5-7 (empty = all)"),
-    runs: int = Form(3, ge=1, le=10),
+    runs: int = Form(2, ge=1, le=10),
     collection: str = Form(..., description="RAG collection under test"),
     wiki: str = Form(..., description="Wiki slug under test"),
     sources: Literal["standard", "all"] = Form(..., description="Both systems use the same: standard = Part A only; all = Parts A, B and C"),

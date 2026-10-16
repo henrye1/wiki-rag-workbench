@@ -59,7 +59,16 @@ async def list_wikis():
 
 @router.get("/wikis/{w}")
 async def get_wiki(wiki: dict = Depends(wiki_dep)):
-    return wiki
+    """The wiki, with its state: page count and its latest applied change (a benchmark run records it)."""
+    async with get_pool().connection() as conn:
+        state = await (await conn.execute(
+            """select (select count(*) from wiki.pages where wiki_id = %(w)s) as pages,
+                      (select count(*) from wiki.sources where wiki_id = %(w)s) as sources,
+                      c.id::text as last_change_id, c.applied_at as last_change_at
+               from (select 1) x left join lateral (select id, applied_at from wiki.changesets
+                     where wiki_id = %(w)s and status = 'applied' order by applied_at desc limit 1) c on true""",
+            {"w": wiki["id"]})).fetchone()
+    return {**wiki, **state}
 
 
 @router.delete("/wikis/{w}", status_code=204)
