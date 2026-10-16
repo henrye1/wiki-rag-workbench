@@ -23,6 +23,8 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: GEMINI_API_KEY  # Ask screen: rewrites a chat's follow-up into a full question
+        sync: false
       - key: UI_PASSWORD
         sync: false
       - key: SESSION_SECRET

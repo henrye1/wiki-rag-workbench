@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     bench_dir: pathlib.Path = PROJECT / "Benchmark"
     bench_python: pathlib.Path | None = None  # default: <bench_dir>/.venv python, else this interpreter (container)
     default_query_set: pathlib.Path = PROJECT / "Docs" / "IFRS9_Requirement_Query_Set_BULK_5.txt"  # optional
+    # Ask screen: rewriting a chat's follow-up into a full question (the same Gemini key RAG and the wiki use)
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
+    ask_history_questions: int = 6  # at most this many earlier questions are used to rewrite a follow-up
     # Shared-password login; leave empty for local use without login
     ui_password: str = ""
     session_secret: str = ""
