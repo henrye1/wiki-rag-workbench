@@ -130,9 +130,14 @@ export class BenchRun {
   }
 
   rubricLabel(d: any) {
-    const built = [...new Set(Object.values(d.topics ?? {}).map((t: any) => t.rubric?.built_in).filter(Boolean))];
+    const used = Object.values<any>(d.topics ?? {}).map((t) => t.rubric).filter(Boolean);
+    const built = [...new Set(used.map((r) => r.built_in).filter(Boolean))];
     if (!built.length) return 'built in this run (before rubrics were saved)';
-    return `saved rubric for ${d.config.reference ?? 'this reference'}, built in ${built.join(', ')}`;
+    const versions = used.filter((r) => r.version);
+    const approved = used.filter((r) => r.approved).length;
+    return `saved rubric for ${d.config.reference ?? 'this reference'}, built in ${built.join(', ')}`
+      + (versions.length ? ` · versions ${[...new Set(versions.map((r) => r.version))].sort((a, b) => a - b).join(', ')} · ${approved} of ${used.length} topics approved`
+                         : ' · recorded before rubric review');
   }
 
   ragDocs(d: any) {

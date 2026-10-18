@@ -10,6 +10,8 @@ from urllib.parse import quote
 import psycopg
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
+from pydantic import BaseModel, Field
 
 from .config import get_settings
 from .proxy import client
@@ -123,6 +125,7 @@ async def list_rubrics():
         """select reference_sha256, max(reference_name) as reference_name, count(*) as topics,
                   sum(jsonb_array_length(key_points)) as key_points,
                   sum((select count(*) from jsonb_array_elements(key_points) k where k->>'kind' = 'standard')) as standard,
+                  count(reviewed_at) as approved, count(facts_reviewed_at) as facts_approved,
                   min(created_at) as built, max(created_at) as updated
            from bench.rubrics group by reference_sha256 order by max(created_at) desc"""
     )
@@ -130,6 +133,72 @@ async def list_rubrics():
         p = _procs.get(f"rubric-{r['reference_sha256']}")
         r["rebuilding"] = bool(p and p.poll() is None)
     return rows
+
+
+TAGS = ("standard", "supporting", "beyond_standard")
+
+
+@router.get("/rubrics/{ref_sha}")
+async def get_rubric(ref_sha: str):
+    """Every topic's key points and exact-match facts, with their version and approval, for the review screen."""
+    rows = await _query(
+        """select topic_number, topic_title, reference_name, key_points, facts, version, reviewed_at, facts_reviewed_at, created_at
+           from bench.rubrics where reference_sha256 = %s order by topic_number""", (ref_sha,))
+    if not rows:
+        raise HTTPException(404, "No saved rubric for this reference file")
+    return {"reference_sha256": ref_sha, "reference_name": rows[0]["reference_name"], "tags": TAGS, "topics": rows}
+
+
+class KeyPoint(BaseModel):
+    id: str = Field(min_length=1, max_length=12)
+    point: str = Field(min_length=1)
+    kind: str
+
+
+class Fact(BaseModel):
+    id: str = Field(min_length=1, max_length=12)
+    fact: str = Field(min_length=1)
+
+
+class TopicReview(BaseModel):
+    key_points: list[KeyPoint] = Field(min_length=1)
+    facts: list[Fact] | None = None
+    approve_points: bool = False
+    approve_facts: bool = False
+
+
+@router.put("/rubrics/{ref_sha}/topics/{n}")
+async def review_topic(ref_sha: str, n: int, body: TopicReview):
+    """Save a topic's reviewed key points (tag, wording, deletions) and/or facts. A change makes a new version (the old one
+    is kept); approving stamps the time. Every run after this uses the saved version and records it."""
+    cur = await _query("select * from bench.rubrics where reference_sha256 = %s and topic_number = %s", (ref_sha, n), one=True)
+    if not cur:
+        raise HTTPException(404, "Topic not in this rubric")
+    if bad := [p.id for p in body.key_points if p.kind not in TAGS]:
+        raise HTTPException(422, f"Unknown tag on {', '.join(bad)}: use {', '.join(TAGS)}")
+    if len({p.id for p in body.key_points}) != len(body.key_points):
+        raise HTTPException(422, "Key point ids must be unique")
+    points = [p.model_dump() for p in body.key_points]
+    facts = [f.model_dump() for f in body.facts] if body.facts is not None else cur["facts"]
+    changed = points != cur["key_points"] or facts != cur["facts"]
+    row = await _query(
+        """update bench.rubrics set key_points = %s, facts = %s,
+                  version = version + %s,
+                  reviewed_at = case when %s then now() when %s then null else reviewed_at end,
+                  facts_reviewed_at = case when %s then now() when %s then null else facts_reviewed_at end
+           where reference_sha256 = %s and topic_number = %s
+           returning topic_number, topic_title, key_points, facts, version, reviewed_at, facts_reviewed_at""",
+        (Jsonb(points), Jsonb(facts) if facts is not None else None, 1 if changed else 0,
+         body.approve_points, changed and points != cur["key_points"],
+         body.approve_facts, changed and facts != cur["facts"], ref_sha, n), one=True)
+    await _query(
+        """insert into bench.rubric_versions (reference_sha256, topic_number, version, key_points, facts, reviewed_at, facts_reviewed_at, note)
+           values (%s, %s, %s, %s, %s, %s, %s, %s)
+           on conflict (reference_sha256, topic_number, version) do update set reviewed_at = excluded.reviewed_at,
+               facts_reviewed_at = excluded.facts_reviewed_at""",
+        (ref_sha, n, row["version"], Jsonb(row["key_points"]), Jsonb(row["facts"]) if row["facts"] is not None else None,
+         row["reviewed_at"], row["facts_reviewed_at"], "reviewed"))
+    return row
 
 
 @router.post("/rubrics/{ref_sha}/rebuild", status_code=202)

@@ -114,7 +114,12 @@ async def run_topic(t: Topic, runs: int, store: Store, http: httpx.AsyncClient, 
                     saved = await asyncio.to_thread(rubric.get, store.conn, store.ref_sha, t.number)
             rec["key_points"] = saved["key_points"]
             rec["key_points_usage"] = saved["key_points_usage"]
-            rec["rubric"] = {"built_in": saved["source_run"], "saved_at": saved["created_at"].isoformat(timespec="seconds")}
+            rec["facts"] = saved.get("facts")  # exact-match facts (None until made)
+            # the version of this topic's rubric the run used, and whether you had approved it
+            rec["rubric"] = {"built_in": saved["source_run"], "saved_at": saved["created_at"].isoformat(timespec="seconds"),
+                             "version": saved.get("version", 1),
+                             "approved": saved.get("reviewed_at").isoformat(timespec="seconds") if saved.get("reviewed_at") else None,
+                             "facts_approved": saved.get("facts_reviewed_at").isoformat(timespec="seconds") if saved.get("facts_reviewed_at") else None}
             await store.save()
         points = rec["key_points"]
 
@@ -264,6 +269,9 @@ async def main():
             results = await asyncio.gather(*(run_topic(t, runs, store, http, sem) for t in topics), return_exceptions=True)
 
         errors = {t.number: f"{type(r).__name__}: {r}" for t, r in zip(topics, results) if isinstance(r, Exception)}
+        # the rubric version (and approval) of each topic this run used
+        store.data["config"]["rubric_used"] = {str(t.number): store.data["topics"][str(t.number)].get("rubric")
+                                               for t in topics if str(t.number) in store.data["topics"]}
         store.data["errors"] = errors
         aggregate(store.data)
         store.data["config"]["finished"] = dt.datetime.now().isoformat(timespec="seconds")

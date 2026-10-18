@@ -69,19 +69,21 @@ import { poller } from '../../shared/poll';
         <p class="muted">Claude turns each topic's reference answer into key points once per reference file; every run with that file is
           scored against the same saved key points. A new reference file gets its own rubric on its first run.</p>
         <table class="simple">
-          <thead><tr><th>Reference file</th><th>Topics</th><th>Key points</th><th>Built</th><th></th></tr></thead>
+          <thead><tr><th>Reference file</th><th>Topics</th><th>Key points</th><th>Reviewed</th><th>Built</th><th></th></tr></thead>
           <tbody>
             @for (r of rubrics(); track r.reference_sha256) {
               <tr>
                 <td>{{ r.reference_name }}<div class="muted small mono">{{ r.reference_sha256.slice(0, 12) }}…</div></td>
                 <td>{{ r.topics }}</td><td>{{ r.key_points }} <span class="muted small">({{ r.standard }} standard)</span></td>
+                <td class="small">{{ r.approved }} of {{ r.topics }} key point lists<div class="muted">{{ r.facts_approved }} fact lists</div></td>
                 <td class="small">{{ r.built | date: 'medium' }}@if (r.updated !== r.built) {<div class="muted">updated {{ r.updated | date: 'medium' }}</div>}</td>
                 <td class="actions">
+                  <a mat-stroked-button routerLink="/benchmark/rubric" [queryParams]="{ ref: r.reference_sha256 }"><mat-icon>fact_check</mat-icon> Review</a>
                   @if (r.rebuilding) { <span class="pill warn">Rebuilding…</span> }
                   @else { <button mat-stroked-button (click)="rebuild(r)" [disabled]="active()" title="Build the key points again with the same judge prompt and replace the saved ones"><mat-icon>refresh</mat-icon> Rebuild</button> }
                 </td>
               </tr>
-            } @empty { <tr><td colspan="5" class="muted">No saved rubric yet: the first run with a reference file builds and saves it.</td></tr> }
+            } @empty { <tr><td colspan="6" class="muted">No saved rubric yet: the first run with a reference file builds and saves it.</td></tr> }
           </tbody>
         </table>
       </div>
