@@ -20,7 +20,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from . import gaps, judge, metrics, rubric, systems
+from . import checks, gaps, judge, metrics, rubric, systems
 from .config import ROOT, get_settings
 from .data import Topic, load
 
@@ -111,6 +111,12 @@ async def answer_topic(t: Topic, runs: int, store: Store, http: httpx.AsyncClien
                 async with store.lock:
                     await asyncio.to_thread(rubric.save, store.conn, store.ref_sha, store.ref_name, t.number, t.title,
                                             kp["data"]["key_points"], kp["usage"], kp["model"], store.run_id, stale)
+                    saved = await asyncio.to_thread(rubric.get, store.conn, store.ref_sha, t.number)
+            if saved.get("facts") is None:
+                # the exact-match facts are made once per reference file and topic too, then kept for you to approve
+                fx = await checks.make_facts(t.title, t.questions, t.reference, t.reference_label)
+                async with store.lock:
+                    await asyncio.to_thread(checks.save_facts, store.conn, store.ref_sha, t.number, fx["data"]["facts"], fx["usage"], fx["model"])
                     saved = await asyncio.to_thread(rubric.get, store.conn, store.ref_sha, t.number)
             rec["key_points"] = saved["key_points"]
             rec["key_points_usage"] = saved["key_points_usage"]
@@ -355,7 +361,8 @@ async def main():
                     "config": {
                         "started": dt.datetime.now().isoformat(timespec="seconds"), "git_commit": _git_commit(),
                         "judge_model": s.judge_model, "judge_effort": s.judge_effort,
-                        "judge_backend": "Claude Code on a Claude subscription (claude -p)" if s.judge_backend == "claude-code" else "Anthropic API", "runs": runs, "seed": s.seed,
+                        "judge_backend": "Claude Code on a Claude subscription (claude -p)" if s.judge_backend == "claude-code" else "Anthropic API",
+                        "answer_checks": {"model": s.checks_model, "version": checks.VERSION}, "runs": runs, "seed": s.seed,
                         "topics_selected": [t.number for t in topics], "expected_judgements": len(topics) * runs,
                         "question_format": "topic title + Q1..Qn, sent identically to RAG /collections/{c}/query and Wiki /wikis/{w}/query",
                         "rag_collection": s.rag_collection, "wiki_slug": s.wiki_slug, "sources": s.sources, "use_saved_answers": s.use_saved,
@@ -381,6 +388,10 @@ async def main():
         await metrics.compute(store.data, s.mode)
         await store.save()
         errors.update(await grade_all([t for t in topics if t.number not in errors], store, sem))
+        try:  # completeness, exact match and citation accuracy: one check call per answer
+            await checks.run_checks(store.data, store.conn, store.ref_sha, sem, s.use_batch, store.save, store.log)
+        except Exception as e:
+            store.log(f"Answer checks failed ({type(e).__name__}: {e}); they show as not measured")
         await metrics.compute(store.data, s.mode)  # graded answers keep their tests; the summary is refreshed
         store.data["errors"] = errors
         aggregate(store.data)

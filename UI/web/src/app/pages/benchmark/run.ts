@@ -55,6 +55,15 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki';
                 <div class="kv"><span>Coverage</span><b>{{ s.by_system[sys].coverage.mean }}%</b></div>
                 <div class="kv"><span>Standard-only coverage</span><b>{{ s.by_system[sys].coverage_standard.mean }}%</b></div>
                 <div class="kv"><span>Wins</span><b>{{ s.wins_by_run[sys] }}</b></div>
+                @if (d.metrics?.by_system?.[sys]; as m) {
+                  @for (k of metricRows; track k) {
+                    @if (m[k]; as v) {
+                      <div class="kv" [title]="v.status === 'measured' ? (v.n + ' answer(s)' + (v.not_measured_in ? '; some not measured' : '')) : v.reason">
+                        <span>{{ metricLabel[k] }}</span>
+                        <b [class.muted]="v.status !== 'measured'">{{ v.status === 'measured' ? fmtMetric(k, v.mean) : 'not measured' }}</b></div>
+                    }
+                  }
+                }
               </div>
             }
             <div class="card">
@@ -157,6 +166,18 @@ export class BenchRun {
     exact_match: 'Exact match', faithfulness: 'Faithfulness', citation_accuracy: 'Citation accuracy', context_recall: 'Context recall',
     completeness: 'Completeness', latency_s: 'Latency (s, lower is better)', cost_usd: 'Cost per query (lower is better)',
   };
+
+  readonly metricRows = ['completeness', 'exact_match', 'citation_accuracy', 'latency_s', 'cost_usd'];
+  readonly metricLabel: Record<string, string> = {
+    completeness: 'Completeness', exact_match: 'Exact match', citation_accuracy: 'Citation accuracy',
+    latency_s: 'Latency', cost_usd: 'Cost per query',
+  };
+
+  fmtMetric(k: string, v: number) {
+    if (k === 'cost_usd') return `$${v.toFixed(4)}`;
+    if (k === 'latency_s') return `${v.toFixed(1)} s`;
+    return `${v.toFixed(1)}%`;
+  }
 
   fmtGap(k: string, v: number) {
     const sign = v > 0 ? '+' : v < 0 ? '−' : '';

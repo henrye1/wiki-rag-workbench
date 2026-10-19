@@ -47,6 +47,11 @@ const TAG_LABEL: Record<string, string> = {
         <mat-checkbox [(ngModel)]="unreviewedOnly">Not yet reviewed</mat-checkbox>
         <span class="grow"></span>
         <span class="muted">{{ approvedCount() }} of {{ topics().length }} topics' key points approved · {{ factsApprovedCount() }} fact lists approved</span>
+        @if (makingFacts()) { <span class="pill warn">Making fact lists… {{ factsMade() }} of {{ topics().length }}</span> }
+        @else if (factsMissing()) {
+          <button mat-stroked-button (click)="makeFacts()" title="The judge takes the short, specific facts (numbers, periods, thresholds, yes/no answers) from each topic's reference answer. You then review and approve them.">
+            <mat-icon>fact_check</mat-icon> Make fact lists ({{ factsMissing() }} missing)</button>
+        }
         @if (ref()) {
           <a mat-stroked-button [href]="exportUrl()" download
              [title]="anyDirty() ? 'Exports the saved rubric: approve your changes first to include them' : 'The saved rubric as a Word document, with the filters above'">
@@ -94,11 +99,13 @@ const TAG_LABEL: Record<string, string> = {
             @else { <span class="pill">not yet reviewed</span> }
           </div>
           @if (t.facts === null) {
-            <p class="muted small">The judge makes this list on the first run after the answer checks are added. You can also add facts yourself.</p>
+            <p class="muted small">Not made yet: press "Make fact lists", or it is made on this reference file's next run. You can also add facts yourself.</p>
+          } @else if (!t.facts.length && !dirtyFacts(t)) {
+            <p class="muted small">The reference answer has no exact-match facts for this topic, so exact match is not measured for it. You can add facts yourself.</p>
           }
           @for (f of t.facts ?? []; track f.id) {
             <div class="row fact"><span class="id mono">{{ f.id }}</span>
-              <input class="edit grow" [(ngModel)]="f.fact" />
+              <textarea class="edit grow autosize" rows="1" [(ngModel)]="f.fact"></textarea>
               <button mat-icon-button (click)="removeFact(t, f)" title="Delete this fact"><mat-icon>delete</mat-icon></button></div>
           }
           <div class="row actions">
@@ -118,7 +125,7 @@ const TAG_LABEL: Record<string, string> = {
     .mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
     .edit { width: 100%; box-sizing: border-box; background: var(--mat-sys-surface-container); color: inherit;
             border: 1px solid var(--mat-sys-outline-variant); border-radius: 6px; padding: 6px 8px; font: inherit; resize: vertical; }
-    .fact { align-items: center; gap: 8px; margin: 4px 0; } .actions { gap: 8px; margin-top: 8px; } .small { font-size: 12px; }`,
+    .fact { display: flex; align-items: center; gap: 8px; margin: 4px 0; } .fact .edit { flex: 1; min-width: 0; } .autosize { field-sizing: content; min-height: 0; } .actions { gap: 8px; margin-top: 8px; } .small { font-size: 12px; }`,
 })
 export class BenchRubric {
   private api = inject(Api);
@@ -140,6 +147,39 @@ export class BenchRubric {
 
   anyDirty() {
     return this.topics().some((t) => this.dirtyPoints(t) || this.dirtyFacts(t));
+  }
+
+  readonly makingFacts = signal(false);
+  readonly factsMade = computed(() => this.topics().filter((t) => t.facts !== null).length);
+  readonly factsMissing = computed(() => this.topics().filter((t) => t.facts === null).length);
+  private factsTimer: ReturnType<typeof setInterval> | null = null;
+
+  async makeFacts() {
+    this.error.set('');
+    try {
+      await this.api.post(`/api/bench/rubrics/${enc(this.ref())}/facts`, {});
+      this.makingFacts.set(true);
+      this.watchFacts();
+    } catch (e) {
+      this.error.set(errMsg(e));
+    }
+  }
+
+  /** While the fact lists are being made, show each one as it arrives (topics you are editing are left alone). */
+  private watchFacts() {
+    if (this.factsTimer) return;
+    this.factsTimer = setInterval(async () => {
+      try {
+        const d = await this.api.get<any>(`/api/bench/rubrics/${enc(this.ref())}`);
+        const fresh = new Map<number, any>(d.topics.map((t: any) => [t.topic_number, t]));
+        this.topics.update((ts) => ts.map((t) => {
+          const f = fresh.get(t.n);
+          return f && t.facts === null && f.facts !== null && !this.dirtyPoints(t) ? this.edit(f) : t;
+        }));
+        this.makingFacts.set(d.making_facts);
+        if (!d.making_facts && this.factsTimer) { clearInterval(this.factsTimer); this.factsTimer = null; }
+      } catch { /* try again on the next tick */ }
+    }, 4000);
   }
 
   readonly approvedCount = computed(() => this.topics().filter((t) => t.reviewed_at).length);
@@ -164,6 +204,8 @@ export class BenchRubric {
     this.ref.set(sha);
     const d = await this.api.get<any>(`/api/bench/rubrics/${enc(sha)}`);
     this.topics.set(d.topics.map((t: any) => this.edit(t)));
+    this.makingFacts.set(d.making_facts);
+    if (d.making_facts) this.watchFacts();
   }
 
   private edit(t: any): TopicEdit {

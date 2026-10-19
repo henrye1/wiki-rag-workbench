@@ -210,7 +210,7 @@ async def estimate(topics: str = "", runs: int = 2, mode: str = "quick", use_bat
                            where results is not null order by created_at desc limit 20""")
     answers = {"rag": {"same": [], "other": []}, "wiki": {"same": [], "other": []}}
     context = {"rag": {"same": [], "other": []}, "wiki": {"same": [], "other": []}}  # tokens the answer's own call read and wrote
-    judge_usage, kp_usage = [], []
+    judge_usage, kp_usage, check_usage = [], [], []
     for r in rows:
         for t in (r["topics"] or {}).values():
             if t.get("key_points_usage"):
@@ -221,6 +221,9 @@ async def estimate(topics: str = "", runs: int = 2, mode: str = "quick", use_bat
                 elif run.get("judge_usage") and not run.get("judge_batch"):
                     judge_usage.append(run["judge_usage"])
                 for sysname, a in (run.get("systems") or run.get("answers") or {}).items():
+                    ck = a.get("checks") or {}
+                    if ck.get("usage") and not ck.get("batch") and ck.get("backend") != "claude-code":
+                        check_usage.append((ck["model"], ck["usage"]))
                     if a.get("usage") is not None and (c := _answer_cost(a["usage"], prices)) is not None:
                         same = (r["wiki_slug"] == wiki) if sysname == "wiki" else (r["rag_collection"] == collection)
                         answers.setdefault(sysname, {"same": [], "other": []})["same" if same else "other"].append(c)
@@ -264,8 +267,18 @@ async def estimate(topics: str = "", runs: int = 2, mode: str = "quick", use_bat
                           "total_usd": unit * missing, "basis": f"mean of {len(kp_usage)} recorded key-point call(s)"})
         elif not missing:
             items.append({"item": "Key points", "count": 0, "unit_usd": 0, "total_usd": 0, "basis": "the saved rubric is reused"})
-    items.append({"item": "Answer checks: completeness, exact match, citation accuracy", "count": n * runs * 2, "unit_usd": None,
-                  "total_usd": None, "basis": "not estimated until a run has recorded them"})
+    label = "Answer checks: completeness, exact match, citation accuracy (Claude Sonnet 5.5, one call per answer)"
+    priced = [u["input_tokens"] / 1e6 * prices[m]["input"] + u["output_tokens"] / 1e6 * prices[m]["output"]
+              for m, u in check_usage if m in prices]
+    if sub:
+        items.append({"item": label, "count": n * runs * 2, "unit_usd": 0, "total_usd": 0, "basis": SUBSCRIPTION})
+    elif priced:
+        unit = statistics.mean(priced) * (prices.get("batch_discount", 1) if use_batch else 1)
+        items.append({"item": label + (", batch" if use_batch else ""), "count": n * runs * 2, "unit_usd": unit,
+                      "total_usd": unit * n * runs * 2, "basis": f"mean of {len(priced)} recorded answer check(s)"})
+    else:
+        items.append({"item": label, "count": n * runs * 2, "unit_usd": None, "total_usd": None,
+                      "basis": "no answer check recorded through the API yet"})
     if mode == "full":
         # faithfulness + context recall: one Sonnet call per answer that reads what the answer read. Its input is taken as the
         # tokens the answer's own call read and wrote (recorded); its output as a grading's recorded output per answer.
@@ -301,14 +314,20 @@ async def list_rubrics():
         """select reference_sha256, max(reference_name) as reference_name, count(*) as topics,
                   sum(jsonb_array_length(key_points)) as key_points,
                   sum((select count(*) from jsonb_array_elements(key_points) k where k->>'kind' = 'standard')) as standard,
-                  count(reviewed_at) as approved, count(facts_reviewed_at) as facts_approved,
+                  count(reviewed_at) as approved, count(facts_reviewed_at) as facts_approved, count(facts) as facts_made,
                   min(created_at) as built, max(created_at) as updated
            from bench.rubrics group by reference_sha256 order by max(created_at) desc"""
     )
     for r in rows:
         p = _procs.get(f"rubric-{r['reference_sha256']}")
         r["rebuilding"] = bool(p and p.poll() is None)
+        r["making_facts"] = _making_facts(r["reference_sha256"])
     return rows
+
+
+def _making_facts(ref_sha: str) -> bool:
+    p = _procs.get(f"facts-{ref_sha}")
+    return bool(p and p.poll() is None)
 
 
 TAGS = ("standard", "supporting", "beyond_standard")
@@ -322,7 +341,17 @@ async def get_rubric(ref_sha: str):
            from bench.rubrics where reference_sha256 = %s order by topic_number""", (ref_sha,))
     if not rows:
         raise HTTPException(404, "No saved rubric for this reference file")
-    return {"reference_sha256": ref_sha, "reference_name": rows[0]["reference_name"], "tags": TAGS, "topics": rows}
+    return {"reference_sha256": ref_sha, "reference_name": rows[0]["reference_name"], "tags": TAGS, "topics": rows,
+            "making_facts": _making_facts(ref_sha)}
+
+
+@router.post("/rubrics/{ref_sha}/facts", status_code=202)
+async def make_facts(ref_sha: str):
+    """Have the judge make the exact-match fact lists this rubric is still missing (from each topic's reference answer)."""
+    if not await _query("select 1 from bench.rubrics where reference_sha256 = %s and facts is null limit 1", (ref_sha,), one=True):
+        raise HTTPException(409, "Every topic of this rubric already has a fact list")
+    _spawn(f"facts-{ref_sha}", ["bench.checks", "facts", ref_sha])
+    return {"reference_sha256": ref_sha, "making_facts": True}
 
 
 @router.get("/rubrics/{ref_sha}/export.docx")

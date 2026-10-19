@@ -28,7 +28,7 @@ class JudgeRefused(Exception):
     pass
 
 
-async def _cli_call(system: str, user: str, schema: dict) -> dict:
+async def _cli_call(system: str, user: str, schema: dict, model: str | None = None) -> dict:
     """The same judge call through Claude Code on the subscription: the judge's own system prompt replaces Claude Code's,
     with no tools, plugins, MCP servers, settings or project files; the reply must match the same JSON schema."""
     s = get_settings()
@@ -37,7 +37,7 @@ async def _cli_call(system: str, user: str, schema: dict) -> dict:
     env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL")}
     env["CLAUDE_CODE_OAUTH_TOKEN"] = s.claude_code_oauth_token
     args = [s.claude_bin, "-p", "--output-format", "json", "--json-schema", json.dumps(schema),
-            "--model", s.judge_model, "--effort", s.judge_effort, "--system-prompt", system,
+            "--model", model or s.judge_model, "--effort", s.judge_effort, "--system-prompt", system,
             "--tools", "", "--strict-mcp-config", "--setting-sources", "", "--disable-slash-commands", "--no-session-persistence"]
     with tempfile.TemporaryDirectory() as empty:  # no project files (CLAUDE.md etc.) to pick up
         proc = await asyncio.create_subprocess_exec(*args, cwd=empty, env=env, stdin=asyncio.subprocess.PIPE,
@@ -57,16 +57,16 @@ async def _cli_call(system: str, user: str, schema: dict) -> dict:
     if data is None:
         data = json.loads(res.get("result") or "")
     # Claude Code may make its own small side calls on another model; count only the judge model's tokens
-    mu = res.get("modelUsage") or {}
-    u = mu.get(s.judge_model) or next(iter(mu.values()), {})
-    return {"data": data, "model": s.judge_model if s.judge_model in mu else ", ".join(mu) or s.judge_model, "backend": "claude-code",
+    mu, want = res.get("modelUsage") or {}, model or s.judge_model
+    u = mu.get(want) or next(iter(mu.values()), {})
+    return {"data": data, "model": want if want in mu else ", ".join(mu) or want, "backend": "claude-code",
             "usage": {"input_tokens": (u.get("inputTokens") or 0) + (u.get("cacheReadInputTokens") or 0)
                       + (u.get("cacheCreationInputTokens") or 0), "output_tokens": u.get("outputTokens") or 0}}
 
 
-def _params(system: str, user: str, schema: dict) -> dict:
+def _params(system: str, user: str, schema: dict, model: str | None = None) -> dict:
     s = get_settings()
-    return {"model": s.judge_model, "max_tokens": 16000, "system": system, "messages": [{"role": "user", "content": user}],
+    return {"model": model or s.judge_model, "max_tokens": 16000, "system": system, "messages": [{"role": "user", "content": user}],
             "output_config": {"effort": s.judge_effort, "format": {"type": "json_schema", "schema": schema}}}
 
 
@@ -80,11 +80,11 @@ def _parse(resp, batch: bool = False) -> dict:
             "usage": {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}}
 
 
-async def _json_call(system: str, user: str, schema: dict) -> dict:
+async def _json_call(system: str, user: str, schema: dict, model: str | None = None) -> dict:
     if get_settings().judge_backend == "claude-code":
-        return await _cli_call(system, user, schema)
+        return await _cli_call(system, user, schema, model)
     resp = await client().beta.messages.create(
-        **_params(system, user, schema),
+        **_params(system, user, schema, model),
         # Server-side refusal fallback (routes by refusal category); unlikely to trigger on accounting text
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",
@@ -202,7 +202,7 @@ def grade_params(topic, points: list[dict], answer_a: str, answer_b: str) -> dic
     return _params(GRADE_SYSTEM, _grade_user(topic, points, answer_a, answer_b), GRADE_SCHEMA)
 
 
-async def grade_batch(requests: dict[str, dict], batch_id: str | None, on_submit, log=print) -> dict[str, dict | Exception]:
+async def grade_batch(requests: dict[str, dict], batch_id: str | None, on_submit, log=print, what: str = "grading") -> dict[str, dict | Exception]:
     """Submit (or, on resume, keep polling) one batch of gradings; each custom_id gets its result or the reason it failed."""
     s = get_settings()
     c = client()
@@ -210,7 +210,7 @@ async def grade_batch(requests: dict[str, dict], batch_id: str | None, on_submit
         b = await c.messages.batches.create(requests=[{"custom_id": k, "params": v} for k, v in requests.items()])
         batch_id = b.id
         await on_submit(batch_id)
-        log(f"  grading batch {batch_id}: {len(requests)} gradings submitted")
+        log(f"  {what} batch {batch_id}: {len(requests)} requests submitted")
     start, cancelled = time.monotonic(), False
     while True:
         b = await c.messages.batches.retrieve(batch_id)
@@ -219,7 +219,7 @@ async def grade_batch(requests: dict[str, dict], batch_id: str | None, on_submit
         if not cancelled and time.monotonic() - start > s.batch_timeout_s:
             await c.messages.batches.cancel(batch_id)  # what is left is graded normally
             cancelled = True
-            log(f"  grading batch {batch_id}: not finished after {s.batch_timeout_s // 60} min, cancelled")
+            log(f"  {what} batch {batch_id}: not finished after {s.batch_timeout_s // 60} min, cancelled")
         await asyncio.sleep(s.batch_poll_s)
     out: dict[str, dict | Exception] = {}
     async for r in await c.messages.batches.results(batch_id):

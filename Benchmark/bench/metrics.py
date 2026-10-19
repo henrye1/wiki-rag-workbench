@@ -90,7 +90,7 @@ def summarise(data: dict, mode: str | None) -> dict:
             out[sysname].setdefault(k, not_measured("Quick mode: faithfulness and context recall run only in Full mode" if mode != "full"
                                                     else "faithfulness and context recall are not available yet"))
         for k in ANSWER_CHECKS:
-            out[sysname].setdefault(k, not_measured("the judge's answer checks are not available yet"))
+            out[sysname].setdefault(k, not_measured("the answer checks have not been run on this run's answers"))
     return {"version": VERSION, "mode": mode or "quick", "by_system": out}
 
 

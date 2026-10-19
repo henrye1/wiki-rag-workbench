@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     batch_poll_s: int = 30
     batch_timeout_s: int = 6 * 3600  # a batch not finished by then is cancelled and its gradings done normally
     context_model: str = "claude-sonnet-5-5"  # Full mode: faithfulness and context recall (one call per answer)
+    checks_model: str = "claude-sonnet-5-5"  # answer checks: completeness, exact match, citation accuracy (one call per answer)
 
     # Results and uploaded inputs are stored in bench.runs
     database_url: str = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"  # local Supabase
