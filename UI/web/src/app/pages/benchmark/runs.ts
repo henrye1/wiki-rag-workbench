@@ -137,7 +137,7 @@ import { poller } from '../../shared/poll';
         @else { <span class="muted small">Tick two runs to compare</span> }
       </div>
       <table class="simple">
-        <thead><tr><th></th><th>Run</th><th>Compared</th><th>Sources</th><th>Saved answers</th><th>Topics × runs</th><th>RAG sim / cov</th><th>Wiki sim / cov</th><th>Wins (rag / wiki / tie)</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Run</th><th>Compared</th><th>Sources</th><th>Saved answers</th><th>Topics × runs</th><th>Mode</th><th>Rubric</th><th>Judge</th><th>RAG sim / cov</th><th>Wiki sim / cov</th><th>Wins (rag / wiki / tie)</th><th>Status</th><th></th></tr></thead>
         <tbody>
           @for (r of list(); track r.id) {
             <tr>
@@ -147,6 +147,9 @@ import { poller } from '../../shared/poll';
               <td><span class="pill">{{ sourcesLabel(r.sources) }}</span></td>
               <td><span class="pill">{{ r.use_saved === true ? 'On' : r.use_saved === false ? 'Off' : '—' }}</span></td>
               <td>{{ r.topics }} × {{ r.runs }}</td>
+              <td class="small">{{ r.mode === 'full' ? 'Full' : r.mode === 'quick' ? 'Quick' : '—' }}</td>
+              <td class="small" [title]="r.rubric?.title ?? ''">{{ r.rubric?.label ?? '—' }}@if (r.rubric?.topics) {<span class="muted"> · {{ r.rubric.approved }}/{{ r.rubric.topics }} approved</span>}</td>
+              <td class="small" [title]="r.judge?.title ?? ''">{{ r.judge?.label ?? '—' }}</td>
               @if (r.summary?.by_system; as b) {
                 <td><b>{{ b.rag.similarity.mean }}</b> / {{ b.rag.coverage.mean }}%</td>
                 <td><b>{{ b.wiki.similarity.mean }}</b> / {{ b.wiki.coverage.mean }}%</td>

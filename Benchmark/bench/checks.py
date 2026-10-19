@@ -25,8 +25,9 @@ from psycopg.types.json import Jsonb
 
 from . import judge
 from .config import get_settings
+from .library import Library
 
-VERSION = "checks-1"
+VERSION = "checks-2"  # 2: Standard-only exact match (facts tagged)
 MAX_CITATIONS = 40   # per answer, after removing repeats; any beyond are counted, not checked
 MAX_PARAGRAPH = 3000  # characters of a cited paragraph's text given to the judge
 WEIGHT = {"answered": 1.0, "partly": 0.5, "not_answered": 0.0, "supported": 1.0, "not_supported": 0.0}
@@ -43,13 +44,8 @@ FACTS_SCHEMA = {
     "required": ["facts"], "additionalProperties": False,
 }
 
-FACTS_SYSTEM = """You are an IFRS 9 expert preparing an exact-match checklist for grading answers.
-From the human-written reference answer, list the short, specific facts an answer must state exactly to be right:
-numbers, time periods, thresholds and percentages, dates, the yes/no answer to a question, named categories or lists,
-and precisely stated requirements or definitions.
-- Each fact is one short, self-contained sentence that can be checked as stated, contradicted or not stated.
-- Only facts the reference itself states; add nothing. Skip general explanation, background and opinion.
-- At most 12 facts. If the reference contains no such facts, return an empty list."""
+# Hard facts only (numbers, periods, thresholds, yes/no answers); the same prompt the rubric suggestions use
+from .suggest import HARD_FACTS_SYSTEM as FACTS_SYSTEM  # noqa: E402
 
 
 async def make_facts(topic_title: str, questions: list[str], reference: str, reference_label: str = "") -> dict:
@@ -113,7 +109,6 @@ async def facts_for_reference(conn: psycopg.Connection, ref_sha: str, log=print)
 WIKI_CITE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?\|([^\]]+)\]\]")   # [[source-slug|5.5.1]]
 WIKI_LINK = re.compile(r"\[\[([^\]|]+)\]\]")                            # [[page]]: a whole page, not a paragraph
 BRACKET = re.compile(r"(?<!\[)\[([^\[\]\n]{1,60})\](?!\])")              # [5.5.4], [B5.5.43], [Appendix A: credit loss]
-LABEL_LINE = re.compile(r"^\[([^\]\n]+)\][ \t]*", re.M)
 STANDARD_NAME = re.compile(r"\b(?:IFRS|IAS|IFRIC|SIC)\s*\d+\b")
 Q_PREFIX = re.compile(r"^Q\d+[.):]\s*")
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z*\[(])")
@@ -170,36 +165,6 @@ def citations(answer: str) -> list[dict]:
                 seen.add(key)
                 out.append({"kind": kind, "source": src, "label": label, "statement": statement})
     return out
-
-
-class Library:
-    """The Standard's own paragraphs, from the source texts the wikis keep (read only)."""
-
-    def __init__(self, conn: psycopg.Connection):
-        self.by_source: dict[str, dict[str, str]] = {}
-        self.titles: dict[str, str] = {}
-        for r in conn.execute("""select distinct on (s.slug) s.slug, s.title, s.text from wiki.sources s
-                                 order by s.slug, length(s.text) desc"""):
-            paras: dict[str, str] = {}
-            ms = list(LABEL_LINE.finditer(r["text"] or ""))
-            for i, m in enumerate(ms):
-                end = ms[i + 1].start() if i + 1 < len(ms) else len(r["text"])
-                key = " ".join(m.group(1).split())
-                paras[key] = (paras.get(key, "") + "\n" + r["text"][m.end():end].strip()).strip()
-            self.by_source[r["slug"]] = paras
-            self.titles[r["slug"]] = r["title"]
-
-    def find(self, part: str, source: str | None = None) -> list[tuple[str, str]]:
-        """(source slug, paragraph text) for each source holding this paragraph; only the named source when given."""
-        hits = []
-        for slug, paras in self.by_source.items():
-            if source and slug != source:
-                continue
-            for k in _lookup_keys(part):
-                if k in paras:
-                    hits.append((slug, paras[k]))
-                    break
-        return hits
 
 
 def resolve(cites: list[dict], lib: Library) -> list[dict]:
@@ -317,6 +282,17 @@ def score(prep: dict, result: dict | None, facts_info: dict) -> tuple[dict, dict
         got = [f for f in fs if f["status"]]
         m["exact_match"] = (measured(round(100 * sum(f["status"] == "stated" for f in got) / len(got), 1)) if got
                             else not_measured("the judge returned no verdicts"))
+    std = [f for f in fs if f.get("kind") == "standard"]
+    if not fs:
+        m["exact_match_standard"] = m["exact_match"]
+    elif not any(f.get("kind") for f in fs):
+        m["exact_match_standard"] = not_measured("the fact list has no tags (made before facts were tagged)")
+    elif not std:
+        m["exact_match_standard"] = not_measured("none of this topic's facts is tagged Standard")
+    else:
+        got = [f for f in std if f["status"]]
+        m["exact_match_standard"] = (measured(round(100 * sum(f["status"] == "stated" for f in got) / len(got), 1)) if got
+                                     else not_measured("the judge returned no verdicts"))
     scored = [c for c in cs if c["status"] in ("supported", "partly", "not_supported")]
     if scored:
         m["citation_accuracy"] = measured(round(100 * sum(WEIGHT.get(c["status"], 0.5) for c in scored) / len(scored), 1))

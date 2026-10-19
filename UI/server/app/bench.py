@@ -81,8 +81,26 @@ async def list_runs():
             "rag_collection": r["rag_collection"], "wiki": r["wiki_slug"], "sources": r["sources"], "use_saved": r["use_saved"],
             "mode": r["mode"], "use_batch": r["use_batch"],
             "summary": r["summary"], "progress": _progress(r, cfg, r["errors"]),
+            "rubric": _rubric_label(cfg), "judge": _judge_label(cfg),
         })
     return out
+
+
+def _rubric_label(cfg: dict) -> dict:
+    """Which rubric version(s) a run used, and how many of its topics were approved then."""
+    used = [u for u in (cfg.get("rubric_used") or {}).values() if u]
+    if not used:
+        return {"label": "—", "title": "Run made before rubric versions were recorded"}
+    vs = sorted({u.get("version") or 1 for u in used})
+    approved = sum(1 for u in used if u.get("approved"))
+    return {"label": f"v{vs[0]}" if len(vs) == 1 else f"v{vs[0]}–v{vs[-1]}",
+            "title": f"{approved} of {len(used)} topics approved when the run used them", "approved": approved, "topics": len(used)}
+
+
+def _judge_label(cfg: dict) -> dict:
+    backend = cfg.get("judge_backend") or "Anthropic API"  # runs before the subscription option all used the API
+    sub = "subscription" in backend.lower()
+    return {"label": f"{cfg.get('judge_model') or '—'} · {'subscription' if sub else 'API'}", "title": backend}
 
 
 async def _row(run_id: str, cols: str) -> dict:
@@ -322,6 +340,7 @@ async def list_rubrics():
         p = _procs.get(f"rubric-{r['reference_sha256']}")
         r["rebuilding"] = bool(p and p.poll() is None)
         r["making_facts"] = _making_facts(r["reference_sha256"])
+        r["suggesting"] = _running(f"suggest-{r['reference_sha256']}")
     return rows
 
 
@@ -337,12 +356,31 @@ TAGS = ("standard", "supporting", "beyond_standard")
 async def get_rubric(ref_sha: str):
     """Every topic's key points and exact-match facts, with their version and approval, for the review screen."""
     rows = await _query(
-        """select topic_number, topic_title, reference_name, key_points, facts, version, reviewed_at, facts_reviewed_at, created_at
+        """select topic_number, topic_title, reference_name, key_points, facts, version, reviewed_at, facts_reviewed_at, created_at, suggestions
            from bench.rubrics where reference_sha256 = %s order by topic_number""", (ref_sha,))
     if not rows:
         raise HTTPException(404, "No saved rubric for this reference file")
     return {"reference_sha256": ref_sha, "reference_name": rows[0]["reference_name"], "tags": TAGS, "topics": rows,
-            "making_facts": _making_facts(ref_sha)}
+            "making_facts": _making_facts(ref_sha), "suggesting": _running(f"suggest-{ref_sha}")}
+
+
+def _running(key: str) -> bool:
+    p = _procs.get(key)
+    return bool(p and p.poll() is None)
+
+
+class SuggestIn(BaseModel):
+    topics: str = Field("", description="e.g. 1,5 (empty = every topic)")
+
+
+@router.post("/rubrics/{ref_sha}/suggest", status_code=202)
+async def suggest_changes(ref_sha: str, body: SuggestIn):
+    """Have the judge suggest tags (with the backing paragraph from the original source texts), list merges and a hard-fact
+    list for each topic. Nothing in the rubric changes until you accept the suggestions and save."""
+    if not await _query("select 1 from bench.rubrics where reference_sha256 = %s limit 1", (ref_sha,), one=True):
+        raise HTTPException(404, "No saved rubric for this reference file")
+    _spawn(f"suggest-{ref_sha}", ["bench.suggest", ref_sha] + ([body.topics.replace(" ", "")] if body.topics.strip() else []))
+    return {"reference_sha256": ref_sha, "suggesting": True}
 
 
 @router.post("/rubrics/{ref_sha}/facts", status_code=202)
@@ -377,11 +415,14 @@ class KeyPoint(BaseModel):
     id: str = Field(min_length=1, max_length=12)
     point: str = Field(min_length=1)
     kind: str
+    ref: str | None = None  # the paragraph that backs the tag, e.g. "5.5.5 (IFRS 9 Part A)"
 
 
 class Fact(BaseModel):
     id: str = Field(min_length=1, max_length=12)
     fact: str = Field(min_length=1)
+    kind: str | None = None
+    ref: str | None = None
 
 
 class TopicReview(BaseModel):
@@ -389,6 +430,8 @@ class TopicReview(BaseModel):
     facts: list[Fact] | None = None
     approve_points: bool = False
     approve_facts: bool = False
+    decisions: dict[str, Literal["accepted", "rejected"]] = Field(
+        default_factory=dict, description='Your answer to each suggestion: "point:K1", "merge:0", "facts"')
 
 
 @router.put("/rubrics/{ref_sha}/topics/{n}")
@@ -400,19 +443,31 @@ async def review_topic(ref_sha: str, n: int, body: TopicReview):
         raise HTTPException(404, "Topic not in this rubric")
     if bad := [p.id for p in body.key_points if p.kind not in TAGS]:
         raise HTTPException(422, f"Unknown tag on {', '.join(bad)}: use {', '.join(TAGS)}")
+    if bad := [f.id for f in body.facts or [] if f.kind is not None and f.kind not in TAGS]:
+        raise HTTPException(422, f"Unknown tag on {', '.join(bad)}: use {', '.join(TAGS)}")
     if len({p.id for p in body.key_points}) != len(body.key_points):
         raise HTTPException(422, "Key point ids must be unique")
-    points = [p.model_dump() for p in body.key_points]
-    facts = [f.model_dump() for f in body.facts] if body.facts is not None else cur["facts"]
+    points = [{k: v for k, v in p.model_dump().items() if v is not None} for p in body.key_points]
+    facts = [{k: v for k, v in f.model_dump().items() if v is not None} for f in body.facts] if body.facts is not None else cur["facts"]
+    sug = cur.get("suggestions")
+    if sug and body.decisions:  # record your answer to each suggestion, so it is not offered again
+        for key, d in body.decisions.items():
+            kind, _, ref = key.partition(":")
+            if kind == "point" and ref in sug.get("points", {}):
+                sug["points"][ref]["status"] = d
+            elif kind == "merge" and ref.isdigit() and int(ref) < len(sug.get("merges", [])):
+                sug["merges"][int(ref)]["status"] = d
+            elif kind == "facts" and sug.get("facts"):
+                sug["facts"]["status"] = d
     changed = points != cur["key_points"] or facts != cur["facts"]
     row = await _query(
-        """update bench.rubrics set key_points = %s, facts = %s,
+        """update bench.rubrics set key_points = %s, facts = %s, suggestions = %s,
                   version = version + %s,
                   reviewed_at = case when %s then now() when %s then null else reviewed_at end,
                   facts_reviewed_at = case when %s then now() when %s then null else facts_reviewed_at end
            where reference_sha256 = %s and topic_number = %s
-           returning topic_number, topic_title, key_points, facts, version, reviewed_at, facts_reviewed_at""",
-        (Jsonb(points), Jsonb(facts) if facts is not None else None, 1 if changed else 0,
+           returning topic_number, topic_title, key_points, facts, version, reviewed_at, facts_reviewed_at, suggestions""",
+        (Jsonb(points), Jsonb(facts) if facts is not None else None, Jsonb(sug) if sug else None, 1 if changed else 0,
          body.approve_points, changed and points != cur["key_points"],
          body.approve_facts, changed and facts != cur["facts"], ref_sha, n), one=True)
     await _query(
@@ -469,6 +524,29 @@ async def _ensure_collection(slug: str):
         raise HTTPException(400, f"RAG collection '{slug}' has no documents")
 
 
+def _numbers(spec: str) -> set[int]:
+    out = set()
+    for part in spec.replace(" ", "").split(","):
+        if part:
+            a, _, b = part.partition("-")
+            out.update(range(int(a), int(b or a) + 1))
+    return out
+
+
+async def _ensure_approved(ref_sha: str, topics: str):
+    """Full runs use an approved rubric only: every chosen topic's key points and fact list approved."""
+    rows = await _query("select topic_number, reviewed_at, facts, facts_reviewed_at from bench.rubrics where reference_sha256 = %s", (ref_sha,))
+    if not rows:
+        raise HTTPException(400, "Full runs need an approved rubric, and this reference file has none yet: run it in Quick mode "
+                                 "first to build the rubric, then approve it on the Rubric review screen")
+    by = {r["topic_number"]: r for r in rows}
+    wanted = _numbers(topics) or set(by)
+    bad = sorted(n for n in wanted if n not in by or not by[n]["reviewed_at"] or by[n]["facts"] is None or not by[n]["facts_reviewed_at"])
+    if bad:
+        raise HTTPException(400, "Full runs need an approved rubric. Approve the key points and the fact list of topic(s) "
+                                 f"{', '.join(map(str, bad))} on the Rubric review screen, or run in Quick mode")
+
+
 @router.post("/runs", status_code=202)
 async def start(
     reference: UploadFile | None = None,
@@ -497,6 +575,8 @@ async def start(
         qs = (last["query_set_name"], last["query_set"]) if last else None
     if ref is None or qs is None:
         raise HTTPException(400, "Upload the reference assessment (.docx) and the query set (.txt) for the first run")
+    if mode == "full":
+        await _ensure_approved(hashlib.sha256(ref[1]).hexdigest(), topics)
     run_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     await _query(
         """insert into bench.runs (id, topics, runs, rag_collection, wiki_slug, sources, use_saved, mode, use_batch, query_set_name, query_set,

@@ -25,25 +25,34 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki';
         <p class="muted">Judge {{ d.config.judge_model }} ({{ d.config.judge_effort }}{{ d.config.judge_backend ? ', ' + d.config.judge_backend : '' }}) · {{ d.config.runs }} run(s) per topic ·
           RAG: {{ ragDocs(d) }} · Wiki: {{ d.config.systems?.wiki?.wiki?.pages ?? '?' }} pages · commit {{ d.config.git_commit ?? '—' }}</p>
         <p class="muted small">Rubric: {{ rubricLabel(d) }}</p>
-        @if (d.summary?.gaps; as g) {
-          <div class="card gaps">
-            <h3>Differences (wiki − RAG)</h3>
-            <table class="simple">
-              <thead><tr><th>Test</th><th class="n">Gap</th><th class="n">95% confidence interval</th><th>Result</th><th class="n">Topics</th></tr></thead>
-              <tbody>
-                @for (k of gapOrder; track k) {
-                  @if (g[k]; as e) {
-                    <tr><td>{{ gapLabel[k] }}</td><td class="n">{{ fmtGap(k, e.diff) }}</td>
-                      <td class="n">{{ e.ci ? fmtGap(k, e.ci[0]) + ' to ' + fmtGap(k, e.ci[1]) : '—' }}</td>
-                      <td>@if (e.leader) { <span class="pill" [class.rag]="e.leader === 'rag'" [class.wiki]="e.leader === 'wiki'">{{ e.verdict }}</span> }
-                          @else { <span class="muted">{{ e.verdict }}</span> }</td>
-                      <td class="n">{{ e.n_topics }}</td></tr>
+        <div class="card gaps">
+          <h3>Scorecard</h3>
+          <table class="simple">
+            <thead><tr><th>Test</th><th class="n">RAG</th><th class="n">Wiki</th><th class="n">Wiki − RAG</th><th class="n">95% confidence interval</th><th>Result</th></tr></thead>
+            <tbody>
+              @for (k of gapOrder; track k) {
+                @let r = score(d, 'rag', k);
+                @let w = score(d, 'wiki', k);
+                @let e = d.summary?.gaps?.[k];
+                <tr>
+                  <td>{{ gapLabel[k] }}</td>
+                  <td class="n" [class.muted]="!r.ok" [title]="r.reason">{{ r.text }}</td>
+                  <td class="n" [class.muted]="!w.ok" [title]="w.reason">{{ w.text }}</td>
+                  @if (e && r.ok && w.ok) {
+                    <td class="n">{{ fmtGap(k, e.diff) }}</td>
+                    <td class="n">{{ e.ci ? fmtGap(k, e.ci[0]) + ' to ' + fmtGap(k, e.ci[1]) : '—' }}</td>
+                    <td>@if (e.leader) { <span class="pill" [class.rag]="e.leader === 'rag'" [class.wiki]="e.leader === 'wiki'">{{ e.verdict }}</span> }
+                        @else { <span class="muted">{{ e.verdict }}</span> }</td>
+                  } @else {
+                    <td class="n muted">—</td><td class="n muted">—</td>
+                    <td class="muted small">{{ !r.ok ? r.reason : !w.ok ? w.reason : '' }}</td>
                   }
-                }
-              </tbody>
-            </table>
-          </div>
-        }
+                </tr>
+              }
+            </tbody>
+          </table>
+          <p class="muted small">Hover a score for how many answers it covers. A test with no score says why.</p>
+        </div>
 
         @if (d.summary; as s) {
           <div class="cards">
@@ -55,15 +64,6 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki';
                 <div class="kv"><span>Coverage</span><b>{{ s.by_system[sys].coverage.mean }}%</b></div>
                 <div class="kv"><span>Standard-only coverage</span><b>{{ s.by_system[sys].coverage_standard.mean }}%</b></div>
                 <div class="kv"><span>Wins</span><b>{{ s.wins_by_run[sys] }}</b></div>
-                @if (d.metrics?.by_system?.[sys]; as m) {
-                  @for (k of metricRows; track k) {
-                    @if (m[k]; as v) {
-                      <div class="kv" [title]="v.status === 'measured' ? (v.n + ' answer(s)' + (v.not_measured_in ? '; some not measured' : '')) : v.reason">
-                        <span>{{ metricLabel[k] }}</span>
-                        <b [class.muted]="v.status !== 'measured'">{{ v.status === 'measured' ? fmtMetric(k, v.mean) : 'not measured' }}</b></div>
-                    }
-                  }
-                }
               </div>
             }
             <div class="card">
@@ -93,13 +93,13 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki';
         </div>
         <div class="scroll-x">
           <table class="simple">
-            <thead><tr><th>#</th><th>Topic</th><th>Points (std)</th><th>RAG sim</th><th>RAG cov</th><th>Wiki sim</th><th>Wiki cov</th><th>Gap</th><th>Wins r/w/t</th><th>Saved answers read (wiki)</th></tr></thead>
+            <thead><tr><th>#</th><th>Topic</th><th title="Key points: Standard / Supporting / Beyond standard">Points (S / Sup / B)</th><th>RAG sim</th><th>RAG cov</th><th>Wiki sim</th><th>Wiki cov</th><th>Gap</th><th>Wins r/w/t</th><th>Saved answers read (wiki)</th></tr></thead>
             <tbody>
               @for (t of topics(); track t.number) {
                 <tr>
                   <td>{{ t.number }}</td>
                   <td><a [routerLink]="['topic', t.number]">{{ t.title }}</a><div class="muted small">{{ t.code }} · {{ t.section }}</div></td>
-                  <td>{{ t.points }} ({{ t.std }})</td>
+                  <td>{{ t.points }} <span class="muted small">({{ t.std }} / {{ t.sup }} / {{ t.beyond }})</span></td>
                   <td><b>{{ t.rag | number: '1.1-1' }}</b></td><td>{{ t.ragCov | number: '1.0-0' }}%</td>
                   <td><b>{{ t.wiki | number: '1.1-1' }}</b></td><td>{{ t.wikiCov | number: '1.0-0' }}%</td>
                   <td [class.pos]="t.gap > 0" [class.neg]="t.gap < 0">{{ t.gap > 0 ? '+' : '' }}{{ t.gap | number: '1.1-1' }}</td>
@@ -145,6 +145,8 @@ export class BenchRun {
       return {
         number: t.number, code: t.code, title: t.title, section: t.section,
         points: t.key_points?.length ?? 0, std: (t.key_points ?? []).filter((p: any) => p.kind === 'standard').length,
+        sup: (t.key_points ?? []).filter((p: any) => p.kind === 'supporting').length,
+        beyond: (t.key_points ?? []).filter((p: any) => p.kind !== 'standard' && p.kind !== 'supporting').length,
         rag, wiki, ragCov: a.rag?.coverage?.mean, wikiCov: a.wiki?.coverage?.mean,
         gap: rag !== null && wiki !== null ? rag - wiki : 0, wins: a.wins ?? { rag: 0, wiki: 0, tie: 0 },
         saved: [...new Set(Object.values<any>(t.runs ?? {}).flatMap((r) => r.systems?.wiki?.saved_answers_read ?? []))],
@@ -159,19 +161,34 @@ export class BenchRun {
     effect(() => { this.api.get(`/api/bench/runs/${enc(this.id())}`).then((d) => this.data.set(d)).catch((e) => this.error.set(errMsg(e))); });
   }
 
-  readonly gapOrder = ['similarity', 'coverage', 'coverage_standard', 'wins', 'exact_match', 'faithfulness', 'citation_accuracy',
-                       'context_recall', 'completeness', 'latency_s', 'cost_usd'];
+  readonly gapOrder = ['similarity', 'coverage', 'coverage_standard', 'coverage_std_supp', 'wins', 'completeness', 'exact_match',
+                       'exact_match_standard', 'citation_accuracy', 'faithfulness', 'context_recall', 'latency_s', 'cost_usd'];
   readonly gapLabel: Record<string, string> = {
-    similarity: 'Similarity (0–10)', coverage: 'Coverage', coverage_standard: 'Standard-only coverage', wins: 'Wins (share of answers)',
+    similarity: 'Similarity (0–10)', coverage: 'Coverage', coverage_standard: 'Standard-only coverage',
+    coverage_std_supp: 'Standard + Supporting coverage', exact_match_standard: 'Standard-only exact match', wins: 'Wins (gap: share of answers)',
     exact_match: 'Exact match', faithfulness: 'Faithfulness', citation_accuracy: 'Citation accuracy', context_recall: 'Context recall',
     completeness: 'Completeness', latency_s: 'Latency (s, lower is better)', cost_usd: 'Cost per query (lower is better)',
   };
 
-  readonly metricRows = ['completeness', 'exact_match', 'citation_accuracy', 'latency_s', 'cost_usd'];
-  readonly metricLabel: Record<string, string> = {
-    completeness: 'Completeness', exact_match: 'Exact match', citation_accuracy: 'Citation accuracy',
-    latency_s: 'Latency', cost_usd: 'Cost per query',
-  };
+  /** One system's score on one test, or "Not run yet" with the reason. */
+  score(d: any, sys: string, k: string): { ok: boolean; text: string; reason: string } {
+    const no = (reason: string) => ({ ok: false, text: 'Not run yet', reason });
+    const added = 'this run was made before this test was added';
+    if (!d.summary) return no('the run has not finished');
+    if (k === 'wins') return { ok: true, text: String(d.summary.wins_by_run?.[sys] ?? 0), reason: 'answers won (both grading orders agreeing)' };
+    if (this.judged.includes(k)) {
+      const v = d.summary.by_system?.[sys]?.[k];
+      if (v?.mean != null) return { ok: true, text: k === 'similarity' ? `${v.mean}/10` : `${v.mean}%`, reason: `${v.n} topic(s)` };
+      if (k === 'coverage_std_supp' && d.config?.sources === 'standard') return no('this run used Standard only (Part A), so Supporting points were not in play');
+      return no(v ? 'no graded answers' : added);
+    }
+    const m = d.metrics?.by_system?.[sys]?.[k];
+    if (!m) return no(added);
+    if (m.status !== 'measured' || m.mean == null) return no(m.reason ?? 'not measured');
+    return { ok: true, text: this.fmtMetric(k, m.mean), reason: `${m.n} answer(s)${m.not_measured_in ? '; some not measured' : ''}` };
+  }
+
+  readonly judged = ['similarity', 'coverage', 'coverage_standard', 'coverage_std_supp'];
 
   fmtMetric(k: string, v: number) {
     if (k === 'cost_usd') return `$${v.toFixed(4)}`;

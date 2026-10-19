@@ -10,11 +10,12 @@ import { MatSelectModule } from '@angular/material/select';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../../core/api';
 
-interface Point { id: string; point: string; kind: string }
-interface Fact { id: string; fact: string }
+interface Point { id: string; point: string; kind: string; ref?: string }
+interface Fact { id: string; fact: string; kind?: string; ref?: string }
 interface TopicEdit {
   n: number; title: string; version: number; reviewed_at: string | null; facts_reviewed_at: string | null;
   points: Point[]; facts: Fact[] | null; savedPoints: string; savedFacts: string; busy: boolean; error: string;
+  suggestions: any; decisions: Record<string, 'accepted' | 'rejected'>;
 }
 
 const TAG_LABEL: Record<string, string> = {
@@ -47,6 +48,11 @@ const TAG_LABEL: Record<string, string> = {
         <mat-checkbox [(ngModel)]="unreviewedOnly">Not yet reviewed</mat-checkbox>
         <span class="grow"></span>
         <span class="muted">{{ approvedCount() }} of {{ topics().length }} topics' key points approved · {{ factsApprovedCount() }} fact lists approved</span>
+        @if (suggesting()) { <span class="pill warn">Suggesting changes… {{ suggestedCount() }} of {{ topics().length }}</span> }
+        @else if (ref()) {
+          <button mat-stroked-button (click)="suggest()" title="For every key point and fact, the judge reads the closest paragraphs of the original source texts and suggests a tag with the paragraph that backs it; it also suggests merging list items and a hard-fact list. Nothing changes until you accept and approve.">
+            <mat-icon>auto_fix_high</mat-icon> Suggest changes</button>
+        }
         @if (makingFacts()) { <span class="pill warn">Making fact lists… {{ factsMade() }} of {{ topics().length }}</span> }
         @else if (factsMissing()) {
           <button mat-stroked-button (click)="makeFacts()" title="The judge takes the short, specific facts (numbers, periods, thresholds, yes/no answers) from each topic's reference answer. You then review and approve them.">
@@ -64,10 +70,21 @@ const TAG_LABEL: Record<string, string> = {
       @for (t of visible(); track t.n) {
         <section class="card topic">
           <div class="row"><h3 class="grow">{{ t.n }}. {{ t.title }}</h3><span class="muted small">version {{ t.version }}</span></div>
+          <div class="muted small">{{ counts(t) }}</div>
+          @for (m of t.suggestions?.merges ?? []; track $index; let i = $index) {
+            @if (!m.status && !t.decisions['merge:' + i] && hasAll(t, m.ids)) {
+              <div class="sug">
+                <div><b>Suggested merge:</b> {{ m.ids.join(', ') }} into one point ({{ tagLabel[m.tag] }}): “{{ m.point }}”</div>
+                <div class="muted small">{{ m.reason }}</div>
+                <div class="row actions"><button mat-flat-button (click)="acceptMerge(t, m, i)">Accept</button>
+                  <button mat-button (click)="decide(t, 'merge:' + i, 'rejected')">Reject</button></div>
+              </div>
+            }
+          }
 
           <div class="row head"><b class="grow">Key points ({{ t.points.length }})</b>
-            @if (t.reviewed_at && !dirtyPoints(t)) { <span class="pill ok">approved {{ t.reviewed_at | date: 'd MMM y, HH:mm' }}</span> }
-            @else if (dirtyPoints(t)) { <span class="pill warn">changed, not saved</span> }
+            @if (t.reviewed_at && !dirtyPoints(t) && !pending(t)) { <span class="pill ok">approved {{ t.reviewed_at | date: 'd MMM y, HH:mm' }}</span> }
+            @else if (dirtyPoints(t) || pending(t)) { <span class="pill warn">changed, not saved</span> }
             @else { <span class="pill">not yet reviewed</span> }
           </div>
           <table class="simple">
@@ -77,7 +94,18 @@ const TAG_LABEL: Record<string, string> = {
                 @if (!tagFilter || p.kind === tagFilter) {
                   <tr>
                     <td class="id mono">{{ p.id }}</td>
-                    <td><textarea class="edit" rows="2" [(ngModel)]="p.point"></textarea></td>
+                    <td><textarea class="edit" rows="2" [(ngModel)]="p.point"></textarea>
+                      @if (p.ref) { <div class="muted small">Backed by {{ p.ref }}</div> }
+                      @if (pointSug(t, p); as s) {
+                        <div class="sug small">
+                          Suggested: <b>{{ tagLabel[s.tag] }}</b>@if (s.paragraph) { · {{ s.paragraph }} ({{ s.document }}) }
+                          @if (!s.found) { <span class="pill warn" title="The judge thinks a Standard may say this, but none of the paragraphs found does: please check">check</span> }
+                          <span class="muted"> — {{ s.reason }}</span>
+                          <button mat-button (click)="acceptPoint(t, p, s)">Accept</button>
+                          <button mat-button (click)="decide(t, 'point:' + p.id, 'rejected')">Reject</button>
+                        </div>
+                      }
+                    </td>
                     <td class="tag"><mat-select [(ngModel)]="p.kind" class="tagsel">
                       @for (k of tags; track k) { <mat-option [value]="k">{{ tagLabel[k] }}</mat-option> }
                     </mat-select></td>
@@ -103,14 +131,32 @@ const TAG_LABEL: Record<string, string> = {
           } @else if (!t.facts.length && !dirtyFacts(t)) {
             <p class="muted small">The reference answer has no exact-match facts for this topic, so exact match is not measured for it. You can add facts yourself.</p>
           }
+          @if (t.suggestions?.facts; as sf) {
+            @if (!sf.status && !t.decisions['facts']) {
+              <div class="sug">
+                <b>Suggested hard-fact list</b> <span class="muted small">(numbers, periods, thresholds, yes/no answers only; replaces the list below)</span>
+                @if (sf.items.length) {
+                  <ul>@for (f of sf.items; track f.id) {
+                    <li><span class="mono">{{ f.id }}</span> {{ f.fact }} <span class="pill">{{ tagLabel[f.tag] ?? '—' }}</span>
+                      @if (f.paragraph) { <span class="muted small">{{ f.paragraph }} ({{ f.document }})</span> }</li>
+                  }</ul>
+                } @else { <p class="muted small">The reference answer has no hard facts for this topic: accepting leaves an empty list, so exact match is not measured for it.</p> }
+                <div class="row actions"><button mat-flat-button (click)="acceptFacts(t, sf)">Use this list</button>
+                  <button mat-button (click)="decide(t, 'facts', 'rejected')">Keep the current list</button></div>
+              </div>
+            }
+          }
           @for (f of t.facts ?? []; track f.id) {
             <div class="row fact"><span class="id mono">{{ f.id }}</span>
               <textarea class="edit grow autosize" rows="1" [(ngModel)]="f.fact"></textarea>
+              <mat-select [(ngModel)]="f.kind" class="tagsel" placeholder="Tag">
+                @for (k of tags; track k) { <mat-option [value]="k">{{ tagLabel[k] }}</mat-option> }
+              </mat-select>
               <button mat-icon-button (click)="removeFact(t, f)" title="Delete this fact"><mat-icon>delete</mat-icon></button></div>
           }
           <div class="row actions">
             <button mat-stroked-button (click)="addFact(t)"><mat-icon>add</mat-icon> Add fact</button>
-            <button mat-flat-button (click)="save(t, false, true)" [disabled]="t.busy || !(t.facts ?? []).length">Approve facts</button>
+            <button mat-flat-button (click)="save(t, false, true)" [disabled]="t.busy || t.facts === null" title="An empty list can be approved: the topic then has no exact-match facts">Approve facts</button>
             @if (dirtyFacts(t)) { <button mat-button (click)="undo(t, 'facts')">Undo changes</button> }
           </div>
           @if (t.error) { <p class="error">{{ t.error }}</p> }
@@ -125,7 +171,9 @@ const TAG_LABEL: Record<string, string> = {
     .mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
     .edit { width: 100%; box-sizing: border-box; background: var(--mat-sys-surface-container); color: inherit;
             border: 1px solid var(--mat-sys-outline-variant); border-radius: 6px; padding: 6px 8px; font: inherit; resize: vertical; }
-    .fact { display: flex; align-items: center; gap: 8px; margin: 4px 0; } .fact .edit { flex: 1; min-width: 0; } .autosize { field-sizing: content; min-height: 0; } .actions { gap: 8px; margin-top: 8px; } .small { font-size: 12px; }`,
+    .fact { display: flex; align-items: center; gap: 8px; margin: 4px 0; } .fact .edit { flex: 1; min-width: 0; } .autosize { field-sizing: content; min-height: 0; } .actions { gap: 8px; margin-top: 8px; } .small { font-size: 12px; }
+    .sug { margin: 6px 0; padding: 6px 10px; border-left: 3px solid #1565c0; background: color-mix(in srgb, #1565c0 8%, transparent); border-radius: 4px; }
+    .sug ul { margin: 4px 0; padding-left: 18px; }`,
 })
 export class BenchRubric {
   private api = inject(Api);
@@ -206,13 +254,16 @@ export class BenchRubric {
     this.topics.set(d.topics.map((t: any) => this.edit(t)));
     this.makingFacts.set(d.making_facts);
     if (d.making_facts) this.watchFacts();
+    this.suggesting.set(d.suggesting);
+    if (d.suggesting) this.watchSuggestions();
   }
 
   private edit(t: any): TopicEdit {
     const points = structuredClone(t.key_points) as Point[];
     const facts = t.facts === null || t.facts === undefined ? null : (structuredClone(t.facts) as Fact[]);
     return { n: t.topic_number, title: t.topic_title, version: t.version, reviewed_at: t.reviewed_at, facts_reviewed_at: t.facts_reviewed_at,
-             points, facts, savedPoints: JSON.stringify(t.key_points), savedFacts: JSON.stringify(t.facts ?? null), busy: false, error: '' };
+             points, facts, savedPoints: JSON.stringify(t.key_points), savedFacts: JSON.stringify(t.facts ?? null), busy: false, error: '',
+             suggestions: t.suggestions ?? null, decisions: {} };
   }
 
   visible() {
@@ -220,6 +271,85 @@ export class BenchRubric {
       (!this.topicFilter || t.n === this.topicFilter)
       && (!this.tagFilter || t.points.some((p) => p.kind === this.tagFilter))
       && (!this.unreviewedOnly || !t.reviewed_at || (t.facts !== null && !t.facts_reviewed_at) || this.dirtyPoints(t) || this.dirtyFacts(t)));
+  }
+
+  pending(t: TopicEdit) { return Object.keys(t.decisions).length > 0; }
+
+  counts(t: TopicEdit) {
+    const n = (k: string) => t.points.filter((p) => p.kind === k).length;
+    const f = t.facts ?? [];
+    return `${t.points.length} key points: ${n('standard')} Standard · ${n('supporting')} Supporting · ${n('beyond_standard')} Beyond standard`
+      + (t.facts === null ? '' : ` · ${f.length} facts (${f.filter((x) => x.kind === 'standard').length} Standard)`);
+  }
+
+  hasAll(t: TopicEdit, ids: string[]) { return ids.every((i) => t.points.some((p) => p.id === i)); }
+
+  /** A pending tag suggestion for this point, when it would change something. */
+  pointSug(t: TopicEdit, p: Point) {
+    const s = t.suggestions?.points?.[p.id];
+    if (!s || s.status || t.decisions['point:' + p.id]) return null;
+    const ref = s.paragraph ? `${s.paragraph} (${s.document})` : undefined;
+    return s.tag !== p.kind || (ref && ref !== p.ref) ? s : null;
+  }
+
+  decide(t: TopicEdit, key: string, d: 'accepted' | 'rejected') {
+    t.decisions = { ...t.decisions, [key]: d };
+    this.topics.update((ts) => [...ts]);
+  }
+
+  acceptPoint(t: TopicEdit, p: Point, s: any) {
+    p.kind = s.tag;
+    p.ref = s.paragraph ? `${s.paragraph} (${s.document})` : undefined;
+    if (!p.ref) delete p.ref;
+    this.decide(t, 'point:' + p.id, 'accepted');
+  }
+
+  acceptMerge(t: TopicEdit, m: any, i: number) {
+    const at = t.points.findIndex((p) => m.ids.includes(p.id));
+    const merged: Point = { id: m.ids[0], point: m.point, kind: m.tag };
+    t.points = t.points.filter((p) => !m.ids.includes(p.id));
+    t.points.splice(at, 0, merged);
+    for (const id of m.ids) this.decide(t, 'point:' + id, 'rejected');  // their own tag suggestions no longer apply
+    this.decide(t, 'merge:' + i, 'accepted');
+  }
+
+  acceptFacts(t: TopicEdit, sf: any) {
+    t.facts = sf.items.map((f: any) => ({ id: f.id, fact: f.fact, ...(f.tag ? { kind: f.tag } : {}),
+                                          ...(f.paragraph ? { ref: `${f.paragraph} (${f.document})` } : {}) }));
+    this.decide(t, 'facts', 'accepted');
+  }
+
+  readonly suggesting = signal(false);
+  readonly suggestedCount = computed(() => this.topics().filter((t) => t.suggestions).length);
+  private sugTimer: ReturnType<typeof setInterval> | null = null;
+
+  async suggest() {
+    this.error.set('');
+    try {
+      await this.api.post(`/api/bench/rubrics/${enc(this.ref())}/suggest`, { topics: this.topicFilter ? String(this.topicFilter) : '' });
+      this.suggesting.set(true);
+      this.watchSuggestions();
+    } catch (e) {
+      this.error.set(errMsg(e));
+    }
+  }
+
+  /** While suggestions are being made, show each topic's as it arrives (topics you are editing are left alone). */
+  private watchSuggestions() {
+    if (this.sugTimer) return;
+    this.sugTimer = setInterval(async () => {
+      try {
+        const d = await this.api.get<any>(`/api/bench/rubrics/${enc(this.ref())}`);
+        const fresh = new Map<number, any>(d.topics.map((t: any) => [t.topic_number, t]));
+        this.topics.update((ts) => ts.map((t) => {
+          const f = fresh.get(t.n);
+          if (!f || JSON.stringify(f.suggestions) === JSON.stringify(t.suggestions)) return t;
+          return this.dirtyPoints(t) || this.dirtyFacts(t) || this.pending(t) ? t : this.edit(f);
+        }));
+        this.suggesting.set(d.suggesting);
+        if (!d.suggesting && this.sugTimer) { clearInterval(this.sugTimer); this.sugTimer = null; }
+      } catch { /* try again on the next tick */ }
+    }, 5000);
   }
 
   dirtyPoints(t: TopicEdit) { return JSON.stringify(t.points) !== t.savedPoints; }
@@ -248,8 +378,8 @@ export class BenchRubric {
     try {
       const facts = t.facts === null ? null : t.facts.filter((f) => f.fact.trim());
       const row = await this.api.put<any>(`/api/bench/rubrics/${enc(this.ref())}/topics/${t.n}`, {
-        key_points: t.points.map((p) => ({ id: p.id, point: p.point.trim(), kind: p.kind })),
-        facts, approve_points: approvePoints, approve_facts: approveFacts,
+        key_points: t.points.map((p) => ({ id: p.id, point: p.point.trim(), kind: p.kind, ...(p.ref ? { ref: p.ref } : {}) })),
+        facts, approve_points: approvePoints, approve_facts: approveFacts, decisions: t.decisions,
       });
       const next = this.edit(row);
       next.title = t.title;

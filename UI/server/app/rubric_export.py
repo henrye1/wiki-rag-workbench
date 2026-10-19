@@ -66,7 +66,8 @@ def build(reference_name: str, ref_sha: str, topics: list[dict], filters: str, c
                 _shade(cell, "EEEEEE")
             for kp in t["points"]:
                 row = tbl.add_row().cells
-                row[0].text, row[1].text, row[2].text = kp["id"], kp["point"], TAG_LABEL.get(kp.get("kind"), kp.get("kind") or "")
+                row[0].text, row[1].text = kp["id"], kp["point"]
+                row[2].text = TAG_LABEL.get(kp.get("kind"), kp.get("kind") or "") + (f"\n{kp['ref']}" if kp.get("ref") else "")
             tbl.autofit = False
             widths = (Cm(1.3), Cm(12.2), Cm(3.5))  # the page is 17 cm wide between the margins
             grid = tbl._tbl.tblGrid
@@ -91,6 +92,9 @@ def build(reference_name: str, ref_sha: str, topics: list[dict], filters: str, c
             q = doc.add_paragraph(style="List Bullet")
             q.add_run(f"{f['id']}  ").bold = True
             q.add_run(f["fact"])
+            if f.get("kind") or f.get("ref"):
+                r = q.add_run("  (" + ", ".join(x for x in (TAG_LABEL.get(f.get("kind"), f.get("kind")), f.get("ref")) if x) + ")")
+                r.font.size, r.font.color.rgb = Pt(9), GREY
 
     buf = io.BytesIO()
     doc.save(buf)
