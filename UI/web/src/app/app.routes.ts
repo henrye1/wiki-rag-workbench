@@ -23,6 +23,7 @@ export const routes: Routes = [
     ],
   },
   { path: 'benchmark', loadComponent: () => import('./pages/benchmark/runs').then((m) => m.BenchRuns), title: 'Benchmark' },
+  { path: 'benchmark/rubric', loadComponent: () => import('./pages/benchmark/rubric').then((m) => m.BenchRubric), title: 'Rubric review' },
   { path: 'benchmark/compare', loadComponent: () => import('./pages/benchmark/compare').then((m) => m.BenchCompare) },
   { path: 'benchmark/:id', loadComponent: () => import('./pages/benchmark/run').then((m) => m.BenchRun) },
   { path: 'benchmark/:id/topic/:n', loadComponent: () => import('./pages/benchmark/topic').then((m) => m.BenchTopic) },

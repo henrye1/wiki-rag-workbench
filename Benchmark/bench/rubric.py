@@ -38,8 +38,16 @@ def save(conn: psycopg.Connection, ref_sha: str, ref_name: str | None, number: i
             values (%s, %s, %s, %s, %s, %s, %s, %s)
             on conflict (reference_sha256, topic_number) do {'update set reference_name = excluded.reference_name, '
             'topic_title = excluded.topic_title, key_points = excluded.key_points, key_points_usage = excluded.key_points_usage, '
-            'judge_model = excluded.judge_model, source_run = excluded.source_run, created_at = now()' if replace else 'nothing'}""",
+            'judge_model = excluded.judge_model, source_run = excluded.source_run, created_at = now(), '
+            'version = bench.rubrics.version + 1, reviewed_at = null' if replace else 'nothing'}""",
         (ref_sha, number, ref_name, title, Jsonb(key_points), Jsonb(usage) if usage else None, model, source_run),
+    )
+    # every version is kept; rebuilt key points need approving again (the facts and their approval are kept)
+    conn.execute(
+        """insert into bench.rubric_versions (reference_sha256, topic_number, version, key_points, facts, reviewed_at, facts_reviewed_at, note)
+           select reference_sha256, topic_number, version, key_points, facts, reviewed_at, facts_reviewed_at, %s
+           from bench.rubrics where reference_sha256 = %s and topic_number = %s on conflict do nothing""",
+        ("rebuilt" if replace else "built", ref_sha, number),
     )
 
 

@@ -250,6 +250,8 @@ def also_record_prompt(*, slug: str, title: str, items: str, linkable: str, sour
     return (
         f"Add short entries to the wiki page `{slug}` (\"{title}\"). Each paragraph in <paragraphs> is written up in full on "
         "its main page (named after it) and is ALSO recorded here, without repeating it.\n"
+        f"Every paragraph in <paragraphs> comes from the source [[{source_slug}]]. Cite each one to that source, as "
+        f"[[{source_slug}|<paragraph number>]], and never to any other source page.\n"
         "For each paragraph write exactly ONE line, as a markdown bullet: what the entity decides, presumes, elects or "
         "estimates, in a few words, then a link to its main page, then the paragraph's citation, e.g.\n"
         f"- Policy choice: measure the loss allowance at lifetime expected credit losses: see [[main-page-slug]] [[{source_slug}|5.5.15]]\n"
@@ -296,6 +298,51 @@ QUERY_SYSTEM = """You answer questions using ONLY the wiki pages provided.
 
 def query_prompt(question: str, pages_md: str) -> str:
     return f"<wiki_pages>\n{pages_md}\n</wiki_pages>\n\nQuestion: {question}"
+
+
+def select_saved_prompt(question: str, listing: str) -> str:
+    return (
+        "These are saved answers: earlier questions answered from the wiki and filed back into it. Pick at most 2 that "
+        "answer the same question or a closely related one, so they can be read alongside the wiki pages. Return their "
+        "slugs; return none if none is clearly related.\n\n"
+        f"<saved_answers>\nslug | title | summary\n{listing}\n</saved_answers>\n\nQuestion: {question}"
+    )
+
+
+def query_saved_prompt(question: str, pages_md: str, saved_md: str) -> str:
+    return (
+        f"<wiki_pages>\n{pages_md}\n</wiki_pages>\n\n<saved_answers>\n{saved_md}\n</saved_answers>\n\n"
+        "The saved answers are earlier answers filed back into the wiki, given only as a guide. Check every point against "
+        "the wiki pages: state only what the wiki pages support, citing the wiki pages and their source paragraphs as usual. "
+        "Never cite a saved answer, and do not repeat a point from a saved answer that the wiki pages do not support.\n\n"
+        f"Question: {question}"
+    )
+
+
+SYNTHESIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string", "description": "A concise descriptive title for what the chat established"},
+        "summary": {"type": "string", "description": "One line for the index"},
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "content_md": {"type": "string", "description": "The consolidated summary (markdown, no top-level # title, no list of the questions)"},
+    },
+    "required": ["title", "summary", "tags", "content_md"],
+}
+
+
+def synthesis_prompt(chat_title: str, answers: str) -> str:
+    return (
+        f"These are the wiki's answers to the questions of one chat (\"{chat_title}\"), oldest first. Write ONE consolidated "
+        "summary of what they establish, organised by topic, for a synthesis page.\n"
+        "- Use only what the answers say: no outside knowledge, no new facts, no conclusions they do not draw.\n"
+        "- Keep each statement's citations exactly as they appear in the answers (same [[...]] links, same labels); cite "
+        "nothing that is not in the answers. Where answers repeat a point, state it once.\n"
+        "- If answers differ or one is narrower than another, say so rather than merging them.\n"
+        "- Do not list the questions or the dates: they are recorded on the page separately.\n"
+        "- Write plain markdown (headings, paragraphs, - bullet lists); never HTML tags such as <ul> or <li>.\n\n"
+        f"<answers>\n{answers}\n</answers>"
+    )
 
 
 def save_answer_prompt(question: str, answer: str, linkable: str) -> str:

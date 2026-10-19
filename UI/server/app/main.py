@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 
-from . import auth, bench, bulk, proxy
+from . import ask, auth, bench, bulk, proxy
 from .config import get_settings
 
 logging.basicConfig(level=logging.INFO)
@@ -60,6 +60,7 @@ async def healthz():
 # Order matters: specific /api routers before the generic /api/{service}/... proxy
 app.include_router(bulk.router)
 app.include_router(bench.router)
+app.include_router(ask.router)
 app.include_router(proxy.router)
 
 

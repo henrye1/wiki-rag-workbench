@@ -16,6 +16,13 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     judge_model: str = "claude-opus-5-5"
     judge_effort: str = "high"
+    # api: the Anthropic API (key above). claude-code: your Claude subscription through Claude Code (`claude -p`, with the
+    # token from `claude setup-token`); same model, effort, system prompt and JSON schema, but no Message Batches, and usage
+    # counts against the plan's limits instead of API credit
+    judge_backend: str = "api"
+    claude_code_oauth_token: str = ""
+    claude_bin: str = "claude"
+    judge_timeout_s: int = 900
 
     rag_url: str = "http://127.0.0.1:8000"
     rag_api_key: str
@@ -25,11 +32,18 @@ class Settings(BaseSettings):
     rag_collection: str = ""
     wiki_slug: str = ""
     sources: str = "all"  # "standard" (Part A only) or "all" (Parts A, B and C); always the same for both systems
+    use_saved: bool = True  # the wiki also reads relevant saved answers (synthesis pages filed with Save)
+    mode: str = "quick"  # quick: answers, grading and the answer checks; full: also faithfulness and context recall
+    use_batch: bool = True  # grade through the Message Batches API (half price), falling back to the normal API
+    batch_poll_s: int = 30
+    batch_timeout_s: int = 6 * 3600  # a batch not finished by then is cancelled and its gradings done normally
+    context_model: str = "claude-sonnet-5-5"  # Full mode: faithfulness and context recall (one call per answer)
+    checks_model: str = "claude-sonnet-5-5"  # answer checks: completeness, exact match, citation accuracy (one call per answer)
 
     # Results and uploaded inputs are stored in bench.runs
     database_url: str = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"  # local Supabase
 
-    runs: int = 3
+    runs: int = 2  # repetitions per topic
     concurrency: int = 4  # parallel topics (each topic = 2 system calls + 1 judge call)
     seed: int = 42
 

@@ -20,7 +20,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from . import judge, rubric, systems
+from . import checks, gaps, judge, metrics, rubric, systems
 from .config import ROOT, get_settings
 from .data import Topic, load
 
@@ -92,8 +92,8 @@ class Store:
             )
 
 
-async def run_topic(t: Topic, runs: int, store: Store, http: httpx.AsyncClient, sem: asyncio.Semaphore):
-    s = get_settings()
+async def answer_topic(t: Topic, runs: int, store: Store, http: httpx.AsyncClient, sem: asyncio.Semaphore):
+    """Its key points (the saved rubric) and both systems' answers for every repetition, saved before any grading."""
     rec = store.data["topics"].setdefault(str(t.number), {
         "number": t.number, "code": t.code, "title": t.title, "section": t.section,
         "question": t.question_text(), "reference_label": t.reference_label, "reference": t.reference, "runs": {},
@@ -112,41 +112,151 @@ async def run_topic(t: Topic, runs: int, store: Store, http: httpx.AsyncClient, 
                     await asyncio.to_thread(rubric.save, store.conn, store.ref_sha, store.ref_name, t.number, t.title,
                                             kp["data"]["key_points"], kp["usage"], kp["model"], store.run_id, stale)
                     saved = await asyncio.to_thread(rubric.get, store.conn, store.ref_sha, t.number)
+            if saved.get("facts") is None:
+                # the exact-match facts are made once per reference file and topic too, then kept for you to approve
+                fx = await checks.make_facts(t.title, t.questions, t.reference, t.reference_label)
+                async with store.lock:
+                    await asyncio.to_thread(checks.save_facts, store.conn, store.ref_sha, t.number, fx["data"]["facts"], fx["usage"], fx["model"])
+                    saved = await asyncio.to_thread(rubric.get, store.conn, store.ref_sha, t.number)
             rec["key_points"] = saved["key_points"]
             rec["key_points_usage"] = saved["key_points_usage"]
-            rec["rubric"] = {"built_in": saved["source_run"], "saved_at": saved["created_at"].isoformat(timespec="seconds")}
+            rec["facts"] = saved.get("facts")  # exact-match facts (None until made)
+            # the version of this topic's rubric the run used, and whether you had approved it
+            rec["rubric"] = {"built_in": saved["source_run"], "saved_at": saved["created_at"].isoformat(timespec="seconds"),
+                             "version": saved.get("version", 1),
+                             "approved": saved.get("reviewed_at").isoformat(timespec="seconds") if saved.get("reviewed_at") else None,
+                             "facts_approved": saved.get("facts_reviewed_at").isoformat(timespec="seconds") if saved.get("facts_reviewed_at") else None}
             await store.save()
-        points = rec["key_points"]
-
         for r in range(1, runs + 1):
-            if str(r) in rec["runs"] and "judgement" in rec["runs"][str(r)]:
+            run = rec["runs"].get(str(r)) or {}
+            if run.get("judgement") or run.get("answers"):
                 continue
+            # answers are saved before grading, so a run whose grading failed is graded later without asking again
             answers = dict(zip(systems.SYSTEMS, await asyncio.gather(*(systems.ask(http, sys_, t.question_text()) for sys_ in systems.SYSTEMS))))
-            order = list(systems.SYSTEMS)
-            random.Random(f"{s.seed}-{t.number}-{r}").shuffle(order)  # blind A/B assignment
-            label = {"A": order[0], "B": order[1]}
-            g = await judge.grade(t, points, answers[label["A"]]["answer"], answers[label["B"]]["answer"])
-            jd = g["data"]
-            per_system = {}
-            for lab, name in label.items():
-                grades = {pg["id"]: pg[lab] for pg in jd["point_grades"]}
-                per_system[name] = {
-                    **answers[name],
-                    "grades": grades,
-                    "similarity": jd["similarity"][lab],
-                    "coverage": coverage(points, grades),
-                    "coverage_standard": coverage(points, grades, "standard"),
-                    "contradictions": jd["contradictions"][lab],
-                }
-            winner = "tie" if jd["winner"] == "tie" else label[jd["winner"]]
-            rec["runs"][str(r)] = {
-                "blind_labels": label, "systems": per_system, "winner": winner, "rationale": jd["rationale"],
-                "point_notes": {pg["id"]: pg["note"] for pg in jd["point_grades"]}, "judge_model": g["model"], "judge_usage": g["usage"],
-                "judgement": True,
-            }
-            store.log(f"  topic {t.number:>2} run {r}: rag {per_system['rag']['similarity']}/10 ({per_system['rag']['coverage']}%) "
-                  f"| wiki {per_system['wiki']['similarity']}/10 ({per_system['wiki']['coverage']}%) -> {winner}")
+            rec["runs"][str(r)] = {"answers": answers, "judgement": False}
             await store.save()
+
+
+def _labels(t: Topic, r: int, order: int = 1) -> dict:
+    """Blind A/B labels: order 1 is the seeded shuffle; order 2 swaps it (each pair is graded both ways)."""
+    seq = list(systems.SYSTEMS)
+    random.Random(f"{get_settings().seed}-{t.number}-{r}").shuffle(seq)  # blind A/B assignment
+    if order == 2:
+        seq.reverse()
+    return {"A": seq[0], "B": seq[1]}
+
+
+ORDERS = (1, 2)
+
+
+def _per_order(points: list[dict], label: dict, g: dict) -> dict:
+    """One grading (one order) read per system."""
+    jd = g["data"]
+    out = {"blind_labels": label, "winner": "tie" if jd["winner"] == "tie" else label[jd["winner"]], "rationale": jd["rationale"],
+           "point_notes": {pg["id"]: pg["note"] for pg in jd["point_grades"]}, "judge_model": g["model"], "judge_usage": g["usage"],
+           "batch": g.get("batch", False), "backend": g.get("backend", "api"), "systems": {}}
+    for lab, name in label.items():
+        grades = {pg["id"]: pg[lab] for pg in jd["point_grades"]}
+        out["systems"][name] = {"grades": grades, "similarity": jd["similarity"][lab], "contradictions": jd["contradictions"][lab]}
+    return out
+
+
+def _avg(xs):
+    xs = [x for x in xs if x is not None]
+    return round(sum(xs) / len(xs), 2) if xs else None
+
+
+def _record(store: Store, t: Topic, r: int):
+    """Combine the two orders of a pair: scores averaged; a win only when both orders pick the same answer, else a tie."""
+    rec = store.data["topics"][str(t.number)]
+    run = rec["runs"][str(r)]
+    answers, points, by_order = run["answers"], rec["key_points"], run["orders"]
+    o = [by_order[str(k)] for k in ORDERS]
+    per_system = {}
+    for name in systems.SYSTEMS:
+        weights = {p["id"]: sum(WEIGHT[x["systems"][name]["grades"].get(p["id"], "missing")] for x in o) / len(o) for p in points}
+        per_system[name] = {
+            **answers[name],
+            "grades": o[0]["systems"][name]["grades"],  # order 1, as in runs before both orders
+            "grades_by_order": [x["systems"][name]["grades"] for x in o],
+            "point_weight": weights,
+            "similarity": _avg([x["systems"][name]["similarity"] for x in o]),
+            "coverage": _avg([coverage(points, x["systems"][name]["grades"]) for x in o]),
+            "coverage_standard": _avg([coverage(points, x["systems"][name]["grades"], "standard") for x in o]),
+            "contradictions": list(dict.fromkeys(c for x in o for c in x["systems"][name]["contradictions"])),
+        }
+    w = {x["winner"] for x in o}
+    winner = w.pop() if len(w) == 1 else "tie"
+    rec["runs"][str(r)] = {
+        "blind_labels": o[0]["blind_labels"], "systems": per_system, "winner": winner,
+        "winners_by_order": [x["winner"] for x in o],
+        "rationale": "\n\n".join(f"Order {k} ({x['blind_labels']['A']} first): {x['rationale']}" for k, x in zip(ORDERS, o)),
+        "point_notes": o[0]["point_notes"], "orders": by_order, "orders_graded": len(o),
+        "judge_model": o[0]["judge_model"],
+        "judge_usage": {k: sum(x["judge_usage"][k] for x in o) for k in ("input_tokens", "output_tokens")},
+        "judge_batch": all(x["batch"] for x in o), "judge_backend": o[0].get("backend", "api"), "judgement": True,
+    }
+    store.log(f"  topic {t.number:>2} run {r}: rag {per_system['rag']['similarity']}/10 ({per_system['rag']['coverage']}%) "
+              f"| wiki {per_system['wiki']['similarity']}/10 ({per_system['wiki']['coverage']}%) -> {winner}"
+              + ("" if len(set(x["winner"] for x in o)) == 1 else f" (orders disagreed: {', '.join(x['winner'] for x in o)})"))
+
+
+async def grade_all(topics: list[Topic], store: Store, sem: asyncio.Semaphore) -> dict[int, str]:
+    """Grade every saved, ungraded answer pair in both orders: through one Message Batch (half price) when batching is on,
+    the rest (and anything the batch did not return) with the normal API. Each order is saved as it arrives, so a pair
+    whose second order failed is finished on resume. Returns the topics whose grading failed."""
+    s = get_settings()
+    pending = [(t, int(r)) for t in topics for r, run in store.data["topics"].get(str(t.number), {}).get("runs", {}).items()
+               if run.get("answers") and not run.get("judgement")]
+    if not pending:
+        return {}
+    cid = lambda t, r, k: f"t{t.number}-r{r}-o{k}"
+    def args(t, r, k):
+        rec, label = store.data["topics"][str(t.number)], _labels(t, r, k)
+        answers = rec["runs"][str(r)]["answers"]
+        return rec["key_points"], answers[label["A"]]["answer"], answers[label["B"]]["answer"]
+    def done(t, r, k):
+        return str(k) in (store.data["topics"][str(t.number)]["runs"][str(r)].get("orders") or {})
+    def keep(t, r, k, g):
+        run = store.data["topics"][str(t.number)]["runs"][str(r)]
+        run.setdefault("orders", {})[str(k)] = _per_order(store.data["topics"][str(t.number)]["key_points"], _labels(t, r, k), g)
+        if all(str(o) in run["orders"] for o in ORDERS):
+            _record(store, t, r)
+    todo = [(t, r, k) for t, r in pending for k in ORDERS if not done(t, r, k)]
+    if s.use_batch and todo:
+        prev = store.data.get("grading_batch") or {}
+        reqs = {cid(t, r, k): judge.grade_params(t, *args(t, r, k)) for t, r, k in todo}
+        reuse = prev.get("id") if set(prev.get("custom_ids", [])) == set(reqs) else None
+
+        async def on_submit(batch_id):
+            store.data["grading_batch"] = {"id": batch_id, "custom_ids": sorted(reqs)}
+            await store.save()
+        try:
+            got = await judge.grade_batch(reqs, reuse, on_submit, store.log)
+            left = []
+            for t, r, k in todo:
+                res = got[cid(t, r, k)]
+                if isinstance(res, Exception):
+                    left.append((t, r, k))
+                    store.log(f"  topic {t.number} run {r} order {k}: batch grading failed ({type(res).__name__}: {res}); grading normally")
+                else:
+                    keep(t, r, k, res)
+            todo = left
+            store.data.pop("grading_batch", None)
+            await store.save()
+        except Exception as e:  # the batch itself failed: grade everything normally
+            store.log(f"  grading batch failed ({type(e).__name__}: {e}); grading normally")
+    errors: dict[int, str] = {}
+
+    async def one(t, r, k):
+        async with sem:
+            try:
+                keep(t, r, k, await judge.grade(t, *args(t, r, k)))
+                await store.save()
+            except Exception as e:
+                errors[t.number] = f"{type(e).__name__}: {e}"
+    await asyncio.gather(*(one(t, r, k) for t, r, k in todo))
+    return errors
 
 
 def aggregate(data: dict):
@@ -171,7 +281,8 @@ def aggregate(data: dict):
         agg["wins"] = topic_wins
         # Per key point: how often each system covered it fully across runs
         agg["key_point_hit_rate"] = {
-            p["id"]: {name: round(sum(WEIGHT[r["systems"][name]["grades"].get(p["id"], "missing")] for r in runs) / len(runs), 2)
+            p["id"]: {name: round(sum(r["systems"][name]["point_weight"][p["id"]] if "point_weight" in r["systems"][name]
+                                      else WEIGHT[r["systems"][name]["grades"].get(p["id"], "missing")] for r in runs) / len(runs), 2)
                       for name in systems.SYSTEMS}
             for p in rec["key_points"]
         }
@@ -181,6 +292,8 @@ def aggregate(data: dict):
         "by_system": {name: {k: _mean_sd(v) for k, v in totals[name].items()} for name in systems.SYSTEMS},
         "wins_by_run": wins,
         "by_section_similarity": {sec: {n: _mean_sd(v)["mean"] for n, v in d.items()} for sec, d in sections.items()},
+        # every wiki-minus-RAG gap with its 95% confidence interval over topics; crossing zero = no clear difference
+        "gaps": gaps.gaps(data, get_settings().seed),
     }
 
 
@@ -193,9 +306,10 @@ def _new_run(conn: psycopg.Connection, topics: str, runs: int) -> str:
         sys.exit("SOURCES must be 'standard' (Part A only) or 'all' (Parts A, B and C)")
     run_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     conn.execute(
-        """insert into bench.runs (id, topics, runs, rag_collection, wiki_slug, sources, query_set_name, query_set, reference_name, reference)
-           values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-        (run_id, topics, runs, s.rag_collection, s.wiki_slug, s.sources, s.query_set.name, s.query_set.read_bytes(),
+        """insert into bench.runs (id, topics, runs, rag_collection, wiki_slug, sources, use_saved, mode, use_batch, query_set_name, query_set,
+                                  reference_name, reference)
+           values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        (run_id, topics, runs, s.rag_collection, s.wiki_slug, s.sources, s.use_saved, s.mode, s.use_batch, s.query_set.name, s.query_set.read_bytes(),
          s.reference_docx.name, s.reference_docx.read_bytes()),
     )
     return run_id
@@ -220,6 +334,11 @@ async def main():
     if not row["rag_collection"]:
         sys.exit(f"Run {run_id} has no RAG collection")
     s.rag_collection, s.wiki_slug, s.sources = row["rag_collection"], row["wiki_slug"], row["sources"] or "all"
+    s.use_saved = row["use_saved"] is not False  # older runs (null) read every page, saved answers included
+    s.mode = row.get("mode") or s.mode
+    s.use_batch = s.use_batch if row.get("use_batch") is None else row["use_batch"]
+    if s.judge_backend == "claude-code":
+        s.use_batch = False  # Message Batches are an API feature; the subscription judge grades one call at a time
     runs = args.runs or row["runs"]
     store = Store(conn, run_id, row["results"] or {}, row["log"])
     store.ref_sha, store.ref_name = rubric.sha256(row["reference"]), row["reference_name"]
@@ -241,10 +360,15 @@ async def main():
                 store.data = {
                     "config": {
                         "started": dt.datetime.now().isoformat(timespec="seconds"), "git_commit": _git_commit(),
-                        "judge_model": s.judge_model, "judge_effort": s.judge_effort, "runs": runs, "seed": s.seed,
+                        "judge_model": s.judge_model, "judge_effort": s.judge_effort,
+                        "judge_backend": "Claude Code on a Claude subscription (claude -p)" if s.judge_backend == "claude-code" else "Anthropic API",
+                        "answer_checks": {"model": s.checks_model, "version": checks.VERSION}, "runs": runs, "seed": s.seed,
                         "topics_selected": [t.number for t in topics], "expected_judgements": len(topics) * runs,
                         "question_format": "topic title + Q1..Qn, sent identically to RAG /collections/{c}/query and Wiki /wikis/{w}/query",
-                        "rag_collection": s.rag_collection, "wiki_slug": s.wiki_slug, "sources": s.sources,
+                        "rag_collection": s.rag_collection, "wiki_slug": s.wiki_slug, "sources": s.sources, "use_saved_answers": s.use_saved,
+                        "mode": s.mode, "grading": ("each pair in both orders (A-B and B-A), averaged; a win only when both agree; "
+                                                    + ("message batches (half price), normal API for the rest" if s.use_batch else "normal API")),
+                        "capture": "read+usage v1",  # each answer records what was read and its AI calls' tokens
                         "systems": await systems.describe(http),
                         "query_set": row["query_set_name"], "reference": row["reference_name"],
                         "reference_sha256": store.ref_sha,
@@ -254,9 +378,21 @@ async def main():
                 await store.save()
             store.log(f"Benchmark {run_id}  ({len(topics)} topics x {runs} runs)")
             sem = asyncio.Semaphore(s.concurrency)
-            results = await asyncio.gather(*(run_topic(t, runs, store, http, sem) for t in topics), return_exceptions=True)
+            results = await asyncio.gather(*(answer_topic(t, runs, store, http, sem) for t in topics), return_exceptions=True)
 
         errors = {t.number: f"{type(r).__name__}: {r}" for t, r in zip(topics, results) if isinstance(r, Exception)}
+        # the rubric version (and approval) of each topic this run used
+        store.data["config"]["rubric_used"] = {str(t.number): store.data["topics"][str(t.number)].get("rubric")
+                                               for t in topics if str(t.number) in store.data["topics"]}
+        # the tests that need no judge, for every saved answer (also when grading fails below)
+        await metrics.compute(store.data, s.mode)
+        await store.save()
+        errors.update(await grade_all([t for t in topics if t.number not in errors], store, sem))
+        try:  # completeness, exact match and citation accuracy: one check call per answer
+            await checks.run_checks(store.data, store.conn, store.ref_sha, sem, s.use_batch, store.save, store.log)
+        except Exception as e:
+            store.log(f"Answer checks failed ({type(e).__name__}: {e}); they show as not measured")
+        await metrics.compute(store.data, s.mode)  # graded answers keep their tests; the summary is refreshed
         store.data["errors"] = errors
         aggregate(store.data)
         store.data["config"]["finished"] = dt.datetime.now().isoformat(timespec="seconds")
