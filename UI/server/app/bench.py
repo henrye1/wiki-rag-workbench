@@ -2,13 +2,17 @@
 as subprocesses."""
 import asyncio
 import datetime as dt
+import hashlib
+import json
 import os
+import statistics
 import subprocess
+import tempfile
 from typing import Literal
 from urllib.parse import quote
 
 import psycopg
-from fastapi import APIRouter, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Form, HTTPException, Response, UploadFile
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
@@ -62,7 +66,7 @@ def _progress(row: dict, cfg: dict | None, errors: dict | None = None) -> dict:
 @router.get("/runs")
 async def list_runs():
     rows = await _query(
-        f"""select id, status, updated_at, runs, topics, query_set_name, reference_name, rag_collection, wiki_slug, sources, use_saved, {DONE_SQL},
+        f"""select id, status, updated_at, runs, topics, query_set_name, reference_name, rag_collection, wiki_slug, sources, use_saved, mode, use_batch, {DONE_SQL},
                    results->'config' as config, results->'summary' as summary, results->'errors' as errors,
                    jsonb_array_length(coalesce(results->'config'->'topics_selected', '[]'::jsonb)) as n_topics
             from bench.runs order by created_at desc"""
@@ -75,6 +79,7 @@ async def list_runs():
             "judge_model": cfg.get("judge_model"), "topics": r["n_topics"] or r["topics"] or "all",
             "query_set": r["query_set_name"], "reference": r["reference_name"],
             "rag_collection": r["rag_collection"], "wiki": r["wiki_slug"], "sources": r["sources"], "use_saved": r["use_saved"],
+            "mode": r["mode"], "use_batch": r["use_batch"],
             "summary": r["summary"], "progress": _progress(r, cfg, r["errors"]),
         })
     return out
@@ -118,6 +123,177 @@ def _spawn(run_id: str, args: list[str] | None = None):
     _procs[run_id] = subprocess.Popen([str(py), "-m", *(args or ["bench.run", "--run-id", run_id])], cwd=s.bench_dir, env=env)
 
 
+# ---------- before a run: the topics to choose from, and what the run will cost ----------
+
+def _prices() -> dict:
+    return json.loads((get_settings().bench_dir / "bench" / "prices.json").read_text())
+
+
+async def _latest_inputs() -> dict | None:
+    return await _query("""select query_set_name, query_set, reference_name, reference from bench.runs
+                           where query_set is not null and reference is not null order by created_at desc limit 1""", one=True)
+
+
+@router.get("/topics")
+async def list_topics():
+    """The topics of the query set and reference that a new run uses (the most recent run's)."""
+    last = await _latest_inputs()
+    if not last:
+        return {"topics": [], "query_set": None}
+    def parse():
+        with tempfile.TemporaryDirectory() as tmp:
+            q, r = os.path.join(tmp, "q.txt"), os.path.join(tmp, "r.docx")
+            open(q, "wb").write(last["query_set"]); open(r, "wb").write(last["reference"])
+            code = ("import json,sys,pathlib; from bench.data import load; "
+                    "print(json.dumps([{'number': t.number, 'code': t.code, 'title': t.title, 'section': t.section} "
+                    "for t in load(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]))]))")
+            out = subprocess.run([str(get_settings().bench_python_path()), "-c", code, q, r], cwd=get_settings().bench_dir,
+                                 capture_output=True, text=True, timeout=120)
+        if out.returncode:
+            raise HTTPException(500, f"Could not read the query set: {out.stderr.strip().splitlines()[-1:]}")
+        return json.loads(out.stdout)
+    return {"topics": await asyncio.to_thread(parse), "query_set": last["query_set_name"], "reference": last["reference_name"]}
+
+
+def _answer_cost(usage: list, prices: dict) -> float | None:
+    total = 0.0
+    for u in usage:
+        if u.get("step") == "embed":
+            continue
+        p = prices.get(u.get("model") or "")
+        if not p or u.get("input_tokens") is None:
+            return None
+        total += u["input_tokens"] / 1e6 * p["input"] + ((u.get("output_tokens") or 0) + (u.get("thinking_tokens") or 0)) / 1e6 * p["output"]
+    return total
+
+
+def _judge_backend() -> str:
+    """The benchmark's JUDGE_BACKEND (its environment, else Benchmark/.env): api, or claude-code (the Claude subscription)."""
+    v = os.environ.get("JUDGE_BACKEND")
+    if v is None:
+        try:
+            for line in (get_settings().bench_dir / ".env").read_text(encoding="utf-8").splitlines():
+                k, _, val = line.partition("=")
+                if k.strip() == "JUDGE_BACKEND":
+                    v = val.strip()
+        except OSError:
+            pass
+    return "claude-code" if (v or "").strip().lower() == "claude-code" else "api"
+
+
+@router.get("/judge")
+async def judge_info():
+    """Which judge grades new runs; Message Batches exist only on the API."""
+    b = _judge_backend()
+    return {"backend": b, "label": "Claude subscription (Claude Code)" if b == "claude-code" else "Anthropic API", "batch_available": b == "api"}
+
+
+SUBSCRIPTION = "on your Claude subscription: no API charge, counts toward the plan's usage limits"
+
+
+@router.get("/estimate")
+async def estimate(topics: str = "", runs: int = 2, mode: str = "quick", use_batch: bool = True, collection: str = "", wiki: str = ""):
+    """What a run is expected to cost, from recorded token use and the price list only: an item with no basis yet is
+    reported as such, never guessed."""
+    prices, s = _prices(), get_settings()
+    sub = _judge_backend() == "claude-code"
+    use_batch = use_batch and not sub
+    all_topics = (await list_topics())["topics"]
+    wanted = set(range(1, len(all_topics) + 1))
+    if topics.strip():
+        wanted = set()
+        for part in topics.replace(" ", "").split(","):
+            a, _, b = part.partition("-")
+            wanted.update(range(int(a), int(b or a) + 1))
+    n = len(wanted & {t["number"] for t in all_topics})
+    rows = await _query("""select id, wiki_slug, rag_collection, results->'topics' as topics from bench.runs
+                           where results is not null order by created_at desc limit 20""")
+    answers = {"rag": {"same": [], "other": []}, "wiki": {"same": [], "other": []}}
+    context = {"rag": {"same": [], "other": []}, "wiki": {"same": [], "other": []}}  # tokens the answer's own call read and wrote
+    judge_usage, kp_usage = [], []
+    for r in rows:
+        for t in (r["topics"] or {}).values():
+            if t.get("key_points_usage"):
+                kp_usage.append(t["key_points_usage"])
+            for run in (t.get("runs") or {}).values():
+                if run.get("orders"):  # both orders: each order's own grading
+                    judge_usage += [o["judge_usage"] for o in run["orders"].values() if not o.get("batch")]
+                elif run.get("judge_usage") and not run.get("judge_batch"):
+                    judge_usage.append(run["judge_usage"])
+                for sysname, a in (run.get("systems") or run.get("answers") or {}).items():
+                    if a.get("usage") is not None and (c := _answer_cost(a["usage"], prices)) is not None:
+                        same = (r["wiki_slug"] == wiki) if sysname == "wiki" else (r["rag_collection"] == collection)
+                        answers.setdefault(sysname, {"same": [], "other": []})["same" if same else "other"].append(c)
+                        call = next((u for u in a["usage"] if u.get("step") == "answer"), None)
+                        if call and call.get("input_tokens") is not None:
+                            context.setdefault(sysname, {"same": [], "other": []})["same" if same else "other"].append(
+                                call["input_tokens"] + (call.get("output_tokens") or 0))
+    jm = prices.get("claude-opus-5-5")  # the grading model (bench JUDGE_MODEL)
+    items = []
+    for sysname, label in (("rag", f"RAG answers ({collection or 'collection'})"), ("wiki", f"Wiki answers ({wiki or 'wiki'})")):
+        pool = answers[sysname]["same"] or answers[sysname]["other"]
+        basis = (f"mean of {len(pool)} recorded answer(s) of this {'collection' if sysname == 'rag' else 'wiki'}" if answers[sysname]["same"]
+                 else f"mean of {len(pool)} recorded answer(s) of another {'collection' if sysname == 'rag' else 'wiki'}" if pool else None)
+        unit = statistics.mean(pool) if pool else None
+        items.append({"item": label, "count": n * runs, "unit_usd": unit, "total_usd": unit * n * runs if unit is not None else None,
+                      "basis": basis or "no answer with recorded tokens yet: cannot estimate until a run has recorded some"})
+    if sub:
+        items.append({"item": "Grading, both orders (Claude Opus 5.5)", "count": n * runs * 2, "unit_usd": 0, "total_usd": 0,
+                      "basis": SUBSCRIPTION})
+    elif judge_usage and jm:
+        unit = statistics.mean(u["input_tokens"] / 1e6 * jm["input"] + u["output_tokens"] / 1e6 * jm["output"] for u in judge_usage)
+        if use_batch:
+            unit *= prices.get("batch_discount", 1)
+        # each answer pair is graded twice (A-then-B and B-then-A)
+        items.append({"item": "Grading, both orders (Claude Opus 5.5" + (", Message Batches: half price)" if use_batch else ")"),
+                      "count": n * runs * 2, "unit_usd": unit, "total_usd": unit * n * runs * 2,
+                      "basis": f"mean of {len(judge_usage)} recorded grading(s)"})
+    else:
+        items.append({"item": "Grading, both orders", "count": n * runs * 2, "unit_usd": None, "total_usd": None, "basis": "no recorded grading yet"})
+    last = await _latest_inputs()
+    if last:
+        sha = hashlib.sha256(last["reference"]).hexdigest()
+        saved = {r["topic_number"] for r in await _query("select topic_number from bench.rubrics where reference_sha256 = %s", (sha,))}
+        missing = len((wanted & {t["number"] for t in all_topics}) - saved)
+        if missing and sub:
+            items.append({"item": "Key points for topics without a saved rubric", "count": missing, "unit_usd": 0, "total_usd": 0,
+                          "basis": SUBSCRIPTION})
+        elif missing and kp_usage and jm:
+            unit = statistics.mean(u["input_tokens"] / 1e6 * jm["input"] + u["output_tokens"] / 1e6 * jm["output"] for u in kp_usage)
+            items.append({"item": "Key points for topics without a saved rubric", "count": missing, "unit_usd": unit,
+                          "total_usd": unit * missing, "basis": f"mean of {len(kp_usage)} recorded key-point call(s)"})
+        elif not missing:
+            items.append({"item": "Key points", "count": 0, "unit_usd": 0, "total_usd": 0, "basis": "the saved rubric is reused"})
+    items.append({"item": "Answer checks: completeness, exact match, citation accuracy", "count": n * runs * 2, "unit_usd": None,
+                  "total_usd": None, "basis": "not estimated until a run has recorded them"})
+    if mode == "full":
+        # faithfulness + context recall: one Sonnet call per answer that reads what the answer read. Its input is taken as the
+        # tokens the answer's own call read and wrote (recorded); its output as a grading's recorded output per answer.
+        cm = prices.get("claude-sonnet-5-5")
+        out_per_answer = statistics.mean(u["output_tokens"] for u in judge_usage) / 2 if judge_usage else None
+        for sysname, label in (("rag", "RAG"), ("wiki", "Wiki")):
+            pool = context[sysname]["same"] or context[sysname]["other"]
+            if sub:
+                items.append({"item": f"Faithfulness + context recall, {label} answers", "count": n * runs, "unit_usd": 0,
+                              "total_usd": 0, "basis": SUBSCRIPTION})
+            elif pool and out_per_answer is not None and cm:
+                unit = statistics.mean(pool) / 1e6 * cm["input"] + out_per_answer / 1e6 * cm["output"]
+                if use_batch:
+                    unit *= prices.get("batch_discount", 1)
+                items.append({"item": f"Faithfulness + context recall, {label} answers (Claude Sonnet 5.5{', batch' if use_batch else ''})",
+                              "count": n * runs, "unit_usd": unit, "total_usd": unit * n * runs,
+                              "basis": f"input: mean context of {len(pool)} recorded answer(s) ({statistics.mean(pool):,.0f} tokens); "
+                                       f"output: half a recorded grading ({out_per_answer:,.0f} tokens)"})
+            else:
+                items.append({"item": f"Faithfulness + context recall, {label} answers", "count": n * runs, "unit_usd": None,
+                              "total_usd": None, "basis": "no answer with recorded tokens yet"})
+    known = [i["total_usd"] for i in items if i["total_usd"] is not None]
+    unknown = [i["item"] for i in items if i["total_usd"] is None]
+    return {"topics": n, "runs": runs, "mode": mode, "use_batch": use_batch, "items": items, "judge_backend": "claude-code" if sub else "api",
+            "total_usd": round(sum(known), 2), "complete": not unknown, "not_estimated": unknown,
+            "note": "Estimated from recorded token use and the price list (Benchmark/bench/prices.json); actual cost depends on answer length."}
+
+
 @router.get("/rubrics")
 async def list_rubrics():
     """Saved rubrics (key points built once per reference file and reused by every run), newest first."""
@@ -147,6 +323,25 @@ async def get_rubric(ref_sha: str):
     if not rows:
         raise HTTPException(404, "No saved rubric for this reference file")
     return {"reference_sha256": ref_sha, "reference_name": rows[0]["reference_name"], "tags": TAGS, "topics": rows}
+
+
+@router.get("/rubrics/{ref_sha}/export.docx")
+async def export_rubric(ref_sha: str, topic: int = 0, tag: str = "", unreviewed: bool = False):
+    """The saved rubric as a Word document laid out like the review screen, with the screen's filters (topic, tag,
+    not yet reviewed). Unsaved edits on the screen are not in it."""
+    from .rubric_export import TAG_LABEL, build
+    rub = await get_rubric(ref_sha)
+    rows = rub["topics"]
+    counts = (len(rows), sum(1 for r in rows if r["reviewed_at"]), sum(1 for r in rows if r["facts_reviewed_at"]))
+    shown = [r for r in rows if (not topic or r["topic_number"] == topic) and (not unreviewed or not r["reviewed_at"] or (r["facts"] is not None and not r["facts_reviewed_at"]))]
+    for r in shown:
+        r["points"] = [p for p in r["key_points"] or [] if not tag or p.get("kind") == tag]
+    filters = ", ".join(x for x in (f"topic {topic}" if topic else "", f"tag {TAG_LABEL.get(tag, tag)}" if tag else "",
+                                     "not yet reviewed only" if unreviewed else "") if x)
+    data = await asyncio.to_thread(build, rub["reference_name"] or "reference", ref_sha, shown, filters, counts)
+    name = f"Rubric - {rub['reference_name'] or ref_sha[:10]}.docx".replace("/", "-")
+    return Response(data, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
 
 
 class KeyPoint(BaseModel):
@@ -255,9 +450,12 @@ async def start(
     wiki: str = Form(..., description="Wiki slug under test"),
     sources: Literal["standard", "all"] = Form(..., description="Both systems use the same: standard = Part A only; all = Parts A, B and C"),
     use_saved: bool = Form(True, description="The wiki also reads relevant saved answers (synthesis pages filed with Save)"),
+    mode: Literal["quick", "full"] = Form("quick", description="quick: answers, grading and the answer checks; full: also faithfulness and context recall"),
+    use_batch: bool = Form(True, description="Grade through the Message Batches API (half price; slower), normal API for the rest"),
 ):
     """Start a run comparing one RAG collection with one wiki. Files left out are reused from the most recent run that has them."""
     _ensure_idle()
+    use_batch = use_batch and _judge_backend() == "api"  # batches are an API feature; the subscription judge grades normally
     collection, wiki = collection.strip(), wiki.strip()
     await _ensure_collection(collection)
     await _ensure_wiki(wiki)
@@ -272,9 +470,10 @@ async def start(
         raise HTTPException(400, "Upload the reference assessment (.docx) and the query set (.txt) for the first run")
     run_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     await _query(
-        """insert into bench.runs (id, topics, runs, rag_collection, wiki_slug, sources, use_saved, query_set_name, query_set, reference_name, reference)
-           values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-        (run_id, topics.replace(" ", ""), runs, collection, wiki, sources, use_saved, qs[0], qs[1], ref[0], ref[1]),
+        """insert into bench.runs (id, topics, runs, rag_collection, wiki_slug, sources, use_saved, mode, use_batch, query_set_name, query_set,
+                                  reference_name, reference)
+           values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+        (run_id, topics.replace(" ", ""), runs, collection, wiki, sources, use_saved, mode, use_batch, qs[0], qs[1], ref[0], ref[1]),
     )
     _spawn(run_id)
     return {"id": run_id}

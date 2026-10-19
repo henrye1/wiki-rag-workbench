@@ -17,14 +17,33 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki';
       @if (data(); as d) {
         <h1>Run {{ id() }}</h1>
         @if (d.compared; as c) {
-          <p class="compared"><b>{{ c.rag_collection || '—' }}</b> <span class="muted">vs</span> <b>{{ c.wiki || '—' }}</b> ·
+          <p class="compared"><b>{{ c.rag_collection || '—' }}</b><span class="muted">&nbsp;vs&nbsp;</span><b>{{ c.wiki || '—' }}</b> ·
             Sources: <span class="pill">{{ c.sources === 'standard' ? 'Standard only' : c.sources === 'all' ? 'All' : '—' }}</span>
             · Saved answers: <span class="pill">{{ c.use_saved === true ? 'On' : c.use_saved === false ? 'Off' : 'not recorded' }}</span>
             <span class="muted small">(the same for both systems)</span></p>
         }
-        <p class="muted">Judge {{ d.config.judge_model }} ({{ d.config.judge_effort }}) · {{ d.config.runs }} run(s) per topic ·
+        <p class="muted">Judge {{ d.config.judge_model }} ({{ d.config.judge_effort }}{{ d.config.judge_backend ? ', ' + d.config.judge_backend : '' }}) · {{ d.config.runs }} run(s) per topic ·
           RAG: {{ ragDocs(d) }} · Wiki: {{ d.config.systems?.wiki?.wiki?.pages ?? '?' }} pages · commit {{ d.config.git_commit ?? '—' }}</p>
         <p class="muted small">Rubric: {{ rubricLabel(d) }}</p>
+        @if (d.summary?.gaps; as g) {
+          <div class="card gaps">
+            <h3>Differences (wiki − RAG)</h3>
+            <table class="simple">
+              <thead><tr><th>Test</th><th class="n">Gap</th><th class="n">95% confidence interval</th><th>Result</th><th class="n">Topics</th></tr></thead>
+              <tbody>
+                @for (k of gapOrder; track k) {
+                  @if (g[k]; as e) {
+                    <tr><td>{{ gapLabel[k] }}</td><td class="n">{{ fmtGap(k, e.diff) }}</td>
+                      <td class="n">{{ e.ci ? fmtGap(k, e.ci[0]) + ' to ' + fmtGap(k, e.ci[1]) : '—' }}</td>
+                      <td>@if (e.leader) { <span class="pill" [class.rag]="e.leader === 'rag'" [class.wiki]="e.leader === 'wiki'">{{ e.verdict }}</span> }
+                          @else { <span class="muted">{{ e.verdict }}</span> }</td>
+                      <td class="n">{{ e.n_topics }}</td></tr>
+                  }
+                }
+              </tbody>
+            </table>
+          </div>
+        }
 
         @if (d.summary; as s) {
           <div class="cards">
@@ -93,6 +112,8 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki';
     .bars { display: flex; flex-direction: column; gap: 2px; }
     .bar { display: block; height: 6px; border-radius: 3px; min-width: 2px; }
     .rag { background: #1565c0; } .wiki { background: #ef6c00; }
+    .gaps { margin: 12px 0 16px; } .gaps h3 { margin: 0 0 6px; } .gaps td.n, .gaps th.n { text-align: right; white-space: nowrap; }
+    .pill.rag, .pill.wiki { color: #fff; }
     .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-left: 8px; }
     .pos { color: #1565c0; font-weight: 500; } .neg { color: #ef6c00; font-weight: 500; }
   `,
@@ -127,6 +148,24 @@ export class BenchRun {
 
   constructor() {
     effect(() => { this.api.get(`/api/bench/runs/${enc(this.id())}`).then((d) => this.data.set(d)).catch((e) => this.error.set(errMsg(e))); });
+  }
+
+  readonly gapOrder = ['similarity', 'coverage', 'coverage_standard', 'wins', 'exact_match', 'faithfulness', 'citation_accuracy',
+                       'context_recall', 'completeness', 'latency_s', 'cost_usd'];
+  readonly gapLabel: Record<string, string> = {
+    similarity: 'Similarity (0–10)', coverage: 'Coverage', coverage_standard: 'Standard-only coverage', wins: 'Wins (share of answers)',
+    exact_match: 'Exact match', faithfulness: 'Faithfulness', citation_accuracy: 'Citation accuracy', context_recall: 'Context recall',
+    completeness: 'Completeness', latency_s: 'Latency (s, lower is better)', cost_usd: 'Cost per query (lower is better)',
+  };
+
+  fmtGap(k: string, v: number) {
+    const sign = v > 0 ? '+' : v < 0 ? '−' : '';
+    const a = Math.abs(v);
+    if (k === 'cost_usd') return `${sign}$${a.toFixed(4)}`;
+    if (k === 'latency_s') return `${sign}${a.toFixed(1)} s`;
+    if (k === 'similarity') return `${sign}${a.toFixed(2)}`;
+    if (k === 'wins') return `${sign}${(a * 100).toFixed(0)} pts`;
+    return `${sign}${a.toFixed(1)} pts`;
   }
 
   rubricLabel(d: any) {

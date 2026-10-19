@@ -1,0 +1,8 @@
+{
+  "_note": "USD per 1M tokens. Checked 2026-10-16. Gemini: https://ai.google.dev/gemini-api/docs/pricing (thinking tokens are billed as output). Claude: Anthropic API list prices; the Message Batches API is half price.",
+  "gemini-2.5-flash": {"input": 0.30, "output": 2.50},
+  "claude-opus-5-5": {"input": 4.00, "output": 20.00},
+  "claude-sonnet-5-5": {"input": 2.00, "output": 10.00},
+  "claude-haiku-5-5": {"input": 0.10, "output": 0.50},
+  "batch_discount": 0.5
+}

@@ -1,4 +1,4 @@
-import { DatePipe } from '@angular/common';
+import { DatePipe, DecimalPipe } from '@angular/common';
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
@@ -16,7 +16,7 @@ import { poller } from '../../shared/poll';
 
 @Component({
   selector: 'app-bench-runs',
-  imports: [FormsModule, RouterLink, DatePipe, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatSelectModule, MatButtonToggleModule, FileDrop],
+  imports: [FormsModule, RouterLink, DatePipe, DecimalPipe, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule, MatInputModule, MatProgressBarModule, MatSelectModule, MatButtonToggleModule, FileDrop],
   template: `
     <div class="page">
       <h1>Benchmark</h1>
@@ -47,13 +47,56 @@ import { poller } from '../../shared/poll';
             </mat-button-toggle-group>
           </div>
           <mat-checkbox [(ngModel)]="useSaved" title="The wiki also reads relevant saved answers (synthesis pages filed with Save), in addition to its normal pages">Use saved answers</mat-checkbox>
+          <div class="sources" title="Quick: answers, grading and the answer checks. Full: also faithfulness and context recall (one Claude Sonnet 5.5 call per answer).">
+            <span class="muted">Mode</span>
+            <mat-button-toggle-group [(ngModel)]="mode" hideSingleSelectionIndicator>
+              <mat-button-toggle value="quick">Quick</mat-button-toggle>
+              <mat-button-toggle value="full">Full</mat-button-toggle>
+            </mat-button-toggle-group>
+          </div>
+          @if (judge()?.batch_available === false) {
+            <span class="muted" title="Set in Benchmark/.env (JUDGE_BACKEND). Grading runs through Claude Code on your Claude subscription: no API charge, but it counts toward the plan's usage limits, and Message Batches are not available.">Judge: {{ judge().label }}</span>
+          } @else {
+            <mat-checkbox [(ngModel)]="useBatch" title="Grade through the Message Batches API: half price, but grading can take up to a few hours. Anything the batch does not return is graded normally.">Batch grading (half price)</mat-checkbox>
+          }
           <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>Topics</mat-label>
-            <input matInput [(ngModel)]="topics" placeholder="e.g. 2 or 1-5 (empty = all 26)" /></mat-form-field>
+            <input matInput [(ngModel)]="topics" placeholder="e.g. 2 or 1-5 (empty = all)" /></mat-form-field>
+          <button mat-stroked-button (click)="pickTopics()"><mat-icon>checklist</mat-icon> Choose</button>
           <mat-form-field appearance="outline" subscriptSizing="dynamic" class="runs"><mat-label>Runs</mat-label>
             <input matInput type="number" min="1" max="10" [(ngModel)]="runs" /></mat-form-field>
-          <button mat-flat-button (click)="start()" [disabled]="active() || !wiki || !collection"><mat-icon>play_arrow</mat-icon> Start</button>
-          <span class="muted small">Full run ≈ 26 × runs × (2 system answers + 1 Claude judgement). Needs RAG and the wiki populated.</span>
+          <button mat-flat-button (click)="review()" [disabled]="active() || !wiki || !collection || reviewing()"><mat-icon>play_arrow</mat-icon> Start…</button>
         </div>
+        @if (picking()) {
+          <div class="picker">
+            <div class="row"><b class="grow">Topics ({{ chosen().size }} of {{ allTopics().length }})</b>
+              <button mat-button (click)="setAll(true)">All</button><button mat-button (click)="setAll(false)">None</button>
+              <button mat-flat-button (click)="applyTopics()">Use these</button><button mat-button (click)="picking.set(false)">Cancel</button></div>
+            @for (sec of sections(); track sec.name) {
+              <div class="sec"><span class="muted small">{{ sec.name }}</span>
+                @for (t of sec.topics; track t.number) {
+                  <mat-checkbox [checked]="chosen().has(t.number)" (change)="toggleTopic(t.number)">{{ t.number }}. {{ t.title }}</mat-checkbox>
+                }
+              </div>
+            }
+          </div>
+        }
+        @if (estimate(); as e) {
+          <div class="estimate">
+            <b>Estimated cost: \${{ e.total_usd | number: '1.2-2' }}{{ e.complete ? '' : ' + items that cannot be estimated yet' }}</b>
+            <span class="muted"> · {{ e.topics }} topic(s) × {{ e.runs }} run(s) · {{ e.mode === 'full' ? 'Full' : 'Quick' }} mode{{ e.use_batch ? ' · batch grading' : '' }}</span>
+            <table class="simple est"><tbody>
+              @for (i of e.items; track i.item) {
+                <tr><td>{{ i.item }}</td><td class="n">{{ i.count }} ×</td>
+                  <td class="n">{{ i.unit_usd === null ? '—' : '$' + (i.unit_usd | number: '1.4-4') }}</td>
+                  <td class="n"><b>{{ i.total_usd === null ? 'not estimated' : '$' + (i.total_usd | number: '1.2-2') }}</b></td>
+                  <td class="muted small">{{ i.basis }}</td></tr>
+              }
+            </tbody></table>
+            <p class="muted small">{{ e.note }}</p>
+            <div class="row"><button mat-flat-button (click)="start()"><mat-icon>play_arrow</mat-icon> Start run</button>
+              <button mat-button (click)="estimate.set(null)">Cancel</button></div>
+          </div>
+        }
         @if (active(); as a) {
           <div class="progress">
             <div class="row"><b class="grow">Running {{ a.id }}</b><span>{{ a.done }} / {{ a.expected ?? '?' }} judged</span></div>
@@ -126,6 +169,9 @@ import { poller } from '../../shared/poll';
     </div>
   `,
   styles: `
+    .picker, .estimate { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--mat-sys-outline-variant); border-radius: 10px; }
+    .picker .sec { display: flex; flex-direction: column; margin-top: 8px; }
+    .est { margin: 8px 0; } .est td.n { text-align: right; white-space: nowrap; }
     .runs { width: 90px; } .rubric { margin-top: 16px; } .mono { font-family: monospace; } .sources { display: flex; align-items: center; gap: 8px; } .wiki { width: 240px; } .actions { white-space: nowrap; }
     .files { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; } .small { font-size: 12px; } .head { margin-top: 20px; }
     .progress { margin-top: 12px; } .log { max-height: 160px; overflow: auto; white-space: pre-wrap; margin: 8px 0 0; }
@@ -148,6 +194,14 @@ export class BenchRuns {
   collection = '';
   sources: 'standard' | 'all' = 'all';
   useSaved = true;
+  mode: 'quick' | 'full' = 'quick';
+  useBatch = true;
+  readonly judge = signal<any>(null);
+  readonly allTopics = signal<any[]>([]);
+  readonly chosen = signal<Set<number>>(new Set());
+  readonly picking = signal(false);
+  readonly estimate = signal<any>(null);
+  readonly reviewing = signal(false);
   topics = '2';
   runs = 2;
   wiki = '';
@@ -167,6 +221,10 @@ export class BenchRuns {
   constructor() {
     void this.load(true);
     this.rubricPoll.start();
+    void this.api.get('/api/bench/judge').then((j) => {
+      this.judge.set(j);
+      if (!j.batch_available) this.useBatch = false;
+    }).catch(() => {});
     void this.api.wikis().then((w) => {
       this.wikis.set(w);
       if (!this.wiki && w.length) this.wiki = w[0].slug;
@@ -186,6 +244,68 @@ export class BenchRuns {
     }
   }
 
+  /** Start…: show what the run is expected to cost, from recorded token use; the run starts only after confirming. */
+  async review() {
+    this.error.set('');
+    this.reviewing.set(true);
+    try {
+      const q = new URLSearchParams({ topics: this.topics, runs: String(this.runs), mode: this.mode, use_batch: String(this.useBatch),
+                                      collection: this.collection, wiki: this.wiki });
+      this.estimate.set(await this.api.get(`/api/bench/estimate?${q}`));
+    } catch (e) {
+      this.error.set(errMsg(e));
+    } finally {
+      this.reviewing.set(false);
+    }
+  }
+
+  sections() {
+    const out: { name: string; topics: any[] }[] = [];
+    for (const t of this.allTopics()) {
+      const last = out[out.length - 1];
+      if (last?.name === t.section) last.topics.push(t); else out.push({ name: t.section, topics: [t] });
+    }
+    return out;
+  }
+
+  async pickTopics() {
+    try {
+      if (!this.allTopics().length) this.allTopics.set((await this.api.get<any>('/api/bench/topics')).topics);
+      const all = this.allTopics().map((t) => t.number);
+      const sel = new Set<number>();
+      if (!this.topics.trim()) all.forEach((n) => sel.add(n));
+      for (const part of this.topics.replace(/\s/g, '').split(',').filter(Boolean)) {
+        const [a, b] = part.split('-').map(Number);
+        for (let n = a; n <= (b || a); n++) sel.add(n);
+      }
+      this.chosen.set(sel);
+      this.picking.set(true);
+    } catch (e) {
+      this.error.set(errMsg(e));
+    }
+  }
+
+  toggleTopic(n: number) {
+    this.chosen.update((s) => { const x = new Set(s); if (x.has(n)) x.delete(n); else x.add(n); return x; });
+  }
+
+  setAll(on: boolean) { this.chosen.set(new Set(on ? this.allTopics().map((t) => t.number) : [])); }
+
+  /** The chosen topics as "1-3,5" (all of them: empty). */
+  applyTopics() {
+    const ns = [...this.chosen()].sort((a, b) => a - b);
+    if (ns.length === this.allTopics().length) { this.topics = ''; this.picking.set(false); return; }
+    const parts: string[] = [];
+    for (let i = 0; i < ns.length; ) {
+      let j = i;
+      while (j + 1 < ns.length && ns[j + 1] === ns[j] + 1) j++;
+      parts.push(i === j ? `${ns[i]}` : `${ns[i]}-${ns[j]}`);
+      i = j + 1;
+    }
+    this.topics = parts.join(',');
+    this.picking.set(false);
+  }
+
   async start() {
     this.error.set('');
     try {
@@ -197,8 +317,11 @@ export class BenchRuns {
       fd.append('collection', this.collection);
       fd.append('sources', this.sources);
       fd.append('use_saved', String(this.useSaved));
+      fd.append('mode', this.mode);
+      fd.append('use_batch', String(this.useBatch));
       fd.append('wiki', this.wiki);
       const r = await this.api.post('/api/bench/runs', fd);
+      this.estimate.set(null);
       this.watch(r.id);
     } catch (e) {
       this.error.set(errMsg(e));

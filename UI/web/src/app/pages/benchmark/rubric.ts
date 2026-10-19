@@ -47,7 +47,13 @@ const TAG_LABEL: Record<string, string> = {
         <mat-checkbox [(ngModel)]="unreviewedOnly">Not yet reviewed</mat-checkbox>
         <span class="grow"></span>
         <span class="muted">{{ approvedCount() }} of {{ topics().length }} topics' key points approved · {{ factsApprovedCount() }} fact lists approved</span>
+        @if (ref()) {
+          <a mat-stroked-button [href]="exportUrl()" download
+             [title]="anyDirty() ? 'Exports the saved rubric: approve your changes first to include them' : 'The saved rubric as a Word document, with the filters above'">
+            <mat-icon>download</mat-icon> Export to Word</a>
+        }
       </div>
+      @if (anyDirty()) { <p class="muted small">You have unsaved changes; the export contains the saved rubric only.</p> }
       @if (error()) { <p class="error">{{ error() }}</p> }
 
       @for (t of visible(); track t.n) {
@@ -126,6 +132,15 @@ export class BenchRubric {
   topicFilter = 0;
   tagFilter = '';
   unreviewedOnly = false;
+
+  exportUrl() {
+    const q = new URLSearchParams({ topic: String(this.topicFilter || 0), tag: this.tagFilter, unreviewed: String(this.unreviewedOnly) });
+    return `/api/bench/rubrics/${enc(this.ref())}/export.docx?${q}`;
+  }
+
+  anyDirty() {
+    return this.topics().some((t) => this.dirtyPoints(t) || this.dirtyFacts(t));
+  }
 
   readonly approvedCount = computed(() => this.topics().filter((t) => t.reviewed_at).length);
   readonly factsApprovedCount = computed(() => this.topics().filter((t) => t.facts_reviewed_at).length);

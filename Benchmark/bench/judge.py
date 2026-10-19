@@ -1,8 +1,12 @@
-"""Claude as judge: extract key points from the human reference, then grade two anonymised answers against them."""
+"""Claude as judge: extract key points from the human reference, then grade two anonymised answers against them.
+
+Gradings can go through the Message Batches API (half price): grade_batch() submits them together and returns each
+result or the reason it failed, so the caller grades those normally (with the refusal fallback batches do not allow)."""
 import asyncio
 import json
 import os
 import tempfile
+import time
 
 from anthropic import AsyncAnthropic
 
@@ -60,27 +64,32 @@ async def _cli_call(system: str, user: str, schema: dict) -> dict:
                       + (u.get("cacheCreationInputTokens") or 0), "output_tokens": u.get("outputTokens") or 0}}
 
 
-async def _json_call(system: str, user: str, schema: dict) -> dict:
+def _params(system: str, user: str, schema: dict) -> dict:
     s = get_settings()
-    if s.judge_backend == "claude-code":
+    return {"model": s.judge_model, "max_tokens": 16000, "system": system, "messages": [{"role": "user", "content": user}],
+            "output_config": {"effort": s.judge_effort, "format": {"type": "json_schema", "schema": schema}}}
+
+
+def _parse(resp, batch: bool = False) -> dict:
+    if resp.stop_reason == "refusal":
+        raise JudgeRefused(str(getattr(resp, "stop_details", None)))
+    if resp.stop_reason == "max_tokens":
+        raise RuntimeError("Judge output truncated (max_tokens)")
+    text = next(b.text for b in resp.content if b.type == "text")
+    return {"data": json.loads(text), "model": resp.model, "batch": batch, "backend": "api",
+            "usage": {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}}
+
+
+async def _json_call(system: str, user: str, schema: dict) -> dict:
+    if get_settings().judge_backend == "claude-code":
         return await _cli_call(system, user, schema)
     resp = await client().beta.messages.create(
-        model=s.judge_model,
-        max_tokens=16000,
-        system=system,
-        messages=[{"role": "user", "content": user}],
-        output_config={"effort": s.judge_effort, "format": {"type": "json_schema", "schema": schema}},
+        **_params(system, user, schema),
         # Server-side refusal fallback (routes by refusal category); unlikely to trigger on accounting text
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",
     )
-    if resp.stop_reason == "refusal":
-        raise JudgeRefused(str(resp.stop_details))
-    if resp.stop_reason == "max_tokens":
-        raise RuntimeError("Judge output truncated (max_tokens)")
-    text = next(b.text for b in resp.content if b.type == "text")
-    return {"data": json.loads(text), "model": resp.model, "backend": "api",
-            "usage": {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}}
+    return _parse(resp)
 
 
 # ---------- key points ----------
@@ -174,12 +183,55 @@ Then score overall similarity to the reference from 0 to 10 (10 = covers everyth
 list contradictions or errors relative to the reference, pick the closer answer (or tie), and explain briefly."""
 
 
-async def grade(topic, points: list[dict], answer_a: str, answer_b: str) -> dict:
+def _grade_user(topic, points: list[dict], answer_a: str, answer_b: str) -> str:
     rubric = "\n".join(f"{p['id']} [{p['kind']}]: {p['point']}" for p in points)
     user = (
         f"Topic: {topic.code} {topic.title}\n\nQuestions asked:\n" + "\n".join(topic.questions)
         + f"\n\n<reference_answer>\n{topic.reference}\n</reference_answer>\n\n<rubric>\n{rubric}\n</rubric>"
         + f"\n\n<answer_A>\n{answer_a}\n</answer_A>\n\n<answer_B>\n{answer_b}\n</answer_B>"
     )
-    return await _json_call(GRADE_SYSTEM, user, GRADE_SCHEMA)
+    return user
+
+
+async def grade(topic, points: list[dict], answer_a: str, answer_b: str) -> dict:
+    return await _json_call(GRADE_SYSTEM, _grade_user(topic, points, answer_a, answer_b), GRADE_SCHEMA)
+
+
+def grade_params(topic, points: list[dict], answer_a: str, answer_b: str) -> dict:
+    """The same grading request, for the Message Batches API (which does not take the refusal fallback)."""
+    return _params(GRADE_SYSTEM, _grade_user(topic, points, answer_a, answer_b), GRADE_SCHEMA)
+
+
+async def grade_batch(requests: dict[str, dict], batch_id: str | None, on_submit, log=print) -> dict[str, dict | Exception]:
+    """Submit (or, on resume, keep polling) one batch of gradings; each custom_id gets its result or the reason it failed."""
+    s = get_settings()
+    c = client()
+    if not batch_id:
+        b = await c.messages.batches.create(requests=[{"custom_id": k, "params": v} for k, v in requests.items()])
+        batch_id = b.id
+        await on_submit(batch_id)
+        log(f"  grading batch {batch_id}: {len(requests)} gradings submitted")
+    start, cancelled = time.monotonic(), False
+    while True:
+        b = await c.messages.batches.retrieve(batch_id)
+        if b.processing_status == "ended":
+            break
+        if not cancelled and time.monotonic() - start > s.batch_timeout_s:
+            await c.messages.batches.cancel(batch_id)  # what is left is graded normally
+            cancelled = True
+            log(f"  grading batch {batch_id}: not finished after {s.batch_timeout_s // 60} min, cancelled")
+        await asyncio.sleep(s.batch_poll_s)
+    out: dict[str, dict | Exception] = {}
+    async for r in await c.messages.batches.results(batch_id):
+        if r.result.type == "succeeded":
+            try:
+                out[r.custom_id] = _parse(r.result.message, batch=True)
+            except Exception as e:  # refused or truncated: graded normally, with the refusal fallback
+                out[r.custom_id] = e
+        else:
+            out[r.custom_id] = RuntimeError(f"batch result {r.result.type}")
+    for k in requests:
+        out.setdefault(k, RuntimeError("missing from the batch results"))
+    return out
+
 
