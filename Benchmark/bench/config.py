@@ -16,6 +16,13 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     judge_model: str = "claude-opus-5-5"
     judge_effort: str = "high"
+    # api: the Anthropic API (key above). claude-code: your Claude subscription through Claude Code (`claude -p`, with the
+    # token from `claude setup-token`); same model, effort, system prompt and JSON schema, but no Message Batches, and usage
+    # counts against the plan's limits instead of API credit
+    judge_backend: str = "api"
+    claude_code_oauth_token: str = ""
+    claude_bin: str = "claude"
+    judge_timeout_s: int = 900
 
     rag_url: str = "http://127.0.0.1:8000"
     rag_api_key: str

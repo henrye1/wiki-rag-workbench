@@ -151,7 +151,7 @@ async def run_topic(t: Topic, runs: int, store: Store, http: httpx.AsyncClient, 
             winner = "tie" if jd["winner"] == "tie" else label[jd["winner"]]
             rec["runs"][str(r)] = {
                 "blind_labels": label, "systems": per_system, "winner": winner, "rationale": jd["rationale"],
-                "point_notes": {pg["id"]: pg["note"] for pg in jd["point_grades"]}, "judge_model": g["model"], "judge_usage": g["usage"],
+                "point_notes": {pg["id"]: pg["note"] for pg in jd["point_grades"]}, "judge_model": g["model"], "judge_usage": g["usage"], "judge_backend": g.get("backend", "api"),
                 "judgement": True,
             }
             store.log(f"  topic {t.number:>2} run {r}: rag {per_system['rag']['similarity']}/10 ({per_system['rag']['coverage']}%) "
@@ -252,7 +252,8 @@ async def main():
                 store.data = {
                     "config": {
                         "started": dt.datetime.now().isoformat(timespec="seconds"), "git_commit": _git_commit(),
-                        "judge_model": s.judge_model, "judge_effort": s.judge_effort, "runs": runs, "seed": s.seed,
+                        "judge_model": s.judge_model, "judge_effort": s.judge_effort,
+                        "judge_backend": "Claude Code on a Claude subscription (claude -p)" if s.judge_backend == "claude-code" else "Anthropic API", "runs": runs, "seed": s.seed,
                         "topics_selected": [t.number for t in topics], "expected_judgements": len(topics) * runs,
                         "question_format": "topic title + Q1..Qn, sent identically to RAG /collections/{c}/query and Wiki /wikis/{w}/query",
                         "rag_collection": s.rag_collection, "wiki_slug": s.wiki_slug, "sources": s.sources, "use_saved_answers": s.use_saved,

@@ -1,5 +1,8 @@
 """Claude as judge: extract key points from the human reference, then grade two anonymised answers against them."""
+import asyncio
 import json
+import os
+import tempfile
 
 from anthropic import AsyncAnthropic
 
@@ -21,8 +24,46 @@ class JudgeRefused(Exception):
     pass
 
 
+async def _cli_call(system: str, user: str, schema: dict) -> dict:
+    """The same judge call through Claude Code on the subscription: the judge's own system prompt replaces Claude Code's,
+    with no tools, plugins, MCP servers, settings or project files; the reply must match the same JSON schema."""
+    s = get_settings()
+    if not s.claude_code_oauth_token:
+        raise RuntimeError("JUDGE_BACKEND=claude-code needs CLAUDE_CODE_OAUTH_TOKEN in Benchmark/.env (from `claude setup-token`)")
+    env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL")}
+    env["CLAUDE_CODE_OAUTH_TOKEN"] = s.claude_code_oauth_token
+    args = [s.claude_bin, "-p", "--output-format", "json", "--json-schema", json.dumps(schema),
+            "--model", s.judge_model, "--effort", s.judge_effort, "--system-prompt", system,
+            "--tools", "", "--strict-mcp-config", "--setting-sources", "", "--disable-slash-commands", "--no-session-persistence"]
+    with tempfile.TemporaryDirectory() as empty:  # no project files (CLAUDE.md etc.) to pick up
+        proc = await asyncio.create_subprocess_exec(*args, cwd=empty, env=env, stdin=asyncio.subprocess.PIPE,
+                                                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(user.encode()), timeout=s.judge_timeout_s)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise RuntimeError(f"Claude Code judge timed out after {s.judge_timeout_s} s")
+    try:
+        res = json.loads(out.decode() or "{}")
+    except json.JSONDecodeError:
+        raise RuntimeError(f"Claude Code judge: unreadable reply (exit {proc.returncode}): {err.decode()[-300:]}")
+    if proc.returncode or res.get("is_error"):
+        raise RuntimeError(f"Claude Code judge failed (exit {proc.returncode}): {str(res.get('result') or err.decode())[-300:]}")
+    data = res.get("structured_output")
+    if data is None:
+        data = json.loads(res.get("result") or "")
+    # Claude Code may make its own small side calls on another model; count only the judge model's tokens
+    mu = res.get("modelUsage") or {}
+    u = mu.get(s.judge_model) or next(iter(mu.values()), {})
+    return {"data": data, "model": s.judge_model if s.judge_model in mu else ", ".join(mu) or s.judge_model, "backend": "claude-code",
+            "usage": {"input_tokens": (u.get("inputTokens") or 0) + (u.get("cacheReadInputTokens") or 0)
+                      + (u.get("cacheCreationInputTokens") or 0), "output_tokens": u.get("outputTokens") or 0}}
+
+
 async def _json_call(system: str, user: str, schema: dict) -> dict:
     s = get_settings()
+    if s.judge_backend == "claude-code":
+        return await _cli_call(system, user, schema)
     resp = await client().beta.messages.create(
         model=s.judge_model,
         max_tokens=16000,
@@ -38,7 +79,7 @@ async def _json_call(system: str, user: str, schema: dict) -> dict:
     if resp.stop_reason == "max_tokens":
         raise RuntimeError("Judge output truncated (max_tokens)")
     text = next(b.text for b in resp.content if b.type == "text")
-    return {"data": json.loads(text), "model": resp.model,
+    return {"data": json.loads(text), "model": resp.model, "backend": "api",
             "usage": {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}}
 
 
