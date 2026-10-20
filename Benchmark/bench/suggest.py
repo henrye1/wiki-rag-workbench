@@ -143,8 +143,14 @@ class Finder:
 NAMED = re.compile(r"\b(?:Appendix [A-Z]: [a-z][a-z \-]+?(?=[,.;)]|$)|IG [A-Z]\.\d+|[A-Z]{1,3}\d+(?:\.\d+)+[A-Z]?|\d+\.\d+(?:\.\d+)+[A-Z]?|IE\d+|BC\d+(?:\.\d+)*|\d{1,3}[A-Z]{1,2})\b")
 
 
+# defined terms named in other ways: "the Appendix A 'credit loss' definition", "Appendix A definition of 'credit loss'"
+NAMED_TERM = re.compile(r"Appendix ([A-Z])(?: definition of| defin\w+ of)?\s*['‘\"“]([^'’\"”]{3,80})['’\"”]", re.I)
+
+
 def _named(reason: str) -> list[str]:
-    return list(dict.fromkeys(m.group(0).strip() for m in NAMED.finditer(reason or "")))
+    found = [m.group(0).strip() for m in NAMED.finditer(reason or "")]
+    found += [f"Appendix {m.group(1).upper()}: {m.group(2).strip()}" for m in NAMED_TERM.finditer(reason or "")]
+    return list(dict.fromkeys(found))
 
 
 def _user(title: str, reference: str, items: list[tuple[str, str, str | None, list[dict]]]) -> str:
