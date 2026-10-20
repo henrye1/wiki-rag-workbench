@@ -126,6 +126,7 @@ const INFO = {
       }
       @if (error()) { <p class="error">{{ error() }}</p> }
 
+      @if (loading()) { <mat-progress-bar mode="indeterminate" class="loading" /> }
       <div class="layout">
         <nav class="card side">
           <div class="row prog">
@@ -332,7 +333,7 @@ const INFO = {
     </div>
   `,
   styles: `
-    .title h1 { margin: 0; } .title { margin: 4px 0 12px; } .memo { min-width: 240px; }
+    .loading { margin-bottom: 8px; } .title h1 { margin: 0; } .title { margin: 4px 0 12px; } .memo { min-width: 240px; }
     .info { font-size: 18px; width: 18px; height: 18px; color: var(--mat-sys-on-surface-variant); cursor: help; vertical-align: middle; }
     .info.sm { font-size: 15px; width: 15px; height: 15px; }
     .settings { margin-bottom: 12px; } .settings .docs { margin-top: 8px; gap: 4px 14px; }
@@ -383,6 +384,7 @@ export class BenchRubric {
   readonly current = signal(0);
   readonly stepNo = signal<Step>(1);
   readonly showSettings = signal(false);
+  readonly loading = signal(true);
   showAll = false;
   showRefs = false;
 
@@ -398,7 +400,9 @@ export class BenchRubric {
       this.refs.set(await this.api.get('/api/bench/rubrics'));
       const want = this.route.snapshot.queryParamMap.get('ref') || this.refs()[0]?.reference_sha256;
       if (want) await this.load(want);
+      else this.loading.set(false);
     } catch (e) {
+      this.loading.set(false);
       this.error.set(errMsg(e));
     }
   }
@@ -406,7 +410,8 @@ export class BenchRubric {
   async load(sha: string) {
     this.error.set('');
     this.ref.set(sha);
-    const d = await this.api.get<any>(`/api/bench/rubrics/${enc(sha)}`);
+    this.loading.set(true);
+    const d = await this.api.get<any>(`/api/bench/rubrics/${enc(sha)}`).finally(() => this.loading.set(false));
     this.topics.set(d.topics.map((t: any) => this.edit(t)));
     this.makingFacts.set(d.making_facts);
     if (d.making_facts) this.watchFacts();

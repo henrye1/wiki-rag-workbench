@@ -85,4 +85,5 @@ async def spa(path: str):
     index = dist / "index.html"
     if not index.exists():
         raise HTTPException(404, "UI not built. Run `npm run build` in UI/web, or use `npm start` (dev server on :4200).")
-    return FileResponse(index)
+    # never cached, so a browser always gets the current build's file names after an update
+    return FileResponse(index, headers={"Cache-Control": "no-cache"})
