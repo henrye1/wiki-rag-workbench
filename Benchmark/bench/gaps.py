@@ -8,7 +8,7 @@ import random
 import statistics
 
 LOWER_IS_BETTER = {"latency_s", "cost_usd"}
-JUDGED = ("similarity", "coverage", "coverage_standard")
+JUDGED = ("similarity", "coverage", "coverage_standard", "coverage_std_supp")
 RESAMPLES = 10_000
 
 

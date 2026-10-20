@@ -19,8 +19,8 @@ from .config import get_settings
 VERSION = "kept-1"
 PRICES = json.loads((pathlib.Path(__file__).parent / "prices.json").read_text())
 CHEAP = ("latency_s", "cost_usd")
-CONTEXT = ("faithfulness", "context_recall")  # Full mode: one Claude Sonnet 5.5 call per answer, reading what the answer read
-ANSWER_CHECKS = ("completeness", "exact_match", "citation_accuracy")
+CONTEXT = ("faithfulness", "context_recall", "context_recall_standard")  # Full mode: one Claude Sonnet 5.5 call per answer, reading what the answer read
+ANSWER_CHECKS = ("completeness", "exact_match", "exact_match_standard", "citation_accuracy")
 
 
 def not_measured(reason: str) -> dict:
@@ -88,7 +88,7 @@ def summarise(data: dict, mode: str | None) -> dict:
                 out[sysname][k] = {"mean": None, "n": 0, **not_measured("; ".join(sorted(slot["reasons"])))}
         for k in CONTEXT:
             out[sysname].setdefault(k, not_measured("Quick mode: faithfulness and context recall run only in Full mode" if mode != "full"
-                                                    else "faithfulness and context recall are not available yet"))
+                                                    else "faithfulness and context recall did not run on this answer"))
         for k in ANSWER_CHECKS:
             out[sysname].setdefault(k, not_measured("the answer checks have not been run on this run's answers"))
     return {"version": VERSION, "mode": mode or "quick", "by_system": out}

@@ -112,7 +112,7 @@ import { poller } from '../../shared/poll';
         <p class="muted">Claude turns each topic's reference answer into key points once per reference file; every run with that file is
           scored against the same saved key points. A new reference file gets its own rubric on its first run.</p>
         <table class="simple">
-          <thead><tr><th>Reference file</th><th>Topics</th><th>Key points</th><th>Reviewed</th><th>Built</th><th></th></tr></thead>
+          <thead><tr><th>Reference memo</th><th>Topics</th><th>Key points</th><th>Reviewed</th><th>Built</th><th></th></tr></thead>
           <tbody>
             @for (r of rubrics(); track r.reference_sha256) {
               <tr>
@@ -137,7 +137,7 @@ import { poller } from '../../shared/poll';
         @else { <span class="muted small">Tick two runs to compare</span> }
       </div>
       <table class="simple">
-        <thead><tr><th></th><th>Run</th><th>Compared</th><th>Sources</th><th>Saved answers</th><th>Topics × runs</th><th>RAG sim / cov</th><th>Wiki sim / cov</th><th>Wins (rag / wiki / tie)</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Run</th><th>Compared</th><th>Sources</th><th>Saved answers</th><th>Topics × runs</th><th>Mode</th><th>Rubric</th><th>Judge</th><th>RAG sim / cov</th><th>Wiki sim / cov</th><th>Wins (rag / wiki / tie)</th><th>Status</th><th></th></tr></thead>
         <tbody>
           @for (r of list(); track r.id) {
             <tr>
@@ -147,6 +147,9 @@ import { poller } from '../../shared/poll';
               <td><span class="pill">{{ sourcesLabel(r.sources) }}</span></td>
               <td><span class="pill">{{ r.use_saved === true ? 'On' : r.use_saved === false ? 'Off' : '—' }}</span></td>
               <td>{{ r.topics }} × {{ r.runs }}</td>
+              <td class="small">{{ r.mode === 'full' ? 'Full' : r.mode === 'quick' ? 'Quick' : '—' }}</td>
+              <td class="small" [title]="r.rubric?.title ?? ''">{{ r.rubric?.label ?? '—' }}@if (r.rubric?.topics) {<span class="muted"> · {{ r.rubric.approved }}/{{ r.rubric.topics }} approved</span>}</td>
+              <td class="small" [title]="r.judge?.title ?? ''">{{ r.judge?.label ?? '—' }}</td>
               @if (r.summary?.by_system; as b) {
                 <td><b>{{ b.rag.similarity.mean }}</b> / {{ b.rag.coverage.mean }}%</td>
                 <td><b>{{ b.wiki.similarity.mean }}</b> / {{ b.wiki.coverage.mean }}%</td>

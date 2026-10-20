@@ -15,6 +15,40 @@ router = APIRouter(tags=["query"])
 CITE_RE = re.compile(r"\[([^\[\]]+)\]")
 
 
+class ParagraphSearchIn(BaseModel):
+    text: str = Field(min_length=3)
+    k: int = Field(8, ge=1, le=30)
+    filenames: list[str] | None = Field(None, description="Only these source files (e.g. '13 - IFRS 9 Financial Instruments.pdf')")
+
+
+@router.post("/search/paragraphs")
+async def search_paragraphs(body: ParagraphSearchIn):
+    """The paragraphs closest in meaning to a text, by the stored passage embeddings (any collection; each file's
+    paragraph once). No answer is generated; editorial notes and introductions are left out. Used by the benchmark's
+    rubric tag check."""
+    import numpy as np
+    from ..db import get_pool
+    emb = np.asarray(await llm.embed_query(body.text), dtype=np.float32)
+    async with get_pool().connection() as conn:
+        rows = await (await conn.execute(
+            """select d.filename, k.para_ref, k.source_type, k.embedding <=> %s as distance
+               from chunks k join documents d on d.id = k.document_id
+               where k.para_ref is not null and k.source_type not in ('note', 'intro', 'back_matter', 'appendix_c')
+                 and (%s::text[] is null or d.filename = any(%s::text[]))
+               order by k.embedding <=> %s limit %s""",
+            (emb, body.filenames, body.filenames, emb, body.k * 4))).fetchall()
+    out, seen = [], set()
+    for r in rows:
+        key = (r["filename"], r["para_ref"])
+        if key not in seen:
+            seen.add(key)
+            out.append({"filename": r["filename"], "para_ref": r["para_ref"], "source_type": r["source_type"],
+                        "similarity": round(1 - float(r["distance"]), 4)})
+        if len(out) >= body.k:
+            break
+    return out
+
+
 class QueryIn(BaseModel):
     question: str = Field(min_length=3)
     top_k: int | None = Field(None, ge=1, le=50)

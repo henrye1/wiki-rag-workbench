@@ -78,6 +78,17 @@ class LintIn(BaseModel):
     mode: Mode = "review"
 
 
+class ReadTextIn(BaseModel):
+    read: list[dict] = Field(description="An answer's `read` record: slug, version and sha256 of each page")
+    sources: Literal["standard", "all"] = "all"
+
+
+@router.post("/wikis/{w}/read-text")
+async def read_text(body: ReadTextIn, wiki: dict = Depends(wiki_dep)):
+    """The exact text an earlier answer read (for checking an answer against what it read). Changes nothing."""
+    return await query.read_text(wiki, body.read, body.sources)
+
+
 @router.post("/wikis/{w}/query")
 async def ask(body: QueryIn, wiki: dict = Depends(wiki_dep)):
     return await query.answer(wiki, body.question, body.save, body.mode, body.sources, body.use_saved)

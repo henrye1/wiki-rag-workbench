@@ -120,6 +120,26 @@ def _prompt(wiki: dict, question: str, pages: list[dict], extra: list[dict]) -> 
     return prompts.with_schema(wiki["schema_md"], ask)
 
 
+async def read_text(wiki: dict, read: list[dict], sources: str) -> list[dict]:
+    """The exact text an answer read, rebuilt from each page's recorded version (and the Sources setting), with whether it
+    still matches the hash recorded when the answer was given."""
+    standard = await _standard_slugs(wiki["id"]) if sources == "standard" else None
+    out = []
+    async with get_pool().connection() as conn:
+        for r in read:
+            row = await (await conn.execute(
+                """select v.content_md from wiki.page_versions v join wiki.pages p on p.id = v.page_id
+                   where p.wiki_id = %s and p.slug = %s and v.version = %s""", (wiki["id"], r.get("slug"), r.get("version")))).fetchone()
+            if not row:
+                out.append({"slug": r.get("slug"), "version": r.get("version"), "text": None, "matches": False, "reason": "version not found"})
+                continue
+            md = standard_only(row["content_md"], standard) if standard is not None else row["content_md"]
+            same = hashlib.sha256(md.encode()).hexdigest() == r.get("sha256")
+            out.append({"slug": r.get("slug"), "version": r.get("version"), "saved": bool(r.get("saved")), "text": md, "matches": same,
+                        **({} if same else {"reason": "the rebuilt text differs from what was read"})})
+    return out
+
+
 def _read_record(pages: list[dict]) -> list[dict]:
     """What was given to the model: each page's version and a hash of its text after the Sources setting."""
     return [{"slug": p["slug"], "title": p["title"], "type": p["type"], "version": p.get("version"), "saved": bool(p.get("saved")),

@@ -20,7 +20,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from . import checks, gaps, judge, metrics, rubric, systems
+from . import checks, context, gaps, judge, metrics, rubric, systems
 from .config import ROOT, get_settings
 from .data import Topic, load
 
@@ -37,8 +37,9 @@ def parse_topics(spec: str | None, n: int) -> list[int]:
     return sorted(out)
 
 
-def coverage(points: list[dict], grades: dict[str, str], kind: str | None = None) -> float | None:
-    ids = [p["id"] for p in points if kind is None or p["kind"] == kind]
+def coverage(points: list[dict], grades: dict[str, str], kind: str | tuple | None = None) -> float | None:
+    kinds = (kind,) if isinstance(kind, str) else kind
+    ids = [p["id"] for p in points if kinds is None or p["kind"] in kinds]
     if not ids:
         return None
     return round(100 * sum(WEIGHT[grades.get(i, "missing")] for i in ids) / len(ids), 1)
@@ -183,6 +184,9 @@ def _record(store: Store, t: Topic, r: int):
             "similarity": _avg([x["systems"][name]["similarity"] for x in o]),
             "coverage": _avg([coverage(points, x["systems"][name]["grades"]) for x in o]),
             "coverage_standard": _avg([coverage(points, x["systems"][name]["grades"], "standard") for x in o]),
+            # Standard + Supporting: only for runs that read all sources (Parts A, B and C)
+            "coverage_std_supp": _avg([coverage(points, x["systems"][name]["grades"], ("standard", "supporting")) for x in o])
+                                 if (store.data.get("config") or {}).get("sources") == "all" else None,
             "contradictions": list(dict.fromkeys(c for x in o for c in x["systems"][name]["contradictions"])),
         }
     w = {x["winner"] for x in o}
@@ -260,7 +264,7 @@ async def grade_all(topics: list[Topic], store: Store, sem: asyncio.Semaphore) -
 
 
 def aggregate(data: dict):
-    totals = {name: {"similarity": [], "coverage": [], "coverage_standard": []} for name in systems.SYSTEMS}
+    totals = {name: {"similarity": [], "coverage": [], "coverage_standard": [], "coverage_std_supp": []} for name in systems.SYSTEMS}
     wins = {"rag": 0, "wiki": 0, "tie": 0}
     sections: dict[str, dict] = {}
     for rec in data["topics"].values():
@@ -269,7 +273,7 @@ def aggregate(data: dict):
             continue
         agg = {}
         for name in systems.SYSTEMS:
-            agg[name] = {k: _mean_sd([r["systems"][name][k] for r in runs]) for k in ("similarity", "coverage", "coverage_standard")}
+            agg[name] = {k: _mean_sd([r["systems"][name].get(k) for r in runs]) for k in ("similarity", "coverage", "coverage_standard", "coverage_std_supp")}
             for k in totals[name]:
                 if agg[name][k]["mean"] is not None:
                     totals[name][k].append(agg[name][k]["mean"])
@@ -354,6 +358,13 @@ async def main():
             topics = load(qs, ref)
         wanted = set(parse_topics(args.topics or row["topics"] or None, len(topics)))
         topics = [t for t in topics if t.number in wanted]
+        if s.mode == "full":  # Full runs use an approved rubric only
+            ok = {r["topic_number"] for r in conn.execute(
+                """select topic_number from bench.rubrics where reference_sha256 = %s and reviewed_at is not null
+                   and facts is not null and facts_reviewed_at is not null""", (store.ref_sha,))}
+            if missing := [t.number for t in topics if t.number not in ok]:
+                raise RuntimeError(f"Full runs need an approved rubric: approve topic(s) {', '.join(map(str, missing))} "
+                                   "on the Rubric review screen, or run in Quick mode")
 
         async with httpx.AsyncClient() as http:
             if not store.data:
@@ -362,7 +373,8 @@ async def main():
                         "started": dt.datetime.now().isoformat(timespec="seconds"), "git_commit": _git_commit(),
                         "judge_model": s.judge_model, "judge_effort": s.judge_effort,
                         "judge_backend": "Claude Code on a Claude subscription (claude -p)" if s.judge_backend == "claude-code" else "Anthropic API",
-                        "answer_checks": {"model": s.checks_model, "version": checks.VERSION}, "runs": runs, "seed": s.seed,
+                        "answer_checks": {"model": s.checks_model, "version": checks.VERSION},
+                        "context_checks": {"model": s.context_model, "version": context.VERSION} if s.mode == "full" else None, "runs": runs, "seed": s.seed,
                         "topics_selected": [t.number for t in topics], "expected_judgements": len(topics) * runs,
                         "question_format": "topic title + Q1..Qn, sent identically to RAG /collections/{c}/query and Wiki /wikis/{w}/query",
                         "rag_collection": s.rag_collection, "wiki_slug": s.wiki_slug, "sources": s.sources, "use_saved_answers": s.use_saved,
@@ -392,6 +404,11 @@ async def main():
             await checks.run_checks(store.data, store.conn, store.ref_sha, sem, s.use_batch, store.save, store.log)
         except Exception as e:
             store.log(f"Answer checks failed ({type(e).__name__}: {e}); they show as not measured")
+        if s.mode == "full":  # faithfulness and context recall: one call per answer, reading what the answer read
+            try:
+                await context.run_context(store.data, sem, s.use_batch, store.save, store.log)
+            except Exception as e:
+                store.log(f"Faithfulness and context recall failed ({type(e).__name__}: {e}); they show as not measured")
         await metrics.compute(store.data, s.mode)  # graded answers keep their tests; the summary is refreshed
         store.data["errors"] = errors
         aggregate(store.data)
