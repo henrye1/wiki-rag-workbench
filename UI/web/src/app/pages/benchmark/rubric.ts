@@ -2,14 +2,12 @@ import { DatePipe } from '@angular/common';
 import { Component, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
-import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
-import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../../core/api';
@@ -23,44 +21,30 @@ interface TopicEdit {
   suggestions: any; decisions: Record<string, Decision>; tagSources: any[] | null;
 }
 type Status = 'review' | 'progress' | 'approved';
-type Step = 1 | 2 | 3 | 4;
+type Filter = 'all' | 'pending' | 'standard' | 'supporting' | 'beyond_standard';
 
 const TAG_LABEL: Record<string, string> = {
   standard: 'Standard (Part A)', supporting: 'Supporting (Part B/C)', beyond_standard: 'Beyond standard',
 };
 
-/** Explanations shown in the (i) icons. */
+/** Explanations shown in the (i) icons and tooltips. */
 const INFO = {
-  page: 'Review the marking rubric one topic at a time. Approved key points and facts are used by every later run, and each run records the rubric version it used. Nothing changes until you approve a topic.',
+  page: 'The marking rubric, one topic at a time: its key points and its exact-match facts as they are saved. Approved topics are used by every later run, and each run records the rubric version it used.',
   progress: 'A topic counts as approved when both its key points and its fact list are approved and nothing has changed since.',
-  status: 'To review: nothing decided yet. In progress: some suggestions decided, unsaved changes, or only part of the topic approved. Approved: key points and facts approved.',
-  standard: 'Standard (Part A): the point is stated in a Standard\'s own text, including its appendices. Counts in coverage, standard-only coverage and Standard + Supporting coverage.',
-  supporting: 'Supporting (Part B/C): stated only in documents published with the Standard (implementation guidance, illustrative examples, basis for conclusions). Counts in coverage and Standard + Supporting coverage, not in standard-only coverage.',
+  status: 'Icons: green tick approved, orange circle in progress, empty circle to review. The blue number counts suggestions still to decide. To review: nothing decided yet. In progress: unsaved changes, decided suggestions, or only part of the topic approved. Approved: key points and facts approved.',
+  standard: 'Standard (Part A): stated in a Standard\'s own text, including its appendices. Counts in coverage, standard-only coverage and Standard + Supporting coverage.',
+  supporting: 'Supporting (Part B/C): stated only in documents published with the Standard (implementation guidance, illustrative examples, basis for conclusions). Counts in coverage and Standard + Supporting coverage.',
   beyond_standard: 'Beyond standard: practice, regulation or opinion not stated in the source documents. Counts in coverage only.',
-  step1: 'Tags: for each key point the judge read the closest paragraphs of the ticked source documents and suggests a tag with the paragraph that backs it. Accept to apply the suggestion; reject to keep the current tag.',
-  step2: 'Merges: key points that are only items of one list in the reference can be combined into one point, so a long list does not outweigh core requirements. Only points with the same tag are suggested for merging.',
-  step3: 'Facts: the exact-match fact list holds only hard facts (numbers, periods, thresholds, yes/no answers). Exact match scores the share an answer states; Standard-only exact match uses the facts tagged Standard.',
-  step4: 'Approve: saves the topic\'s key points and fact list as approved. Any change makes a new rubric version; earlier versions are kept. Suggestions left undecided are not applied.',
-  colId: 'The key point\'s identifier, used in grading notes and run results.',
-  refOnly: 'Points whose tag stays the same; the judge only adds the paragraph that backs it. They are included in Accept all suggestions.',
-  colPoint: 'The key point as the judge grades it: full, partial or missing in each answer.',
-  colCurrent: 'The tag saved in the rubric now.',
-  colSuggested: 'The tag the judge suggests from the source paragraphs. "Check" means it believes a Standard states this but none of the paragraphs found does.',
-  colParagraph: 'The paragraph and document that back the suggested tag. Empty for Beyond standard.',
-  colReason: 'The judge\'s reason. "Second look" means its first reason named a paragraph it had not been shown, so it was asked again with that paragraph.',
-  colDecision: 'Accept applies the suggestion to this point; Reject keeps the current tag. Decisions are saved when you approve the topic.',
-  acceptAll: 'Applies every suggestion for this topic: tags, merges and the suggested fact list. You can then reject single items before approving.',
-  showAll: 'Shows every key point, so you can edit its wording or tag, or delete it, not only those with a suggested change.',
-  accept: 'Apply this suggestion. Saved when you approve the topic.',
-  reject: 'Keep the rubric as it is for this item. If it was accepted, the original is restored.',
-  mergeAccept: 'Replace these key points with the single merged point shown.',
-  factsUse: 'Replace the current fact list with the suggested hard-fact list. You can still edit, tag or delete single facts.',
-  factsKeep: 'Keep the current fact list.',
-  addFact: 'Add a fact of your own. Give it a tag so it counts in Standard-only exact match.',
-  approve: 'Approve this topic\'s key points and fact list and move to the next topic not yet approved.',
-  undo: 'Discard this topic\'s unsaved changes and decisions.',
-  prev: 'Previous topic.',
-  next: 'Next topic.',
+  version: 'Each saved change makes a new version of the topic; earlier versions are kept and runs record the version they used.',
+  keyPoints: 'Each key point is graded full, partial or missing in every answer. Click the pencil to edit its wording or tag.',
+  facts: 'Hard facts (numbers, periods, thresholds, yes/no answers). Exact match scores the share an answer states; Standard-only exact match uses the facts tagged Standard.',
+  suggestion: 'The judge read the closest paragraphs of the ticked source documents and suggests this tag. Accept applies it; Reject keeps the current tag. Nothing is saved until you approve the topic.',
+  check: 'The judge believes a Standard states this, but none of the paragraphs it found does. Worth checking yourself.',
+  merge: 'These key points are only items of one list in the reference; merging them stops a long list outweighing core requirements.',
+  factList: 'A list holding only hard facts, each tagged with the paragraph behind it. Using it replaces the current fact list.',
+  acceptAll: 'Applies every pending suggestion for this topic: tags, backing paragraphs, merges and the suggested fact list. You can still undo single items before approving.',
+  approve: 'Saves this topic\'s key points and facts as approved (a change makes a new version) and opens the next topic not yet approved.',
+  discard: 'Discards this topic\'s unsaved changes.',
   settings: 'The memo\'s label, the source documents for the tag check, suggestions and exports.',
   rename: 'The memo is shown by this label everywhere; its file name is never shown.',
   docs: 'Suggest changes reads only the ticked documents. A new choice takes effect when you run Suggest changes again and approve; each approved version keeps the documents its tags were checked against.',
@@ -68,14 +52,13 @@ const INFO = {
   makeFacts: 'Make the fact lists still missing, from each topic\'s reference answer.',
   export: 'The saved rubric as a Word document. Unsaved changes are not included.',
   exportSug: 'The saved rubric with every suggestion: current and suggested tag, paragraph, reason, merges and the suggested hard-fact list.',
-  version: 'Each saved change makes a new version of the topic; runs record the version they used.',
-  checkedAgainst: 'The source documents this topic\'s approved tags were checked against.',
+  pendingFilter: 'Only key points with a suggested tag change still to decide.',
 } as const;
 
 @Component({
   selector: 'app-bench-rubric',
-  imports: [FormsModule, RouterLink, DatePipe, MatButtonModule, MatButtonToggleModule, MatCheckboxModule, MatFormFieldModule, MatIconModule,
-            MatInputModule, MatProgressBarModule, MatSelectModule, MatSlideToggleModule, MatTooltipModule],
+  imports: [FormsModule, RouterLink, DatePipe, MatButtonModule, MatCheckboxModule, MatFormFieldModule, MatIconModule,
+            MatInputModule, MatProgressBarModule, MatSelectModule, MatTooltipModule],
   template: `
     <div class="page">
       <a routerLink="/benchmark" class="muted">← Runs</a>
@@ -115,7 +98,7 @@ const INFO = {
           <div class="row docs">
             <span class="muted">Documents for the tag check</span><mat-icon class="info" [matTooltip]="info.docs">info_outline</mat-icon>
             @for (d of documents(); track d.slug) {
-              <mat-checkbox [checked]="ticks().has(d.slug)" (change)="tick(d.slug, $event.checked)" [matTooltip]="d.title + ' · ' + (d.tier === 'standard' ? 'Standard' : d.tier === 'supporting' ? 'Supporting' : 'other')">{{ d.name }}</mat-checkbox>
+              <mat-checkbox [checked]="ticks().has(d.slug)" (change)="tick(d.slug, $event.checked)" [matTooltip]="d.title">{{ d.name }}</mat-checkbox>
             }
             @if (ticksChanged()) {
               <button mat-flat-button (click)="saveTicks()" [disabled]="!ticks().size">Save choice</button>
@@ -125,20 +108,20 @@ const INFO = {
         </div>
       }
       @if (error()) { <p class="error">{{ error() }}</p> }
-
       @if (loading()) { <mat-progress-bar mode="indeterminate" class="loading" /> }
+
       <div class="layout">
         <nav class="card side">
-          <div class="row prog">
-            <b>Approved: {{ approvedCount() }} of {{ topics().length }}</b><mat-icon class="info" [matTooltip]="info.progress">info_outline</mat-icon>
-          </div>
+          <div class="row prog"><b>Approved: {{ approvedCount() }} of {{ topics().length }}</b>
+            <mat-icon class="info" [matTooltip]="info.progress + ' ' + info.status">info_outline</mat-icon></div>
           <mat-progress-bar mode="determinate" [value]="topics().length ? (100 * approvedCount()) / topics().length : 0" />
-          <div class="row legend muted small">Status<mat-icon class="info" [matTooltip]="info.status">info_outline</mat-icon></div>
           <ul>
             @for (t of topics(); track t.n) {
-              <li [class.on]="t.n === current()" (click)="go(t.n)" (keydown.enter)="go(t.n)" tabindex="0">
-                <span class="num">{{ t.n }}</span><span class="name" [title]="t.title">{{ t.title }}</span>
-                <span class="pill" [class.ok]="status(t) === 'approved'" [class.warn]="status(t) === 'progress'">{{ statusLabel[status(t)] }}</span>
+              @let st = status(t);
+              <li [class.on]="t.n === current()" (click)="go(t.n)" (keydown.enter)="go(t.n)" tabindex="0" [title]="t.title + ' · ' + statusLabel[st]">
+                <mat-icon class="st" [class.ok]="st === 'approved'" [class.warn]="st === 'progress'">{{ st === 'approved' ? 'check_circle' : st === 'progress' ? 'pending' : 'radio_button_unchecked' }}</mat-icon>
+                <span class="num">{{ t.n }}</span><span class="name">{{ t.title }}</span>
+                @if (pendingCount(t); as c) { <span class="badge" matTooltip="Suggestions still to decide">{{ c }}</span> }
               </li>
             }
           </ul>
@@ -146,232 +129,211 @@ const INFO = {
 
         @if (topic(); as t) {
           <section class="card main">
-            <div class="row">
-              <button mat-icon-button (click)="step(-1)" [disabled]="!hasPrev()" [matTooltip]="info.prev"><mat-icon>chevron_left</mat-icon></button>
-              <h2 class="grow">{{ t.n }}. {{ t.title }}</h2>
-              <span class="pill" [class.ok]="status(t) === 'approved'" [class.warn]="status(t) === 'progress'">{{ statusLabel[status(t)] }}</span>
-              <span class="muted small" [matTooltip]="info.version">version {{ t.version }}</span>
-              <button mat-icon-button (click)="step(1)" [disabled]="!hasNext()" [matTooltip]="info.next"><mat-icon>chevron_right</mat-icon></button>
-            </div>
-            <div class="row muted small meta">
-              <span>{{ t.points.length }} key points:</span>
-              @for (k of tags; track k) { <span class="pill tagpill" [class]="'pill tagpill ' + k" [matTooltip]="tip(k)">{{ count(t, k) }} {{ shortTag[k] }}</span> }
-              <span>· {{ t.facts === null ? 'no fact list' : (t.facts.length + ' facts') }}</span>
-              <span class="grow"></span>
-              <span [matTooltip]="info.checkedAgainst">Tags checked against: {{ t.tagSources ? docNames(t.tagSources) : 'not recorded' }}</span>
+            @let st = status(t);
+            <div class="head">
+              <h2>{{ t.n }}. {{ t.title }}</h2>
+              <div class="headside">
+                <span class="pill" [class.ok]="st === 'approved'" [class.warn]="st === 'progress'">{{ statusLabel[st] }}</span>
+                <span class="muted small" [matTooltip]="info.version + (t.tagSources ? ' Tags checked against: ' + docNames(t.tagSources) + '.' : '')">v{{ t.version }}</span>
+                <button mat-icon-button (click)="step(-1)" [disabled]="!hasPrev()" matTooltip="Previous topic"><mat-icon>chevron_left</mat-icon></button>
+                <button mat-icon-button (click)="step(1)" [disabled]="!hasNext()" matTooltip="Next topic"><mat-icon>chevron_right</mat-icon></button>
+              </div>
             </div>
 
-            <div class="row stepper">
-              @for (s of steps; track s.n) {
-                <button mat-button class="stepbtn" [class.active]="stepNo() === s.n" (click)="stepNo.set(s.n)">
-                  <span class="dot" [class.done]="stepDone(t, s.n)">{{ stepDone(t, s.n) ? '✓' : s.n }}</span> {{ s.label }}
-                  @if (stepCount(t, s.n); as c) { <span class="pill">{{ c }}</span> }
-                </button>
-                <mat-icon class="info" [matTooltip]="tip('step' + s.n)">info_outline</mat-icon>
+            <div class="row filters">
+              <button class="chip" [class.on]="filter() === 'all'" (click)="filter.set('all')">All {{ t.points.length }}</button>
+              @if (pendingTags(t).length) {
+                <button class="chip" [class.on]="filter() === 'pending'" (click)="filter.set('pending')" [matTooltip]="info.pendingFilter">Suggestions {{ pendingTags(t).length }}</button>
+              }
+              @for (k of tags; track k) {
+                <button [class]="'chip ' + k" [class.on]="filter() === k" (click)="filter.set($any(k))" [matTooltip]="tip(k)">{{ shortTag[k] }} {{ count(t, k) }}</button>
               }
               <span class="grow"></span>
-              @if (anySuggestion(t)) {
-                <button mat-stroked-button (click)="acceptAll(t)" [matTooltip]="info.acceptAll"><mat-icon>done_all</mat-icon> Accept all suggestions</button>
+              @if (pendingCount(t)) {
+                <button mat-stroked-button (click)="acceptAll(t)" [matTooltip]="info.acceptAll"><mat-icon>done_all</mat-icon> Accept all suggestions ({{ pendingCount(t) }})</button>
               }
             </div>
 
-            @switch (stepNo()) {
-              @case (1) {
-                <div class="row sub">
-                  <span class="muted">{{ changeRows(t).length ? changeRows(t).length + ' key point(s) with a suggested tag change' : 'No tag changes suggested for this topic' }}</span>
-                  @if (refRows(t).length && !showAll) {
-                    <button mat-button (click)="showRefs = !showRefs" [matTooltip]="info.refOnly">{{ showRefs ? 'Hide' : 'Show' }} {{ refRows(t).length }} paragraph-only suggestion(s)</button>
-                  }
-                  <span class="grow"></span>
-                  <mat-slide-toggle [(ngModel)]="showAll" [matTooltip]="info.showAll">Show all points</mat-slide-toggle>
-                </div>
-                @if (!showAll) {
-                  @if (shownRows(t).length) {
-                    <table class="simple">
-                      <thead><tr>
-                        <th class="id">ID <mat-icon class="info sm" [matTooltip]="info.colId">info_outline</mat-icon></th>
-                        <th>Key point <mat-icon class="info sm" [matTooltip]="info.colPoint">info_outline</mat-icon></th>
-                        <th class="tagcol">Current <mat-icon class="info sm" [matTooltip]="info.colCurrent">info_outline</mat-icon></th>
-                        <th class="tagcol">Suggested <mat-icon class="info sm" [matTooltip]="info.colSuggested">info_outline</mat-icon></th>
-                        <th class="para">Paragraph <mat-icon class="info sm" [matTooltip]="info.colParagraph">info_outline</mat-icon></th>
-                        <th>Reason <mat-icon class="info sm" [matTooltip]="info.colReason">info_outline</mat-icon></th>
-                        <th class="dec">Decision <mat-icon class="info sm" [matTooltip]="info.colDecision">info_outline</mat-icon></th>
-                      </tr></thead>
-                      <tbody>
-                        @for (r of shownRows(t); track r.id) {
-                          <tr [class.accepted]="r.decision === 'accepted'" [class.rejected]="r.decision === 'rejected'">
-                            <td class="id mono">{{ r.id }}</td>
-                            <td>{{ r.point }}</td>
-                            <td><span [class]="'pill tagpill ' + r.orig.kind" [matTooltip]="tip(r.orig.kind)">{{ shortTag[r.orig.kind] }}</span></td>
-                            <td><span [class]="'pill tagpill ' + r.s.tag" [matTooltip]="tip(r.s.tag)">{{ shortTag[r.s.tag] }}</span>
-                              @if (!r.s.found) { <span class="pill warn" [matTooltip]="info.colSuggested">Check</span> }</td>
-                            @let rp = r.s.tag !== 'beyond_standard' && r.s.paragraph;
-                            <td class="small">{{ rp ? r.s.paragraph : '—' }}<div class="muted">{{ rp ? r.s.document : '' }}</div></td>
-                            <td class="small">{{ r.s.reason }}
-                              @if (r.s.second_look) { <span class="pill" [matTooltip]="info.colReason">Second look: {{ r.s.second_look.join(', ') }}</span> }</td>
-                            <td class="dec">
-                              @if (r.saved) { <span class="pill" [class.ok]="r.decision === 'accepted'">{{ r.decision === 'accepted' ? 'Accepted' : 'Rejected' }} (saved)</span> }
-                              @else {
-                                <button mat-button class="small-btn" [class.on]="r.decision === 'accepted'" (click)="acceptPoint(t, r.id)" [matTooltip]="info.accept">Accept</button>
-                                <button mat-button class="small-btn" [class.on]="r.decision === 'rejected'" (click)="rejectPoint(t, r.id)" [matTooltip]="info.reject">Reject</button>
-                              }
-                            </td>
-                          </tr>
-                        }
-                      </tbody>
-                    </table>
-                  }
-                } @else {
-                  <table class="simple">
-                    <thead><tr><th class="id">ID <mat-icon class="info sm" [matTooltip]="info.colId">info_outline</mat-icon></th>
-                      <th>Key point <mat-icon class="info sm" [matTooltip]="info.colPoint">info_outline</mat-icon></th>
-                      <th class="tagsel-col">Tag <mat-icon class="info sm" [matTooltip]="info.colCurrent">info_outline</mat-icon></th><th></th></tr></thead>
-                    <tbody>
-                      @for (p of t.points; track p.id) {
-                        <tr>
-                          <td class="id mono">{{ p.id }}</td>
-                          <td><textarea class="edit autosize" rows="1" [(ngModel)]="p.point"></textarea>
-                            @if (p.ref && p.kind !== 'beyond_standard') { <div class="muted small">Backed by {{ p.ref }}</div> }</td>
-                          <td><mat-select [(ngModel)]="p.kind" class="tagsel">
-                            @for (k of tags; track k) { <mat-option [value]="k">{{ tagLabel[k] }}</mat-option> }
-                          </mat-select></td>
-                          <td><button mat-icon-button (click)="removePoint(t, p)" matTooltip="Delete this key point. Saved when you approve the topic."><mat-icon>delete</mat-icon></button></td>
-                        </tr>
-                      }
-                    </tbody>
-                  </table>
-                }
-              }
-              @case (2) {
-                @if (mergeRows(t).length) {
-                  @for (r of mergeRows(t); track r.i) {
-                    <div class="item" [class.accepted]="r.decision === 'accepted'" [class.rejected]="r.decision === 'rejected'">
-                      <div class="row">
-                        <span class="mono">{{ r.m.ids.join(', ') }}</span><mat-icon>arrow_forward</mat-icon>
-                        <span [class]="'pill tagpill ' + r.m.tag" [matTooltip]="tip(r.m.tag)">{{ shortTag[r.m.tag] }}</span>
-                        <span class="grow"></span>
-                        @if (r.saved) { <span class="pill">{{ r.decision === 'accepted' ? 'Accepted' : 'Rejected' }} (saved)</span> }
-                        @else {
-                          <button mat-button class="small-btn" [class.on]="r.decision === 'accepted'" (click)="acceptMerge(t, r.i)" [matTooltip]="info.mergeAccept">Accept</button>
-                          <button mat-button class="small-btn" [class.on]="r.decision === 'rejected'" (click)="rejectMerge(t, r.i)" [matTooltip]="info.reject">Reject</button>
-                        }
-                      </div>
-                      <div>“{{ r.m.point }}”</div>
-                      <div class="muted small">{{ r.m.reason }}</div>
-                      <ul class="small muted">@for (id of r.m.ids; track id) { <li><span class="mono">{{ id }}</span> {{ origPoint(t, id)?.point }}</li> }</ul>
-                    </div>
-                  }
-                } @else { <p class="muted">No merges suggested for this topic.</p> }
-              }
-              @case (3) {
-                @if (t.suggestions?.facts; as sf) {
-                  @let fd = factsDecision(t);
-                  <div class="item" [class.accepted]="fd === 'accepted'" [class.rejected]="fd === 'rejected'">
-                    <div class="row"><b>Suggested hard-fact list</b><span class="muted small">({{ sf.items.length }})</span>
-                      <span class="grow"></span>
-                      @if (sf.status) { <span class="pill">{{ sf.status === 'accepted' ? 'Used' : 'Kept current' }} (saved)</span> }
-                      @else {
-                        <button mat-button class="small-btn" [class.on]="fd === 'accepted'" (click)="acceptFacts(t)" [matTooltip]="info.factsUse">Use this list</button>
-                        <button mat-button class="small-btn" [class.on]="fd === 'rejected'" (click)="rejectFacts(t)" [matTooltip]="info.factsKeep">Keep current</button>
-                      }
-                    </div>
-                    @if (sf.items.length) {
-                      <table class="simple">
-                        <tbody>
-                          @for (f of sf.items; track f.id) {
-                            <tr><td class="id mono">{{ f.id }}</td><td>{{ f.fact }}</td>
-                              <td><span [class]="'pill tagpill ' + f.tag" [matTooltip]="tip(f.tag)">{{ shortTag[f.tag] ?? '—' }}</span></td>
-                              @let fp = f.tag !== 'beyond_standard' && f.paragraph;
-                              <td class="small">{{ fp ? f.paragraph : '—' }}<div class="muted">{{ fp ? f.document : '' }}</div></td></tr>
-                          }
-                        </tbody>
-                      </table>
-                    } @else { <p class="muted small">The reference answer has no hard facts for this topic; using this list leaves it empty, so exact match is not measured for the topic.</p> }
+            @for (r of mergeRows(t); track r.i) {
+              @if (!r.decision) {
+                <div class="sugcard">
+                  <div class="row"><mat-icon class="sic">call_merge</mat-icon>
+                    <b>Merge {{ r.m.ids.join(', ') }} into one point</b>
+                    <span [class]="'pill tagpill ' + r.m.tag">{{ shortTag[r.m.tag] }}</span>
+                    <mat-icon class="info sm" [matTooltip]="info.merge + ' ' + r.m.reason">info_outline</mat-icon>
+                    <span class="grow"></span>
+                    <button mat-button (click)="acceptMerge(t, r.i)">Accept</button>
+                    <button mat-button (click)="rejectMerge(t, r.i)">Reject</button>
                   </div>
-                }
-                <div class="row sub"><b>Fact list</b><span class="muted small">{{ t.facts === null ? '(not made yet)' : '(' + t.facts.length + ')' }}</span>
-                  @if (t.facts_reviewed_at && !dirtyFacts(t)) { <span class="pill ok">approved {{ t.facts_reviewed_at | date: 'd MMM y' }}</span> }</div>
-                @for (f of t.facts ?? []; track f.id) {
-                  <div class="row fact"><span class="id mono">{{ f.id }}</span>
-                    <textarea class="edit grow autosize" rows="1" [(ngModel)]="f.fact"></textarea>
-                    <mat-select [(ngModel)]="f.kind" class="tagsel" placeholder="Tag">
-                      @for (k of tags; track k) { <mat-option [value]="k">{{ tagLabel[k] }}</mat-option> }
-                    </mat-select>
-                    <button mat-icon-button (click)="removeFact(t, f)" matTooltip="Delete this fact. Saved when you approve the topic."><mat-icon>delete</mat-icon></button></div>
-                }
-                <button mat-stroked-button (click)="addFact(t)" [matTooltip]="info.addFact"><mat-icon>add</mat-icon> Add fact</button>
-              }
-              @case (4) {
-                @let sm = summary(t);
-                <table class="simple summary">
-                  <tbody>
-                    <tr><td>Tag suggestions</td><td>{{ sm.tags.accepted }} accepted · {{ sm.tags.rejected }} rejected · {{ sm.tags.open }} undecided</td></tr>
-                    <tr><td>Merges</td><td>{{ sm.merges.accepted }} accepted · {{ sm.merges.rejected }} rejected · {{ sm.merges.open }} undecided</td></tr>
-                    <tr><td>Fact list</td><td>{{ sm.facts }}</td></tr>
-                    <tr><td>Key points after approval</td><td>{{ t.points.length }}: {{ count(t, 'standard') }} Standard · {{ count(t, 'supporting') }} Supporting · {{ count(t, 'beyond_standard') }} Beyond standard</td></tr>
-                    <tr><td>Version</td><td>{{ dirtyPoints(t) || dirtyFacts(t) || pending(t) ? 'version ' + (t.version + 1) + ' (new)' : 'version ' + t.version + ' (unchanged)' }}</td></tr>
-                  </tbody>
-                </table>
-                <div class="row actions">
-                  <button mat-flat-button (click)="approve(t)" [disabled]="t.busy || !t.points.length" [matTooltip]="info.approve">
-                    <mat-icon>check</mat-icon> Approve topic</button>
-                  @if (dirtyPoints(t) || dirtyFacts(t) || pending(t)) {
-                    <button mat-button (click)="undo(t)" [matTooltip]="info.undo">Discard changes</button>
-                  }
+                  <div class="merged">“{{ r.m.point }}”</div>
                 </div>
               }
             }
+
+            <h3 class="sec">Key points <mat-icon class="info sm" [matTooltip]="info.keyPoints">info_outline</mat-icon></h3>
+            <div class="rows">
+              @for (p of shownPoints(t); track p.id) {
+                @let chg = pointChange(t, p);
+                @let ch = chg.major;
+                @let sg = pendingTag(t, p.id);
+                <div class="item" [class.changed]="ch">
+                  <div class="row line">
+                    <span class="id mono">{{ p.id }}</span>
+                    @if (editing() === t.n + ':' + p.id) {
+                      <textarea class="edit grow autosize" rows="1" [(ngModel)]="p.point"></textarea>
+                      <mat-select [(ngModel)]="p.kind" class="tagsel">
+                        @for (k of tags; track k) { <mat-option [value]="k">{{ tagLabel[k] }}</mat-option> }
+                      </mat-select>
+                      <button mat-icon-button (click)="removePoint(t, p)" matTooltip="Delete this key point"><mat-icon>delete</mat-icon></button>
+                      <button mat-flat-button (click)="editing.set('')">Done</button>
+                    } @else {
+                      <span class="text grow">{{ p.point }}</span>
+                      <span class="tagcell">
+                        <span [class]="'pill tagpill ' + p.kind" [matTooltip]="tip(p.kind)">{{ shortTag[p.kind] }}</span>
+                        @if (p.ref && p.kind !== 'beyond_standard') { <span class="muted small">{{ p.ref }}</span> }
+                      </span>
+                      <button mat-icon-button class="pencil" (click)="editing.set(t.n + ':' + p.id)" matTooltip="Edit wording or tag"><mat-icon>edit</mat-icon></button>
+                    }
+                  </div>
+                  @if (ch) {
+                    <div class="row note changednote"><mat-icon class="sic">edit_note</mat-icon><span class="grow">{{ ch }}{{ chg.minor ? ' · ' + chg.minor : '' }}</span>
+                      <button mat-button (click)="undoPoint(t, p.id)">Undo</button></div>
+                  } @else if (chg.minor) {
+                    <div class="row note minornote muted small"><span class="grow">{{ chg.minor }} (not saved yet)</span>
+                      <a class="undo" (click)="undoPoint(t, p.id)" (keydown.enter)="undoPoint(t, p.id)" tabindex="0">Undo</a></div>
+                  }
+                  @if (sg) {
+                    <div class="row note sug">
+                      <mat-icon class="sic">lightbulb</mat-icon>
+                      <span>Suggested <span [class]="'pill tagpill ' + sg.tag">{{ shortTag[sg.tag] }}</span>
+                        @if (sg.paragraph && sg.tag !== 'beyond_standard') { <span class="muted small">{{ sg.paragraph }} · {{ doc(sg.document) }}</span> }</span>
+                      @if (!sg.found) { <span class="pill warn" [matTooltip]="info.check">Check</span> }
+                      <mat-icon class="info sm" [matTooltip]="sg.reason + (sg.second_look ? ' (Second look with ' + sg.second_look.join(', ') + '.)' : '')">info_outline</mat-icon>
+                      <span class="grow"></span>
+                      <button mat-button (click)="acceptPoint(t, p.id)" [matTooltip]="info.suggestion">Accept</button>
+                      <button mat-button (click)="rejectPoint(t, p.id)">Reject</button>
+                    </div>
+                  }
+                </div>
+              } @empty { <p class="muted">No key points in this view.</p> }
+            </div>
+
+            <h3 class="sec">Facts <mat-icon class="info sm" [matTooltip]="info.facts">info_outline</mat-icon>
+              @if (t.facts_reviewed_at && !dirtyFacts(t)) { <span class="muted small">approved {{ t.facts_reviewed_at | date: 'd MMM y' }}</span> }</h3>
+            @if (t.suggestions?.facts && !factsDecision(t)) {
+              <div class="sugcard">
+                <div class="row"><mat-icon class="sic">lightbulb</mat-icon>
+                  <b>Suggested hard-fact list ({{ t.suggestions.facts.items.length }})</b>
+                  <mat-icon class="info sm" [matTooltip]="info.factList">info_outline</mat-icon>
+                  <span class="grow"></span>
+                  <button mat-button (click)="acceptFacts(t)">Use this list</button>
+                  <button mat-button (click)="rejectFacts(t)">Keep current</button>
+                </div>
+                @for (f of t.suggestions.facts.items; track f.id) {
+                  <div class="row factline"><span class="id mono">{{ f.id }}</span><span class="text grow">{{ f.fact }}</span>
+                    <span [class]="'pill tagpill ' + f.tag">{{ shortTag[f.tag] ?? '—' }}</span>
+                    @if (f.paragraph && f.tag !== 'beyond_standard') { <span class="muted small">{{ f.paragraph }}</span> }</div>
+                } @empty { <p class="muted small">The reference has no hard facts for this topic; using this list leaves it empty.</p> }
+              </div>
+            }
+            <div class="rows">
+              @for (f of t.facts ?? []; track f.id) {
+                <div class="item" [class.changed]="factChanged(t, f)">
+                  <div class="row line">
+                    <span class="id mono">{{ f.id }}</span>
+                    @if (editing() === t.n + ':' + f.id) {
+                      <textarea class="edit grow autosize" rows="1" [(ngModel)]="f.fact"></textarea>
+                      <mat-select [(ngModel)]="f.kind" class="tagsel" placeholder="Tag">
+                        @for (k of tags; track k) { <mat-option [value]="k">{{ tagLabel[k] }}</mat-option> }
+                      </mat-select>
+                      <button mat-icon-button (click)="removeFact(t, f)" matTooltip="Delete this fact"><mat-icon>delete</mat-icon></button>
+                      <button mat-flat-button (click)="editing.set('')">Done</button>
+                    } @else {
+                      <span class="text grow">{{ f.fact || '(empty)' }}</span>
+                      <span class="tagcell">
+                        @if (f.kind) { <span [class]="'pill tagpill ' + f.kind" [matTooltip]="tip(f.kind)">{{ shortTag[f.kind] }}</span> }
+                        @if (f.ref && f.kind !== 'beyond_standard') { <span class="muted small">{{ f.ref }}</span> }
+                      </span>
+                      <button mat-icon-button class="pencil" (click)="editing.set(t.n + ':' + f.id)" matTooltip="Edit wording or tag"><mat-icon>edit</mat-icon></button>
+                    }
+                  </div>
+                </div>
+              } @empty { <p class="muted small">{{ t.facts === null ? 'No fact list yet.' : 'No facts: exact match is not measured for this topic.' }}</p> }
+            </div>
+            <button mat-button (click)="addFact(t)"><mat-icon>add</mat-icon> Add fact</button>
             @if (t.error) { <p class="error">{{ t.error }}</p> }
 
-            <div class="row nav">
-              <button mat-button (click)="step(-1)" [disabled]="!hasPrev()" [matTooltip]="info.prev"><mat-icon>chevron_left</mat-icon> Previous</button>
-              <span class="grow"></span>
-              @if (stepNo() < 4) { <button mat-stroked-button (click)="stepNo.set(nextStep())">Next step</button> }
-              <button mat-button (click)="step(1)" [disabled]="!hasNext()" [matTooltip]="info.next">Next <mat-icon iconPositionEnd>chevron_right</mat-icon></button>
-            </div>
+            @let chs = changes(t);
+            @if (chs.length || st !== 'approved') {
+              <div class="savebar">
+                <div class="grow">
+                  @if (chs.length) {
+                    <b>Unsaved:</b> {{ chs.join(' · ') }}
+                  } @else { <span class="muted">Not yet approved{{ t.reviewed_at ? ' (key points approved, facts not)' : t.facts_reviewed_at ? ' (facts approved, key points not)' : '' }}</span> }
+                </div>
+                @if (chs.length) { <button mat-button (click)="undo(t)" [matTooltip]="info.discard">Discard</button> }
+                <button mat-flat-button (click)="approve(t)" [disabled]="t.busy || !t.points.length" [matTooltip]="info.approve"><mat-icon>check</mat-icon> Approve topic</button>
+              </div>
+            } @else {
+              <div class="row approved muted small"><mat-icon class="st ok">check_circle</mat-icon> Approved {{ t.reviewed_at | date: 'd MMM y, HH:mm' }} · version {{ t.version }}</div>
+            }
           </section>
         }
       </div>
     </div>
   `,
   styles: `
-    .loading { margin-bottom: 8px; } .title h1 { margin: 0; } .title { margin: 4px 0 12px; } .memo { min-width: 240px; }
+    .title h1 { margin: 0; } .title { margin: 4px 0 12px; } .memo { min-width: 240px; } .loading { margin-bottom: 8px; }
     .info { font-size: 18px; width: 18px; height: 18px; color: var(--mat-sys-on-surface-variant); cursor: help; vertical-align: middle; }
     .info.sm { font-size: 15px; width: 15px; height: 15px; }
     .settings { margin-bottom: 12px; } .settings .docs { margin-top: 8px; gap: 4px 14px; }
     .layout { display: grid; grid-template-columns: 1fr; gap: 16px; align-items: start; }
-    .side { max-height: 260px; overflow: auto; padding: 12px; }  /* one column: a short scrolling list above the topic */
-    @media (min-width: 1200px) {  /* side by side (the app's own menu takes 220px): the list stays in view */
-      .layout { grid-template-columns: 290px minmax(0, 1fr); }
+    .side { max-height: 260px; overflow: auto; padding: 12px; }
+    @media (min-width: 1200px) {
+      .layout { grid-template-columns: 270px minmax(0, 1fr); }
       .side { position: sticky; top: 8px; max-height: calc(100vh - 24px); }
     }
-    .main { min-width: 0; } .main table { display: block; overflow-x: auto; }
-    .side .prog { gap: 4px; margin-bottom: 6px; } .side .legend { gap: 2px; margin: 8px 0 2px; }
-    .side ul { list-style: none; margin: 0; padding: 0; }
-    .side li { display: grid; grid-template-columns: 22px 1fr auto; gap: 6px; align-items: center; padding: 6px 6px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+    .side .prog { gap: 4px; margin-bottom: 6px; } .side ul { list-style: none; margin: 8px 0; padding: 0; }
+    .side li { display: grid; grid-template-columns: 20px 20px 1fr auto; gap: 6px; align-items: center; padding: 5px 6px; border-radius: 8px; cursor: pointer; font-size: 13px; }
     .side li:hover { background: var(--mat-sys-surface-container); } .side li.on { background: var(--mat-sys-secondary-container); }
     .side .num { color: var(--mat-sys-on-surface-variant); text-align: right; } .side .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .main h2 { margin: 0; font: var(--mat-sys-title-large); } .meta { gap: 6px; margin: 2px 0 10px; }
-    .stepper { gap: 2px; border-bottom: 1px solid var(--mat-sys-outline-variant); padding-bottom: 8px; margin-bottom: 12px; }
-    .stepbtn.active { background: var(--mat-sys-secondary-container); }
-    .dot { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; font-size: 12px; margin-right: 4px;
-           border: 1px solid var(--mat-sys-outline); } .dot.done { background: #2e7d32; border-color: #2e7d32; color: #fff; }
-    .sub { margin: 4px 0 8px; }
-    .id { width: 40px; color: var(--mat-sys-on-surface-variant); } .tagcol { width: 120px; } .para { width: 120px; } .dec { width: 150px; white-space: nowrap; }
-    .tagsel-col { width: 220px; } .tagsel { width: 200px; }
+    .st { font-size: 18px; width: 18px; height: 18px; color: var(--mat-sys-outline); } .st.ok { color: #2e7d32; } .st.warn { color: #ef6c00; }
+    .badge { background: #1565c0; color: #fff; border-radius: 9px; font-size: 11px; padding: 0 6px; line-height: 18px; }
+    .main { min-width: 0; } .head { display: flex; align-items: flex-start; gap: 12px; }
+    .head h2 { margin: 0; font: var(--mat-sys-title-large); flex: 1; min-width: 0; padding-top: 6px; }
+    .headside { display: flex; align-items: center; gap: 4px; white-space: nowrap; flex: none; }
+    .minornote { margin-top: 2px; } .undo { cursor: pointer; color: var(--mat-sys-primary); }
+    .savebar button { white-space: nowrap; flex: none; }
+    .filters { gap: 6px; margin: 10px 0 6px; }
+    .chip { border: 1px solid var(--mat-sys-outline-variant); background: transparent; color: inherit; border-radius: 16px; padding: 3px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+    .chip.on { background: var(--mat-sys-secondary-container); border-color: transparent; font-weight: 600; }
+    .sec { margin: 18px 0 6px; font: var(--mat-sys-title-small); display: flex; align-items: center; gap: 6px; }
+    .rows { display: flex; flex-direction: column; }
+    .item { border-bottom: 1px solid var(--mat-sys-outline-variant); padding: 6px 4px; border-left: 3px solid transparent; }
+    .item.changed { border-left-color: #ef6c00; background: color-mix(in srgb, #ef6c00 5%, transparent); }
+    .line { flex-wrap: nowrap; align-items: flex-start; gap: 10px; } .line .text { line-height: 1.45; padding-top: 2px; }
+    .tagcell { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; min-width: 110px; text-align: right; }
+    .pencil { opacity: 0.35; } .item:hover .pencil { opacity: 1; }
+    .note { gap: 8px; margin: 4px 0 2px 46px; font-size: 13px; }
+    .sug { color: var(--mat-sys-on-surface); background: color-mix(in srgb, #1565c0 8%, transparent); border-radius: 8px; padding: 2px 8px; }
+    .changednote { color: #ef6c00; } .sic { font-size: 18px; width: 18px; height: 18px; }
+    .sugcard { border: 1px solid color-mix(in srgb, #1565c0 45%, transparent); border-radius: 10px; padding: 8px 12px; margin: 8px 0; }
+    .sugcard .merged { margin: 4px 0 2px 26px; } .factline { gap: 8px; margin: 3px 0 0 26px; font-size: 13px; }
+    .id { width: 34px; flex: none; color: var(--mat-sys-on-surface-variant); }
     .mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px; } .small { font-size: 12px; }
     .tagpill.standard { background: color-mix(in srgb, #2e7d32 22%, transparent); }
     .tagpill.supporting { background: color-mix(in srgb, #1565c0 22%, transparent); }
     .tagpill.beyond_standard { background: color-mix(in srgb, #ef6c00 22%, transparent); }
-    tr.accepted td { background: color-mix(in srgb, #2e7d32 7%, transparent); } tr.rejected td { opacity: 0.6; }
-    .item { border: 1px solid var(--mat-sys-outline-variant); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
-    .item.accepted { border-color: #2e7d32; } .item.rejected { opacity: 0.65; } .item ul { margin: 6px 0 0; padding-left: 18px; }
-    .small-btn { min-width: 0; padding: 0 8px; } .small-btn.on { background: var(--mat-sys-secondary-container); font-weight: 600; }
+    .chip.standard.on { background: color-mix(in srgb, #2e7d32 25%, transparent); }
+    .chip.supporting.on { background: color-mix(in srgb, #1565c0 25%, transparent); }
+    .chip.beyond_standard.on { background: color-mix(in srgb, #ef6c00 25%, transparent); }
+    .tagsel { width: 190px; flex: none; }
     .edit { width: 100%; box-sizing: border-box; background: var(--mat-sys-surface-container); color: inherit;
             border: 1px solid var(--mat-sys-outline-variant); border-radius: 6px; padding: 6px 8px; font: inherit; resize: vertical; }
-    .autosize { field-sizing: content; min-height: 0; } .fact { gap: 8px; margin: 4px 0; flex-wrap: nowrap; } .fact .edit { flex: 1; min-width: 0; }
-    .summary td:first-child { width: 220px; color: var(--mat-sys-on-surface-variant); } .actions { margin-top: 12px; }
-    .nav { margin-top: 16px; border-top: 1px solid var(--mat-sys-outline-variant); padding-top: 8px; }`,
+    .autosize { field-sizing: content; min-height: 0; }
+    .savebar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 8px; margin: 16px -16px -16px; padding: 10px 16px;
+               background: var(--mat-sys-surface-container); border-top: 1px solid var(--mat-sys-outline-variant); border-radius: 0 0 12px 12px; }
+    .approved { margin-top: 16px; gap: 6px; }`,
 })
 export class BenchRubric {
   private api = inject(Api);
@@ -382,17 +344,15 @@ export class BenchRubric {
   readonly info = INFO;
   tip(k: string | null | undefined): string { return k ? (INFO as Record<string, string>)[k] ?? '' : ''; }
   readonly statusLabel: Record<Status, string> = { review: 'To review', progress: 'In progress', approved: 'Approved' };
-  readonly steps: { n: Step; label: string }[] = [{ n: 1, label: 'Tags' }, { n: 2, label: 'Merges' }, { n: 3, label: 'Facts' }, { n: 4, label: 'Approve' }];
   readonly refs = signal<any[]>([]);
   readonly ref = signal('');
   readonly topics = signal<TopicEdit[]>([]);
   readonly error = signal('');
   readonly current = signal(0);
-  readonly stepNo = signal<Step>(1);
+  readonly filter = signal<Filter>('all');
+  readonly editing = signal('');
   readonly showSettings = signal(false);
   readonly loading = signal(true);
-  showAll = false;
-  showRefs = false;
 
   readonly topic = computed(() => this.topics().find((t) => t.n === this.current()) ?? null);
   readonly approvedCount = computed(() => this.topics().filter((t) => this.status(t) === 'approved').length);
@@ -443,7 +403,7 @@ export class BenchRubric {
 
   // ---------- navigation and status ----------
 
-  go(n: number) { this.current.set(n); this.stepNo.set(1); this.showAll = false; this.showRefs = false; }
+  go(n: number) { this.current.set(n); this.filter.set('all'); this.editing.set(''); }
   private index() { return this.topics().findIndex((t) => t.n === this.current()); }
   hasPrev() { return this.index() > 0; }
   hasNext() { return this.index() < this.topics().length - 1; }
@@ -464,20 +424,12 @@ export class BenchRubric {
   count(t: TopicEdit, k: string) { return t.points.filter((p) => p.kind === k).length; }
   docNames(docs: any[]) { return docs.map((d) => (typeof d === 'string' ? d : d.name)).join(', '); }
 
-  stepDone(t: TopicEdit, n: Step) {
-    if (n === 1) return this.tagRows(t).every((r) => r.decision);
-    if (n === 2) return this.mergeRows(t).every((r) => r.decision);
-    if (n === 3) return !t.suggestions?.facts || !!this.factsDecision(t);
-    return this.status(t) === 'approved';
+  shownPoints(t: TopicEdit) {
+    const f = this.filter();
+    if (f === 'all') return t.points;
+    if (f === 'pending') { const ids = new Set(this.pendingTags(t).map((r) => r.id)); return t.points.filter((p) => ids.has(p.id)); }
+    return t.points.filter((p) => p.kind === f);
   }
-
-  stepCount(t: TopicEdit, n: Step) {
-    if (n === 1) return this.tagRows(t).filter((r) => !r.decision).length || null;
-    if (n === 2) return this.mergeRows(t).filter((r) => !r.decision).length || null;
-    return null;
-  }
-
-  nextStep(): Step { return Math.min(4, this.stepNo() + 1) as Step; }
 
   // ---------- suggestions ----------
 
@@ -485,27 +437,28 @@ export class BenchRubric {
     return Object.fromEntries((JSON.parse(t.savedPoints) as Point[]).map((p) => [p.id, p]));
   }
 
-  origPoint(t: TopicEdit, id: string) { return this.saved(t)[id]; }
+  private refOf(s: any) { return s.paragraph ? `${s.paragraph} (${this.doc(s.document)})` : undefined; }
+  doc(d: string | undefined) { return (d ?? '').replace(/\s*\((Standard|Supporting)\)\s*$/, ''); }
 
-  private refOf(s: any) { return s.paragraph ? `${s.paragraph} (${s.document})` : undefined; }
-
-  /** Key points whose suggestion would change the saved rubric (still shown once decided, so a decision can be changed). */
-  tagRows(t: TopicEdit) {
+  /** Key points whose suggestion would change the saved rubric and is not yet decided. */
+  private openSuggestions(t: TopicEdit) {
     const sug = t.suggestions?.points ?? {};
     const orig = this.saved(t);
     const present = new Set(t.points.map((p) => p.id));
     const merged = new Set(this.mergeRows(t).filter((r) => r.decision === 'accepted').flatMap((r) => r.m.ids as string[]));
     return Object.entries<any>(sug)
-      .filter(([id, s]) => orig[id] && present.has(id) && !merged.has(id)
-                           && (s.tag !== orig[id].kind || (this.refOf(s) && this.refOf(s) !== orig[id].ref)))
-      .map(([id, s]) => ({ id, s, orig: orig[id], point: t.points.find((p) => p.id === id)!.point,
-                           decision: (t.decisions['point:' + id] ?? s.status ?? null) as Decision | null, saved: !!s.status }));
+      .filter(([id, s]) => !s.status && !t.decisions['point:' + id] && orig[id] && present.has(id) && !merged.has(id)
+                           && (s.tag !== orig[id].kind || (s.tag !== 'beyond_standard' && this.refOf(s) && this.refOf(s) !== orig[id].ref)))
+      .map(([id, s]) => ({ id, s, orig: orig[id] }));
   }
 
-  /** Shown by default: suggestions that change a tag (or are flagged Check); the rest only add the backing paragraph. */
-  changeRows(t: TopicEdit) { return this.tagRows(t).filter((r) => r.s.tag !== r.orig.kind || !r.s.found); }
-  refRows(t: TopicEdit) { return this.tagRows(t).filter((r) => r.s.tag === r.orig.kind && r.s.found); }
-  shownRows(t: TopicEdit) { return this.showRefs ? this.tagRows(t) : this.changeRows(t); }
+  /** Pending suggestions that change a tag (or are flagged Check): shown on their row. Paragraph-only ones go with Accept all. */
+  pendingTags(t: TopicEdit) { return this.openSuggestions(t).filter((r) => r.s.tag !== r.orig.kind || !r.s.found); }
+  pendingTag(t: TopicEdit, id: string) { return this.pendingTags(t).find((r) => r.id === id)?.s ?? null; }
+
+  pendingCount(t: TopicEdit) {
+    return this.pendingTags(t).length + this.mergeRows(t).filter((r) => !r.decision).length + (t.suggestions?.facts && !this.factsDecision(t) ? 1 : 0);
+  }
 
   mergeRows(t: TopicEdit): { m: any; i: number; decision: Decision | null; saved: boolean }[] {
     const orig = this.saved(t);
@@ -514,10 +467,6 @@ export class BenchRubric {
   }
 
   factsDecision(t: TopicEdit): Decision | null { return t.decisions['facts'] ?? t.suggestions?.facts?.status ?? null; }
-
-  anySuggestion(t: TopicEdit) {
-    return this.tagRows(t).some((r) => !r.decision) || this.mergeRows(t).some((r: any) => !r.decision) || (t.suggestions?.facts && !this.factsDecision(t));
-  }
 
   private decide(t: TopicEdit, key: string, d: Decision | null) {
     const next = { ...t.decisions };
@@ -536,16 +485,10 @@ export class BenchRubric {
     this.decide(t, 'point:' + id, 'accepted');
   }
 
-  rejectPoint(t: TopicEdit, id: string) {
-    const o = this.saved(t)[id];
-    const p = t.points.find((x) => x.id === id);
-    if (p && o) { p.kind = o.kind; if (o.ref) p.ref = o.ref; else delete p.ref; }
-    this.decide(t, 'point:' + id, 'rejected');
-  }
+  rejectPoint(t: TopicEdit, id: string) { this.decide(t, 'point:' + id, 'rejected'); }
 
   acceptMerge(t: TopicEdit, i: number) {
     const m = t.suggestions.merges[i];
-    if (t.decisions['merge:' + i] === 'accepted') return;
     const at = t.points.findIndex((p) => m.ids.includes(p.id));
     if (at < 0) return;
     t.points = t.points.filter((p) => !m.ids.includes(p.id));
@@ -554,56 +497,105 @@ export class BenchRubric {
     this.decide(t, 'merge:' + i, 'accepted');
   }
 
-  rejectMerge(t: TopicEdit, i: number) {
-    const m = t.suggestions.merges[i];
-    if (t.decisions['merge:' + i] === 'accepted') {  // put the original points back where the merged one is
-      const orig = this.saved(t);
-      const at = t.points.findIndex((p) => p.id === m.ids[0]);
-      t.points = t.points.filter((p) => p.id !== m.ids[0]);
-      t.points.splice(at < 0 ? t.points.length : at, 0, ...m.ids.map((id: string) => structuredClone(orig[id])));
-      for (const id of m.ids) this.decide(t, 'point:' + id, null);
-    }
-    this.decide(t, 'merge:' + i, 'rejected');
-  }
+  rejectMerge(t: TopicEdit, i: number) { this.decide(t, 'merge:' + i, 'rejected'); }
 
   acceptFacts(t: TopicEdit) {
-    const sf = t.suggestions.facts;
-    t.facts = sf.items.map((f: any) => ({ id: f.id, fact: f.fact, ...(f.tag ? { kind: f.tag } : {}), ...(this.refOf(f) ? { ref: this.refOf(f) } : {}) }));
+    t.facts = t.suggestions.facts.items.map((f: any) => ({ id: f.id, fact: f.fact, ...(f.tag ? { kind: f.tag } : {}),
+                                                         ...(f.tag !== 'beyond_standard' && this.refOf(f) ? { ref: this.refOf(f) } : {}) }));
     this.decide(t, 'facts', 'accepted');
   }
 
-  rejectFacts(t: TopicEdit) {
-    t.facts = JSON.parse(t.savedFacts);
-    this.decide(t, 'facts', 'rejected');
-  }
+  rejectFacts(t: TopicEdit) { this.decide(t, 'facts', 'rejected'); }
 
-  /** Every suggestion of the topic: merges first (they replace points), then tags, then the fact list. */
+  /** Every pending suggestion of the topic: merges first (they replace points), then tags and paragraphs, then the fact list. */
   acceptAll(t: TopicEdit) {
     for (const r of this.mergeRows(t)) if (!r.decision) this.acceptMerge(t, r.i);
-    for (const r of this.tagRows(t)) if (!r.decision) this.acceptPoint(t, r.id);
+    for (const r of this.openSuggestions(t)) this.acceptPoint(t, r.id);
     if (t.suggestions?.facts && !this.factsDecision(t)) this.acceptFacts(t);
   }
 
-  summary(t: TopicEdit) {
-    const tally = (rows: { decision: Decision | null }[]) => ({
-      accepted: rows.filter((r) => r.decision === 'accepted').length, rejected: rows.filter((r) => r.decision === 'rejected').length,
-      open: rows.filter((r) => !r.decision).length });
-    const fd = this.factsDecision(t);
-    const facts = t.facts === null ? 'not made yet' : `${t.facts.length} fact(s), ${t.facts.filter((f) => f.kind === 'standard').length} tagged Standard`
-      + (t.suggestions?.facts ? (fd === 'accepted' ? ' · suggested list used' : fd === 'rejected' ? ' · current list kept' : ' · suggested list undecided') : '');
-    return { tags: tally(this.tagRows(t)), merges: tally(this.mergeRows(t)), facts };
+  // ---------- what changed ----------
+
+  private mergedAway(t: TopicEdit, id: string) {
+    return this.mergeRows(t).some((r) => t.decisions['merge:' + r.i] === 'accepted' && r.m.ids.includes(id));
+  }
+
+  /** How a key point differs from the saved rubric: major (tag, wording, merge) and minor (only its backing paragraph). */
+  pointChange(t: TopicEdit, p: Point): { major: string; minor: string; kinds: string[] } {
+    const o = this.saved(t)[p.id];
+    const merge = this.mergeRows(t).find((r) => t.decisions['merge:' + r.i] === 'accepted' && r.m.ids[0] === p.id);
+    if (merge) return { major: `Merged from ${merge.m.ids.join(', ')}`, minor: '', kinds: ['merge'] };
+    if (!o) return { major: 'New point', minor: '', kinds: ['new'] };
+    const major = [], kinds = [];
+    if (o.kind !== p.kind) { major.push(`Tag ${this.shortTag[o.kind]} → ${this.shortTag[p.kind]}`); kinds.push('tag'); }
+    if (o.point !== p.point) { major.push('Wording edited'); kinds.push('wording'); }
+    let minor = '';
+    if ((o.ref ?? '') !== (p.ref ?? '') && p.kind !== 'beyond_standard') {
+      minor = p.ref ? `Paragraph ${p.ref} added` : 'Paragraph removed';
+      if (!major.length) kinds.push('paragraph');
+    }
+    return { major: major.join(' · '), minor, kinds };
+  }
+
+  factChanged(t: TopicEdit, f: Fact) {
+    const saved = (JSON.parse(t.savedFacts) as Fact[] | null) ?? [];
+    const o = saved.find((x) => x.id === f.id);
+    return !o || JSON.stringify(o) !== JSON.stringify(f);
+  }
+
+  /** The topic's unsaved changes, counted by kind: "3 tag changes", "1 merge", "11 paragraphs added", ... */
+  changes(t: TopicEdit): string[] {
+    const n: Record<string, number> = {};
+    const add = (k: string) => (n[k] = (n[k] ?? 0) + 1);
+    const orig = this.saved(t);
+    const now = new Set(t.points.map((p) => p.id));
+    for (const p of t.points) this.pointChange(t, p).kinds.forEach(add);
+    for (const id of Object.keys(orig)) if (!now.has(id) && !this.mergedAway(t, id)) add('deleted');
+    const rejected = Object.entries(t.decisions).filter(([k, v]) => v === 'rejected' && !(k.startsWith('point:') && this.mergedAway(t, k.slice(6)))).length;
+    const word = (c: number, one: string, many: string) => `${c} ${c === 1 ? one : many}`;
+    const out = [];
+    if (n['tag']) out.push(word(n['tag'], 'tag change', 'tag changes'));
+    if (n['merge']) out.push(word(n['merge'], 'merge', 'merges'));
+    if (n['wording']) out.push(word(n['wording'], 'wording edit', 'wording edits'));
+    if (n['new']) out.push(word(n['new'], 'new point', 'new points'));
+    if (n['deleted']) out.push(word(n['deleted'], 'point deleted', 'points deleted'));
+    if (n['paragraph']) out.push(word(n['paragraph'], 'paragraph added', 'paragraphs added'));
+    if (this.dirtyFacts(t)) {
+      const replaced = t.decisions['facts'] === 'accepted';
+      out.push(replaced && !(t.facts ?? []).length ? 'fact list emptied (no hard facts in the reference)' : replaced ? 'fact list replaced' : 'facts edited');
+    }
+    if (rejected) out.push(word(rejected, 'suggestion rejected', 'suggestions rejected'));
+    return out;
+  }
+
+  /** Put one key point back as saved (a merged point: its original points), with its suggestion undecided again. */
+  undoPoint(t: TopicEdit, id: string) {
+    const orig = this.saved(t);
+    const merge = this.mergeRows(t).find((r) => t.decisions['merge:' + r.i] === 'accepted' && r.m.ids[0] === id);
+    if (merge) {
+      const at = t.points.findIndex((p) => p.id === id);
+      t.points = t.points.filter((p) => p.id !== id);
+      t.points.splice(at < 0 ? t.points.length : at, 0, ...merge.m.ids.map((x: string) => structuredClone(orig[x])));
+      for (const x of merge.m.ids) this.decide(t, 'point:' + x, null);
+      this.decide(t, 'merge:' + merge.i, null);
+      return;
+    }
+    const i = t.points.findIndex((x) => x.id === id);
+    if (i >= 0 && orig[id]) t.points[i] = structuredClone(orig[id]);
+    this.decide(t, 'point:' + id, null);
   }
 
   // ---------- editing ----------
 
-  removePoint(t: TopicEdit, p: Point) { t.points = t.points.filter((x) => x !== p); this.refresh(); }
-  removeFact(t: TopicEdit, f: Fact) { t.facts = (t.facts ?? []).filter((x) => x !== f); this.refresh(); }
+  removePoint(t: TopicEdit, p: Point) { t.points = t.points.filter((x) => x !== p); this.editing.set(''); this.refresh(); }
+  removeFact(t: TopicEdit, f: Fact) { t.facts = (t.facts ?? []).filter((x) => x !== f); this.editing.set(''); this.refresh(); }
 
   addFact(t: TopicEdit) {
     const used = new Set((t.facts ?? []).map((f) => f.id));
     let i = 1;
     while (used.has(`F${i}`)) i++;
     t.facts = [...(t.facts ?? []), { id: `F${i}`, fact: '' }];
+    this.editing.set(`${t.n}:F${i}`);
     this.refresh();
   }
 
@@ -611,6 +603,7 @@ export class BenchRubric {
     t.points = JSON.parse(t.savedPoints);
     t.facts = JSON.parse(t.savedFacts);
     t.decisions = {};
+    this.editing.set('');
     this.refresh();
   }
 
@@ -618,6 +611,7 @@ export class BenchRubric {
   async approve(t: TopicEdit) {
     t.busy = true;
     t.error = '';
+    this.editing.set('');
     this.refresh();
     try {
       const facts = t.facts === null ? null : t.facts.filter((f) => f.fact.trim());
