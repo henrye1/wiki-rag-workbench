@@ -135,9 +135,15 @@ async def suggest(conn: psycopg.Connection, ref_sha: str, numbers: set[int] | No
         topics = {t.number: t for t in load(qs, ref)}
     rows = [r for r in conn.execute("select * from bench.rubrics where reference_sha256 = %s order by topic_number", (ref_sha,))
             if not numbers or r["topic_number"] in numbers]
-    lib = await asyncio.to_thread(Library, conn)
+    # only the source documents you ticked for this reference (all when none are saved)
+    ref = conn.execute("select tag_sources from bench.references where reference_sha256 = %s", (ref_sha,)).fetchone()
+    ticked = set(ref["tag_sources"]) if ref and ref["tag_sources"] is not None else None
+    lib = await asyncio.to_thread(Library, conn, ticked)
+    if not lib.by_source:
+        sys.exit("None of the ticked source documents exists: tick at least one on the Rubric review screen")
+    docs = [{"slug": s, "name": lib.names[s], "tier": lib.tiers[s]} for s in sorted(lib.by_source)]
     sem, lock = asyncio.Semaphore(get_settings().concurrency), asyncio.Lock()
-    log(f"Suggesting rubric changes for {len(rows)} topic(s)")
+    log(f"Suggesting rubric changes for {len(rows)} topic(s), checking tags against: {', '.join(d['name'] for d in docs)}")
 
     async def one(r):
         t = topics.get(r["topic_number"])
@@ -147,6 +153,7 @@ async def suggest(conn: psycopg.Connection, ref_sha: str, numbers: set[int] | No
         try:
             async with sem:
                 s = await suggest_topic(t, r, lib)
+            s["documents"] = docs  # the documents these suggestions were checked against
         except Exception as e:
             log(f"  topic {r['topic_number']:>2}: failed ({type(e).__name__}: {e})")
             return

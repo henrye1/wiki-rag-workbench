@@ -40,6 +40,80 @@ def _query(sql: str, params: tuple = (), one: bool = False):
     return asyncio.to_thread(run)
 
 
+# ---------- reference memos: shown by a neutral label, never by file name ----------
+
+_ref_cache: dict = {}  # labels and masks, kept briefly: working them out hashes every stored memo
+REF_TTL = dt.timedelta(minutes=15)  # cleared on rename, new ticks and new runs
+
+
+def _ref_cache_clear():
+    _ref_cache.clear()
+
+
+async def _labels() -> dict[str, dict]:
+    """sha256 -> {label, tag_sources} for every reference memo; a memo seen for the first time gets the next
+    "Reference memo N"."""
+    hit = _ref_cache.get("labels")
+    if hit and dt.datetime.now() - hit[0] < REF_TTL:
+        return hit[1]
+    await _query(
+        """insert into bench.references (reference_sha256, label, created_at)
+           select sha, 'Reference memo ' || ((select count(*) from bench.references) + row_number() over (order by first_seen)), first_seen
+           from (select encode(sha256(reference), 'hex') as sha, min(created_at) as first_seen from bench.runs
+                 where reference is not null group by 1) s
+           where sha not in (select reference_sha256 from bench.references)
+           on conflict do nothing""")
+    out = {r["reference_sha256"]: r for r in await _query("select reference_sha256, label, tag_sources from bench.references")}
+    _ref_cache["labels"] = (dt.datetime.now(), out)
+    return out
+
+
+async def _masks() -> list[tuple[str, str]]:
+    """(file name, label) for every name a memo was uploaded or saved under, longest first, with and without .docx."""
+    hit = _ref_cache.get("masks")
+    if hit and dt.datetime.now() - hit[0] < REF_TTL:
+        return hit[1]
+    labels = await _labels()
+    rows = await _query("""select distinct encode(sha256(reference), 'hex') as sha, reference_name as name from bench.runs
+                           where reference is not null and reference_name is not null
+                           union select distinct reference_sha256, reference_name from bench.rubrics where reference_name is not null""")
+    pairs = set()
+    for r in rows:
+        lab = (labels.get(r["sha"]) or {}).get("label") or "Reference memo"
+        name = r["name"].strip()
+        for n in {name, name.removesuffix(".docx").strip()}:
+            if len(n) >= 4:
+                pairs.add((n, lab))
+    out = sorted(pairs, key=lambda p: -len(p[0]))
+    _ref_cache["masks"] = (dt.datetime.now(), out)
+    return out
+
+
+async def _run_shas() -> dict[str, str]:
+    """run id -> its memo's SHA-256 (cached with the labels)."""
+    hit = _ref_cache.get("shas")
+    if hit and dt.datetime.now() - hit[0] < REF_TTL:
+        return hit[1]
+    out = {r["id"]: r["sha"] for r in await _query(
+        "select id, encode(sha256(reference), 'hex') as sha from bench.runs where reference is not null")}
+    _ref_cache["shas"] = (dt.datetime.now(), out)
+    return out
+
+
+def _mask(obj, pairs: list[tuple[str, str]]):
+    """The value with every memo file name replaced by its label (strings inside dicts and lists too)."""
+    if isinstance(obj, str):
+        for name, lab in pairs:
+            if name in obj:
+                obj = obj.replace(name, lab)
+        return obj
+    if isinstance(obj, dict):
+        return {k: _mask(v, pairs) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_mask(v, pairs) for v in obj]
+    return obj
+
+
 async def db_ok() -> bool:
     try:
         await _query("select 1 from bench.runs limit 1")
@@ -66,21 +140,23 @@ def _progress(row: dict, cfg: dict | None, errors: dict | None = None) -> dict:
 @router.get("/runs")
 async def list_runs():
     rows = await _query(
-        f"""select id, status, updated_at, runs, topics, query_set_name, reference_name, rag_collection, wiki_slug, sources, use_saved, mode, use_batch, {DONE_SQL},
+        f"""select id, status, updated_at, runs, topics, query_set_name, rag_collection, wiki_slug, sources, use_saved, mode, use_batch, {DONE_SQL},
                    results->'config' as config, results->'summary' as summary, results->'errors' as errors,
                    jsonb_array_length(coalesce(results->'config'->'topics_selected', '[]'::jsonb)) as n_topics
             from bench.runs order by created_at desc"""
     )
-    out = []
+    out, labels, pairs, shas = [], await _labels(), await _masks(), await _run_shas()
     for r in rows:
-        cfg = r["config"] or {}
+        r["reference_sha"] = shas.get(r["id"])
+        cfg = _mask(r["config"] or {}, pairs)
         out.append({
             "id": r["id"], "started": cfg.get("started"), "finished": cfg.get("finished"), "runs": cfg.get("runs") or r["runs"],
             "judge_model": cfg.get("judge_model"), "topics": r["n_topics"] or r["topics"] or "all",
-            "query_set": r["query_set_name"], "reference": r["reference_name"],
+            "query_set": r["query_set_name"], "reference": (labels.get(r["reference_sha"]) or {}).get("label"),
+            "reference_sha256": r["reference_sha"],
             "rag_collection": r["rag_collection"], "wiki": r["wiki_slug"], "sources": r["sources"], "use_saved": r["use_saved"],
             "mode": r["mode"], "use_batch": r["use_batch"],
-            "summary": r["summary"], "progress": _progress(r, cfg, r["errors"]),
+            "summary": r["summary"], "progress": _progress(r, cfg, _mask(r["errors"], pairs)),
             "rubric": _rubric_label(cfg), "judge": _judge_label(cfg),
         })
     return out
@@ -113,7 +189,13 @@ async def _row(run_id: str, cols: str) -> dict:
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str):
     row = await _row(run_id, "results, rag_collection, wiki_slug, sources, use_saved")
+    row["reference_sha"] = (await _run_shas()).get(run_id)
     data = row["results"] or {}
+    pairs = await _masks()
+    for k in ("config", "errors", "summary"):
+        if k in data:
+            data[k] = _mask(data[k], pairs)
+    data["reference_label"] = ((await _labels()).get(row["reference_sha"]) or {}).get("label")
     data["progress"] = _progress(row, data.get("config"), data.get("errors"))
     # what the run compared, from the run row (results of older runs do not record it)
     data["compared"] = {"rag_collection": row["rag_collection"], "wiki": row["wiki_slug"], "sources": row["sources"], "use_saved": row["use_saved"]}
@@ -123,7 +205,8 @@ async def get_run(run_id: str):
 @router.get("/runs/{run_id}/status")
 async def status(run_id: str):
     row = await _row(run_id, "results->'config' as config, results->'errors' as errors, log")
-    return {**_progress(row, row["config"], row["errors"]), "log": row["log"].splitlines()[-15:]}
+    pairs = await _masks()
+    return {**_progress(row, row["config"], _mask(row["errors"], pairs)), "log": _mask(row["log"].splitlines()[-15:], pairs)}
 
 
 def _ensure_idle():
@@ -170,7 +253,8 @@ async def list_topics():
         if out.returncode:
             raise HTTPException(500, f"Could not read the query set: {out.stderr.strip().splitlines()[-1:]}")
         return json.loads(out.stdout)
-    return {"topics": await asyncio.to_thread(parse), "query_set": last["query_set_name"], "reference": last["reference_name"]}
+    label = ((await _labels()).get(hashlib.sha256(last["reference"]).hexdigest()) or {}).get("label")
+    return {"topics": await asyncio.to_thread(parse), "query_set": last["query_set_name"], "reference": label}
 
 
 def _answer_cost(usage: list, prices: dict) -> float | None:
@@ -329,14 +413,16 @@ async def estimate(topics: str = "", runs: int = 2, mode: str = "quick", use_bat
 async def list_rubrics():
     """Saved rubrics (key points built once per reference file and reused by every run), newest first."""
     rows = await _query(
-        """select reference_sha256, max(reference_name) as reference_name, count(*) as topics,
+        """select reference_sha256, count(*) as topics,
                   sum(jsonb_array_length(key_points)) as key_points,
                   sum((select count(*) from jsonb_array_elements(key_points) k where k->>'kind' = 'standard')) as standard,
                   count(reviewed_at) as approved, count(facts_reviewed_at) as facts_approved, count(facts) as facts_made,
                   min(created_at) as built, max(created_at) as updated
            from bench.rubrics group by reference_sha256 order by max(created_at) desc"""
     )
+    labels = await _labels()
     for r in rows:
+        r["reference_name"] = (labels.get(r["reference_sha256"]) or {}).get("label") or "Reference memo"
         p = _procs.get(f"rubric-{r['reference_sha256']}")
         r["rebuilding"] = bool(p and p.poll() is None)
         r["making_facts"] = _making_facts(r["reference_sha256"])
@@ -356,17 +442,64 @@ TAGS = ("standard", "supporting", "beyond_standard")
 async def get_rubric(ref_sha: str):
     """Every topic's key points and exact-match facts, with their version and approval, for the review screen."""
     rows = await _query(
-        """select topic_number, topic_title, reference_name, key_points, facts, version, reviewed_at, facts_reviewed_at, created_at, suggestions
+        """select topic_number, topic_title, key_points, facts, version, reviewed_at, facts_reviewed_at, created_at, suggestions, tag_sources
            from bench.rubrics where reference_sha256 = %s order by topic_number""", (ref_sha,))
     if not rows:
         raise HTTPException(404, "No saved rubric for this reference file")
-    return {"reference_sha256": ref_sha, "reference_name": rows[0]["reference_name"], "tags": TAGS, "topics": rows,
+    ref = (await _labels()).get(ref_sha) or {}
+    return {"reference_sha256": ref_sha, "reference_name": ref.get("label") or "Reference memo", "label": ref.get("label"),
+            "tag_sources": ref.get("tag_sources"), "documents": await _documents(), "tags": TAGS, "topics": rows,
             "making_facts": _making_facts(ref_sha), "suggesting": _running(f"suggest-{ref_sha}")}
 
 
 def _running(key: str) -> bool:
     p = _procs.get(key)
     return bool(p and p.poll() is None)
+
+
+async def _documents() -> list[dict]:
+    """Every source document the wikis keep, for ticking which ones the rubric tag check uses."""
+    def run():
+        import re
+        with psycopg.connect(get_settings().database_url, row_factory=dict_row) as c:
+            rows = c.execute("""select distinct on (slug) slug, title, meta->>'parser' as parser, meta->>'title' as pdf_title
+                                from wiki.sources order by slug, length(text) desc""").fetchall()
+        out = []
+        for r in rows:
+            std = re.search(r"\b(IFRS|IAS|IFRIC|SIC)\s*(\d+)", r["title"] or "")
+            part = re.search(r"BB\d{4}-([ABC])\b", r["pdf_title"] or "")
+            name = (f"{std.group(1)} {std.group(2)}" if std else r["title"]) + (f" Part {part.group(1)}" if part else "")
+            tier = "supporting" if r["parser"] == "ifrs_accompanying" else "standard" if r["parser"] == "ifrs" else "other"
+            out.append({"slug": r["slug"], "name": name, "tier": tier, "title": r["title"]})
+        return out
+    return await asyncio.to_thread(run)
+
+
+class ReferenceIn(BaseModel):
+    label: str | None = Field(None, min_length=1, max_length=80)
+    tag_sources: list[str] | None = Field(None, description="Source slugs the next Suggest changes checks tags against")
+
+
+@router.put("/references/{ref_sha}")
+async def update_reference(ref_sha: str, body: ReferenceIn):
+    """Rename a reference memo, or save which source documents the rubric tag check uses. The ticks take effect on the
+    next Suggest changes; nothing in the rubric changes until you accept its suggestions and approve."""
+    labels = await _labels()
+    if ref_sha not in labels:
+        raise HTTPException(404, "Unknown reference memo")
+    if body.tag_sources is not None:
+        known = {d["slug"] for d in await _documents()}
+        if not body.tag_sources or (bad := [s for s in body.tag_sources if s not in known]):
+            raise HTTPException(422, "Tick at least one existing source document" if not body.tag_sources else f"Unknown document(s): {', '.join(bad)}")
+    _ref_cache_clear()
+    if body.label is not None:
+        if any(r["label"] == body.label.strip() and k != ref_sha for k, r in labels.items()):
+            raise HTTPException(409, "Another reference memo already has that label")
+        await _query("update bench.references set label = %s where reference_sha256 = %s", (body.label.strip(), ref_sha))
+    if body.tag_sources is not None:
+        await _query("update bench.references set tag_sources = %s where reference_sha256 = %s", (Jsonb(sorted(body.tag_sources)), ref_sha))
+    _ref_cache_clear()
+    return (await _labels())[ref_sha]
 
 
 class SuggestIn(BaseModel):
@@ -405,8 +538,10 @@ async def export_rubric(ref_sha: str, topic: int = 0, tag: str = "", unreviewed:
         r["points"] = [p for p in r["key_points"] or [] if not tag or p.get("kind") == tag]
     filters = ", ".join(x for x in (f"topic {topic}" if topic else "", f"tag {TAG_LABEL.get(tag, tag)}" if tag else "",
                                      "not yet reviewed only" if unreviewed else "") if x)
-    data = await asyncio.to_thread(build, rub["reference_name"] or "reference", ref_sha, shown, filters, counts, suggestions)
-    name = f"Rubric - {rub['reference_name'] or ref_sha[:10]}{' - suggestions' if suggestions else ''}.docx".replace("/", "-")
+    names = {d["slug"]: d["name"] for d in rub["documents"]}
+    ticked = [names.get(s, s) for s in rub["tag_sources"]] if rub["tag_sources"] is not None else [d["name"] for d in rub["documents"]]
+    data = await asyncio.to_thread(build, rub["reference_name"], ref_sha, shown, filters, counts, suggestions, ticked)
+    name = f"Rubric - {rub['reference_name']}{' - suggestions' if suggestions else ''}.docx".replace("/", "-")
     return Response(data, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
 
@@ -459,24 +594,30 @@ async def review_topic(ref_sha: str, n: int, body: TopicReview):
                 sug["merges"][int(ref)]["status"] = d
             elif kind == "facts" and sug.get("facts"):
                 sug["facts"]["status"] = d
-    changed = points != cur["key_points"] or facts != cur["facts"]
+    # acting on suggestions records the documents they were checked against with this version
+    tag_sources = cur.get("tag_sources")
+    if sug and body.decisions and sug.get("documents") is not None:
+        tag_sources = sug["documents"]
+    changed = points != cur["key_points"] or facts != cur["facts"] or tag_sources != cur.get("tag_sources")
     row = await _query(
-        """update bench.rubrics set key_points = %s, facts = %s, suggestions = %s,
+        """update bench.rubrics set key_points = %s, facts = %s, suggestions = %s, tag_sources = %s,
                   version = version + %s,
                   reviewed_at = case when %s then now() when %s then null else reviewed_at end,
                   facts_reviewed_at = case when %s then now() when %s then null else facts_reviewed_at end
            where reference_sha256 = %s and topic_number = %s
-           returning topic_number, topic_title, key_points, facts, version, reviewed_at, facts_reviewed_at, suggestions""",
-        (Jsonb(points), Jsonb(facts) if facts is not None else None, Jsonb(sug) if sug else None, 1 if changed else 0,
+           returning topic_number, topic_title, key_points, facts, version, reviewed_at, facts_reviewed_at, suggestions, tag_sources""",
+        (Jsonb(points), Jsonb(facts) if facts is not None else None, Jsonb(sug) if sug else None,
+         Jsonb(tag_sources) if tag_sources is not None else None, 1 if changed else 0,
          body.approve_points, changed and points != cur["key_points"],
          body.approve_facts, changed and facts != cur["facts"], ref_sha, n), one=True)
     await _query(
-        """insert into bench.rubric_versions (reference_sha256, topic_number, version, key_points, facts, reviewed_at, facts_reviewed_at, note)
-           values (%s, %s, %s, %s, %s, %s, %s, %s)
+        """insert into bench.rubric_versions (reference_sha256, topic_number, version, key_points, facts, reviewed_at, facts_reviewed_at,
+                                             note, tag_sources)
+           values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
            on conflict (reference_sha256, topic_number, version) do update set reviewed_at = excluded.reviewed_at,
-               facts_reviewed_at = excluded.facts_reviewed_at""",
+               facts_reviewed_at = excluded.facts_reviewed_at, tag_sources = excluded.tag_sources""",
         (ref_sha, n, row["version"], Jsonb(row["key_points"]), Jsonb(row["facts"]) if row["facts"] is not None else None,
-         row["reviewed_at"], row["facts_reviewed_at"], "reviewed"))
+         row["reviewed_at"], row["facts_reviewed_at"], "reviewed", Jsonb(row["tag_sources"]) if row["tag_sources"] is not None else None))
     return row
 
 
@@ -584,6 +725,7 @@ async def start(
            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
         (run_id, topics.replace(" ", ""), runs, collection, wiki, sources, use_saved, mode, use_batch, qs[0], qs[1], ref[0], ref[1]),
     )
+    _ref_cache_clear()  # a new memo gets its label
     _spawn(run_id)
     return {"id": run_id}
 
@@ -595,6 +737,7 @@ async def resume(run_id: str):
         raise HTTPException(400, "This run has no stored inputs (imported run); start a new run instead")
     if _status(row) == "running":
         raise HTTPException(409, "Run is still running")
+    _ref_cache_clear()  # a new memo gets its label
     _spawn(run_id)
     return {"id": run_id}
 

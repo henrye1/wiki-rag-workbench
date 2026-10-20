@@ -112,7 +112,7 @@ import { poller } from '../../shared/poll';
         <p class="muted">Claude turns each topic's reference answer into key points once per reference file; every run with that file is
           scored against the same saved key points. A new reference file gets its own rubric on its first run.</p>
         <table class="simple">
-          <thead><tr><th>Reference file</th><th>Topics</th><th>Key points</th><th>Reviewed</th><th>Built</th><th></th></tr></thead>
+          <thead><tr><th>Reference memo</th><th>Topics</th><th>Key points</th><th>Reviewed</th><th>Built</th><th></th></tr></thead>
           <tbody>
             @for (r of rubrics(); track r.reference_sha256) {
               <tr>

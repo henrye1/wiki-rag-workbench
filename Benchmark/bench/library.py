@@ -55,8 +55,19 @@ def _doc_name(title: str, meta: dict | None) -> str:
     return f"{name} Part {part.group(1)}" if part else name
 
 
+def documents(conn: psycopg.Connection) -> list[dict]:
+    """Every source document the wikis keep (one per slug): slug, name, tier."""
+    rows = conn.execute("""select distinct on (slug) slug, title, meta from wiki.sources order by slug, length(text) desc""").fetchall()
+    out = []
+    for r in rows:
+        r = r if isinstance(r, dict) else dict(zip(("slug", "title", "meta"), r))
+        out.append({"slug": r["slug"], "name": _doc_name(r["title"], r["meta"]), "tier": _tier(r["meta"]), "title": r["title"]})
+    return out
+
+
 class Library:
-    def __init__(self, conn: psycopg.Connection):
+    def __init__(self, conn: psycopg.Connection, only: set[str] | None = None):
+        """only: the source slugs to use (None = every source document)."""
         self.by_source: dict[str, dict[str, str]] = {}
         self.titles: dict[str, str] = {}
         self.names: dict[str, str] = {}
@@ -65,6 +76,8 @@ class Library:
                                order by s.slug, length(s.text) desc""").fetchall()
         for r in rows:
             r = r if isinstance(r, dict) else dict(zip(("slug", "title", "text", "meta"), r))
+            if only is not None and r["slug"] not in only:
+                continue
             paras: dict[str, str] = {}
             ms = list(LABEL_LINE.finditer(r["text"] or ""))
             for i, m in enumerate(ms):

@@ -212,7 +212,7 @@ export class BenchRun {
     if (!built.length) return 'built in this run (before rubrics were saved)';
     const versions = used.filter((r) => r.version);
     const approved = used.filter((r) => r.approved).length;
-    return `saved rubric for ${d.config.reference ?? 'this reference'}, built in ${built.join(', ')}`
+    return `saved rubric for ${d.reference_label ?? 'this reference memo'}, built in ${built.join(', ')}`
       + (versions.length ? ` · versions ${[...new Set(versions.map((r) => r.version))].sort((a, b) => a - b).join(', ')} · ${approved} of ${used.length} topics approved`
                          : ' · recorded before rubric review');
   }

@@ -15,7 +15,7 @@ interface Fact { id: string; fact: string; kind?: string; ref?: string }
 interface TopicEdit {
   n: number; title: string; version: number; reviewed_at: string | null; facts_reviewed_at: string | null;
   points: Point[]; facts: Fact[] | null; savedPoints: string; savedFacts: string; busy: boolean; error: string;
-  suggestions: any; decisions: Record<string, 'accepted' | 'rejected'>;
+  suggestions: any; decisions: Record<string, 'accepted' | 'rejected'>; tagSources: any[] | null;
 }
 
 const TAG_LABEL: Record<string, string> = {
@@ -31,7 +31,7 @@ const TAG_LABEL: Record<string, string> = {
       <h1>Rubric review</h1>
       <p class="muted">Approved key points and facts are used by every later run, which records the version of each topic's rubric it used.</p>
       <div class="row filters">
-        <mat-form-field appearance="outline" subscriptSizing="dynamic" class="ref"><mat-label>Reference file</mat-label>
+        <mat-form-field appearance="outline" subscriptSizing="dynamic" class="ref"><mat-label>Reference memo</mat-label>
           <mat-select [ngModel]="ref()" (ngModelChange)="load($event)">
             @for (r of refs(); track r.reference_sha256) { <mat-option [value]="r.reference_sha256">{{ r.reference_name }} · {{ r.reference_sha256.slice(0, 10) }}…</mat-option> }
           </mat-select></mat-form-field>
@@ -70,11 +70,46 @@ const TAG_LABEL: Record<string, string> = {
       </div>
       @if (anyDirty()) { <p class="muted small">You have unsaved changes; the export contains the saved rubric only.</p> }
       @if (error()) { <p class="error">{{ error() }}</p> }
+      @if (ref()) {
+        <div class="card docs">
+          <div class="row">
+            @if (renaming()) {
+              <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>Label</mat-label>
+                <input matInput [(ngModel)]="newLabel" maxlength="80" (keydown.enter)="rename()" /></mat-form-field>
+              <button mat-flat-button (click)="rename()" [disabled]="!newLabel.trim()">Save</button>
+              <button mat-button (click)="renaming.set(false)">Cancel</button>
+            } @else {
+              <h3 class="grow">{{ label() }}</h3>
+              <button mat-button (click)="newLabel = label(); renaming.set(true)"><mat-icon>edit</mat-icon> Rename</button>
+            }
+          </div>
+          <div class="muted small">The memo is shown by this label everywhere; its file name is never shown.</div>
+          <h4>Documents for the tag check</h4>
+          <div class="row wrap">
+            @for (d of documents(); track d.slug) {
+              <mat-checkbox [checked]="ticks().has(d.slug)" (change)="tick(d.slug, $event.checked)">
+                {{ d.name }} <span class="muted small">({{ d.tier === 'standard' ? 'Standard' : d.tier === 'supporting' ? 'Supporting' : 'other' }} · {{ d.title }})</span>
+              </mat-checkbox>
+            }
+          </div>
+          <div class="row actions">
+            @if (ticksChanged()) {
+              <button mat-flat-button (click)="saveTicks()" [disabled]="!ticks().size">Save choice</button>
+              <button mat-button (click)="resetTicks()">Undo</button>
+            }
+            <span class="muted small">Suggest changes reads only the ticked documents. A new choice takes effect when you run Suggest changes
+              again and approve; each approved version keeps the documents its tags were checked against.
+              {{ savedTicks() === null ? 'Nothing saved yet: all documents are used.' : '' }}</span>
+          </div>
+        </div>
+      }
 
       @for (t of visible(); track t.n) {
         <section class="card topic">
           <div class="row"><h3 class="grow">{{ t.n }}. {{ t.title }}</h3><span class="muted small">version {{ t.version }}</span></div>
           <div class="muted small">{{ counts(t) }}</div>
+          <div class="muted small">Tags checked against: {{ t.tagSources ? docNames(t.tagSources) : 'not recorded (no suggestions accepted yet)' }}
+            @if (t.suggestions) { · suggestions made against: {{ t.suggestions.documents ? docNames(t.suggestions.documents) : 'all documents (before document selection)' }} }</div>
           @for (m of t.suggestions?.merges ?? []; track $index; let i = $index) {
             @if (!m.status && !t.decisions['merge:' + i] && hasAll(t, m.ids)) {
               <div class="sug">
@@ -176,6 +211,7 @@ const TAG_LABEL: Record<string, string> = {
     .edit { width: 100%; box-sizing: border-box; background: var(--mat-sys-surface-container); color: inherit;
             border: 1px solid var(--mat-sys-outline-variant); border-radius: 6px; padding: 6px 8px; font: inherit; resize: vertical; }
     .fact { display: flex; align-items: center; gap: 8px; margin: 4px 0; } .fact .edit { flex: 1; min-width: 0; } .autosize { field-sizing: content; min-height: 0; } .actions { gap: 8px; margin-top: 8px; } .small { font-size: 12px; }
+    .docs { margin-bottom: 16px; } .docs h3, .docs h4 { margin: 4px 0; } .wrap { flex-wrap: wrap; gap: 4px 16px; }
     .sug { margin: 6px 0; padding: 6px 10px; border-left: 3px solid #1565c0; background: color-mix(in srgb, #1565c0 8%, transparent); border-radius: 4px; }
     .sug ul { margin: 4px 0; padding-left: 18px; }`,
 })
@@ -259,6 +295,10 @@ export class BenchRubric {
     this.topics.set(d.topics.map((t: any) => this.edit(t)));
     this.makingFacts.set(d.making_facts);
     if (d.making_facts) this.watchFacts();
+    this.label.set(d.label ?? d.reference_name);
+    this.documents.set(d.documents ?? []);
+    this.savedTicks.set(d.tag_sources ?? null);
+    this.resetTicks();
     this.suggesting.set(d.suggesting);
     if (d.suggesting) this.watchSuggestions();
   }
@@ -268,7 +308,7 @@ export class BenchRubric {
     const facts = t.facts === null || t.facts === undefined ? null : (structuredClone(t.facts) as Fact[]);
     return { n: t.topic_number, title: t.topic_title, version: t.version, reviewed_at: t.reviewed_at, facts_reviewed_at: t.facts_reviewed_at,
              points, facts, savedPoints: JSON.stringify(t.key_points), savedFacts: JSON.stringify(t.facts ?? null), busy: false, error: '',
-             suggestions: t.suggestions ?? null, decisions: {} };
+             suggestions: t.suggestions ?? null, decisions: {}, tagSources: t.tag_sources ?? null };
   }
 
   visible() {
@@ -322,6 +362,50 @@ export class BenchRubric {
     t.facts = sf.items.map((f: any) => ({ id: f.id, fact: f.fact, ...(f.tag ? { kind: f.tag } : {}),
                                           ...(f.paragraph ? { ref: `${f.paragraph} (${f.document})` } : {}) }));
     this.decide(t, 'facts', 'accepted');
+  }
+
+  readonly label = signal('');
+  readonly renaming = signal(false);
+  newLabel = '';
+  readonly documents = signal<any[]>([]);
+  readonly savedTicks = signal<string[] | null>(null);
+  readonly ticks = signal<Set<string>>(new Set());
+
+  docNames(docs: any[]) { return docs.map((d) => (typeof d === 'string' ? d : d.name)).join(', '); }
+
+  tick(slug: string, on: boolean) {
+    const s = new Set(this.ticks());
+    if (on) s.add(slug); else s.delete(slug);
+    this.ticks.set(s);
+  }
+
+  resetTicks() {
+    const saved = this.savedTicks();
+    this.ticks.set(new Set(saved ?? this.documents().map((d) => d.slug)));
+  }
+
+  ticksChanged() {
+    const saved = this.savedTicks() ?? this.documents().map((d) => d.slug);
+    const now = this.ticks();
+    return this.savedTicks() === null ? now.size !== saved.length || saved.some((s) => !now.has(s))
+                                      : saved.length !== now.size || saved.some((s) => !now.has(s));
+  }
+
+  async saveTicks() {
+    try {
+      const r = await this.api.put<any>(`/api/bench/references/${enc(this.ref())}`, { tag_sources: [...this.ticks()] });
+      this.savedTicks.set(r.tag_sources);
+      this.resetTicks();
+    } catch (e) { this.error.set(errMsg(e)); }
+  }
+
+  async rename() {
+    try {
+      const r = await this.api.put<any>(`/api/bench/references/${enc(this.ref())}`, { label: this.newLabel.trim() });
+      this.label.set(r.label);
+      this.renaming.set(false);
+      this.refs.set(await this.api.get('/api/bench/rubrics'));
+    } catch (e) { this.error.set(errMsg(e)); }
   }
 
   readonly suggesting = signal(false);

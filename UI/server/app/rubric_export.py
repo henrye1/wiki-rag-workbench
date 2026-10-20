@@ -120,8 +120,12 @@ def _suggestions_after(doc, t: dict):
            (Cm(1.2), Cm(9.6), Cm(3.0), Cm(3.4), Cm(8.5)))
 
 
+def _docs(docs) -> str:
+    return ", ".join(d["name"] if isinstance(d, dict) else d for d in docs)
+
+
 def build(reference_name: str, ref_sha: str, topics: list[dict], filters: str, counts: tuple[int, int, int],
-          suggestions: bool = False) -> bytes:
+          suggestions: bool = False, ticked: list[str] | None = None) -> bytes:
     doc = Document()
     st = doc.styles["Normal"]
     st.font.name, st.font.size = "Calibri", Pt(10)
@@ -135,6 +139,8 @@ def build(reference_name: str, ref_sha: str, topics: list[dict], filters: str, c
     p.add_run(f"\nFingerprint (SHA-256): {ref_sha}\nExported {dt.datetime.now().strftime('%-d %b %Y, %H:%M')}")
     n_topics, n_points, n_facts = counts
     p.add_run(f"\n{n_points} of {n_topics} topics' key points approved · {n_facts} fact lists approved")
+    if ticked is not None:
+        p.add_run(f"\nDocuments ticked for the tag check: {_docs(ticked)}")
     if filters:
         p.add_run(f"\nShown: {filters}").italic = True
     p = doc.add_paragraph("Tags: Standard (Part A) is the Standard's own text; Supporting (Part B/C) is application and "
@@ -149,8 +155,12 @@ def build(reference_name: str, ref_sha: str, topics: list[dict], filters: str, c
     for t in topics:
         doc.add_heading(f"{t['topic_number']}. {t['topic_title']}", 2)
         p = doc.add_paragraph()
-        r = p.add_run(f"version {t.get('version') or 1}")
+        r = p.add_run(f"version {t.get('version') or 1} · tags checked against: "
+                      + (_docs(t["tag_sources"]) if t.get("tag_sources") else "not recorded (no suggestions accepted yet)"))
         r.font.size, r.font.color.rgb = Pt(9), GREY
+        if suggestions and t.get("suggestions"):
+            docs = t["suggestions"].get("documents")
+            _note(doc, "Suggestions made against: " + (_docs(docs) if docs else "all source documents (made before document selection)"))
 
         p = doc.add_paragraph()
         p.add_run(f"Key points ({len(t['points'])})").bold = True
