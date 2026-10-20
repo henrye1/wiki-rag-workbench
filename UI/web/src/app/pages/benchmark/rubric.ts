@@ -337,9 +337,13 @@ const INFO = {
     .info { font-size: 18px; width: 18px; height: 18px; color: var(--mat-sys-on-surface-variant); cursor: help; vertical-align: middle; }
     .info.sm { font-size: 15px; width: 15px; height: 15px; }
     .settings { margin-bottom: 12px; } .settings .docs { margin-top: 8px; gap: 4px 14px; }
-    .layout { display: grid; grid-template-columns: 290px 1fr; gap: 16px; align-items: start; }
-    @media (max-width: 1000px) { .layout { grid-template-columns: 1fr; } }
-    .side { position: sticky; top: 8px; max-height: calc(100vh - 24px); overflow: auto; padding: 12px; }
+    .layout { display: grid; grid-template-columns: 1fr; gap: 16px; align-items: start; }
+    .side { max-height: 260px; overflow: auto; padding: 12px; }  /* one column: a short scrolling list above the topic */
+    @media (min-width: 1200px) {  /* side by side (the app's own menu takes 220px): the list stays in view */
+      .layout { grid-template-columns: 290px minmax(0, 1fr); }
+      .side { position: sticky; top: 8px; max-height: calc(100vh - 24px); }
+    }
+    .main { min-width: 0; } .main table { display: block; overflow-x: auto; }
     .side .prog { gap: 4px; margin-bottom: 6px; } .side .legend { gap: 2px; margin: 8px 0 2px; }
     .side ul { list-style: none; margin: 0; padding: 0; }
     .side li { display: grid; grid-template-columns: 22px 1fr auto; gap: 6px; align-items: center; padding: 6px 6px; border-radius: 8px; cursor: pointer; font-size: 13px; }
