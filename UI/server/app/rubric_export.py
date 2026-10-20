@@ -79,6 +79,8 @@ def _suggested_points(doc, t: dict):
             continue
         changed = s["tag"] != kp.get("kind")
         tag = TAG_LABEL.get(s["tag"], s["tag"]) + ("" if changed else " (same)") + ("" if s.get("found", True) else "\nCHECK")
+        if s.get("second_look"):
+            tag += f"\n(second look with {', '.join(s['second_look'])})"
         if s.get("status"):
             tag += f"\n[{STATUS.get(s['status'], s['status'])}]"
         para = f"{s['paragraph']}\n{s['document']}" if s.get("paragraph") else "—"
@@ -111,6 +113,8 @@ def _suggestions_after(doc, t: dict):
                   f"[{STATUS.get(sf.get('status'), sf.get('status'))}]")
     r.font.size, r.font.color.rgb = Pt(9), GREY
     items = sf.get("items") or []
+    if sf.get("dropped"):
+        _note(doc, "Left out as remarks about the memo rather than facts: " + "; ".join(f"“{x}”" for x in sf["dropped"]))
     if not items:
         _note(doc, "None: the reference answer for this topic has no hard facts, so exact match would not be measured for it.")
         return
@@ -160,7 +164,8 @@ def build(reference_name: str, ref_sha: str, topics: list[dict], filters: str, c
         r.font.size, r.font.color.rgb = Pt(9), GREY
         if suggestions and t.get("suggestions"):
             docs = t["suggestions"].get("documents")
-            _note(doc, "Suggestions made against: " + (_docs(docs) if docs else "all source documents (made before document selection)"))
+            _note(doc, "Suggestions made against: " + (_docs(docs) if docs else "all source documents (made before document selection)")
+                  + f" · paragraphs found by {t['suggestions'].get('search') or 'words only'}")
 
         p = doc.add_paragraph()
         p.add_run(f"Key points ({len(t['points'])})").bold = True

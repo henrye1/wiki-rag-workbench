@@ -98,8 +98,8 @@ const SYMBOL: Record<string, string> = { full: '✅', partial: '⚠️', missing
                 @if (r.systems[sys].context_checks; as cx) {
                   <details class="checks">
                     <summary>Against what it read:
-                      @for (k of ['faithfulness', 'context_recall']; track k) {
-                        <span class="pill" [title]="r.systems[sys].metrics?.[k]?.reason ?? ''">{{ k === 'faithfulness' ? 'Faithfulness' : 'Context recall' }}
+                      @for (k of ['faithfulness', 'context_recall', 'context_recall_standard']; track k) {
+                        <span class="pill" [title]="r.systems[sys].metrics?.[k]?.reason ?? ''">{{ k === 'faithfulness' ? 'Faithfulness' : k === 'context_recall' ? 'Context recall' : 'Standard-only context recall' }}
                           {{ r.systems[sys].metrics?.[k]?.status === 'measured' ? r.systems[sys].metrics[k].value + '%' : 'not measured' }}</span>
                       }
                     </summary>

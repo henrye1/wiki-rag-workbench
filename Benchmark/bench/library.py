@@ -136,4 +136,4 @@ class Library:
             if have < per_tier:
                 picked += [x for x in scored[k:] if self.tiers[x[1]] == tier][: per_tier - have]
         return [{"paragraph": label, "source": slug, "document": self.names[slug], "tier": self.tiers[slug],
-                 "text": body[:1500], "score": round(s, 2)} for s, slug, label, body in picked]
+                 "text": body, "score": round(s, 2)} for s, slug, label, body in picked]

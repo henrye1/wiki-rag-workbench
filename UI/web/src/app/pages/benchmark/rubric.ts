@@ -139,6 +139,7 @@ const TAG_LABEL: Record<string, string> = {
                         <div class="sug small">
                           Suggested: <b>{{ tagLabel[s.tag] }}</b>@if (s.paragraph) { · {{ s.paragraph }} ({{ s.document }}) }
                           @if (!s.found) { <span class="pill warn" title="The judge thinks a Standard may say this, but none of the paragraphs found does: please check">check</span> }
+                          @if (s.second_look) { <span class="pill" title="The judge's first reason named these paragraphs, so it was asked again with them">second look: {{ s.second_look.join(', ') }}</span> }
                           <span class="muted"> — {{ s.reason }}</span>
                           <button mat-button (click)="acceptPoint(t, p, s)">Accept</button>
                           <button mat-button (click)="decide(t, 'point:' + p.id, 'rejected')">Reject</button>

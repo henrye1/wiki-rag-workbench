@@ -19,7 +19,7 @@ from .config import get_settings
 VERSION = "kept-1"
 PRICES = json.loads((pathlib.Path(__file__).parent / "prices.json").read_text())
 CHEAP = ("latency_s", "cost_usd")
-CONTEXT = ("faithfulness", "context_recall")  # Full mode: one Claude Sonnet 5.5 call per answer, reading what the answer read
+CONTEXT = ("faithfulness", "context_recall", "context_recall_standard")  # Full mode: one Claude Sonnet 5.5 call per answer, reading what the answer read
 ANSWER_CHECKS = ("completeness", "exact_match", "exact_match_standard", "citation_accuracy")
 
 

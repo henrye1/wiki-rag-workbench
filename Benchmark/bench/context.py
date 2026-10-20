@@ -7,6 +7,7 @@ read: the RAG's passages (stored with the answer) or the wiki's pages, rebuilt f
   an earlier answer is not backed by the wiki's pages.
 - Context recall: for each rubric key point, does what was read contain it (present 1, partly 0.5, absent 0)?
   Score = the average, as a percentage. It shows whether a miss was the search's fault or the answer's.
+  Standard-only context recall: the same over the key points tagged Standard.
 The judge sees one answer at a time and never the name of the system that wrote it. Answers from runs made before
 what was read was recorded are not measured.
 """
@@ -17,7 +18,7 @@ import httpx
 from . import judge
 from .config import get_settings
 
-VERSION = "context-1"
+VERSION = "context-2"  # 2: Standard-only context recall
 MAX_CLAIMS = 40
 WEIGHT = {"present": 1.0, "partly": 0.5, "absent": 0.0}
 
@@ -89,6 +90,10 @@ def score(result: dict | None, points: list[dict], note: str) -> tuple[dict, dic
     got = [WEIGHT[k["status"]] for k in kps if k["status"] in WEIGHT]
     m["context_recall"] = (measured(round(100 * sum(got) / len(got), 1)) if got
                            else not_measured("no key points" if not kps else "the judge returned no verdicts"))
+    std = [WEIGHT[k["status"]] for k in kps if k["kind"] == "standard" and k["status"] in WEIGHT]
+    m["context_recall_standard"] = (measured(round(100 * sum(std) / len(std), 1)) if std
+                                    else not_measured("none of this topic's key points is tagged Standard" if not any(k["kind"] == "standard" for k in kps)
+                                                      else "the judge returned no verdicts"))
     rec = {"version": VERSION, "model": (result or {}).get("model"), "backend": (result or {}).get("backend"),
            "usage": (result or {}).get("usage"), "batch": (result or {}).get("batch", False), "note": note,
            "claims": claims, "key_points": kps}
@@ -121,7 +126,7 @@ async def run_context(data: dict, sem: asyncio.Semaphore, use_batch: bool, save,
             except Exception as e:
                 ctx, note = None, f"what the answer read could not be rebuilt ({type(e).__name__})"
             if ctx is None:
-                ans["metrics"] = {**(ans.get("metrics") or {}), "faithfulness": not_measured(note), "context_recall": not_measured(note)}
+                ans["metrics"] = {**(ans.get("metrics") or {}), **{k: not_measured(note) for k in ("faithfulness", "context_recall", "context_recall_standard")}}
                 continue
             prepared[key] = (rec, ans, note, _user(questions_of(rec.get("question")), rec.get("key_points") or [], ctx, ans.get("answer") or ""))
 

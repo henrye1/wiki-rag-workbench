@@ -162,11 +162,11 @@ export class BenchRun {
   }
 
   readonly gapOrder = ['similarity', 'coverage', 'coverage_standard', 'coverage_std_supp', 'wins', 'completeness', 'exact_match',
-                       'exact_match_standard', 'citation_accuracy', 'faithfulness', 'context_recall', 'latency_s', 'cost_usd'];
+                       'exact_match_standard', 'citation_accuracy', 'faithfulness', 'context_recall', 'context_recall_standard', 'latency_s', 'cost_usd'];
   readonly gapLabel: Record<string, string> = {
     similarity: 'Similarity (0–10)', coverage: 'Coverage', coverage_standard: 'Standard-only coverage',
     coverage_std_supp: 'Standard + Supporting coverage', exact_match_standard: 'Standard-only exact match', wins: 'Wins (gap: share of answers)',
-    exact_match: 'Exact match', faithfulness: 'Faithfulness', citation_accuracy: 'Citation accuracy', context_recall: 'Context recall',
+    exact_match: 'Exact match', faithfulness: 'Faithfulness', citation_accuracy: 'Citation accuracy', context_recall: 'Context recall', context_recall_standard: 'Standard-only context recall',
     completeness: 'Completeness', latency_s: 'Latency (s, lower is better)', cost_usd: 'Cost per query (lower is better)',
   };
 
