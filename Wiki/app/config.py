@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     gemini_embed_model: str = "gemini-embedding-001"
     embed_dim: int = 768  # must match vector(768) in migrations
     embed_batch: int = 100
-    temperature: float = 0.2
+    temperature: float = 0.1
     database_url: str = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"  # local Supabase
     # Original uploads in Supabase Storage (off unless the secret key is set; the URL defaults to DATABASE_URL's project)
     supabase_url: str = ""
