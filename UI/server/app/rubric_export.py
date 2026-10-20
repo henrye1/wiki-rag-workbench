@@ -35,6 +35,11 @@ def _shade(cell, hex_fill: str):
 STATUS = {"accepted": "accepted", "rejected": "rejected", None: "not decided"}
 
 
+def _ref(item: dict, tag: str | None, ref: str | None) -> str | None:
+    """The backing paragraph, never shown for Beyond standard (nothing in the Standard backs it)."""
+    return None if tag == "beyond_standard" else ref
+
+
 def _table(doc, headers: tuple, rows: list[tuple], widths: tuple):
     tbl = doc.add_table(rows=1, cols=len(headers))
     tbl.style, tbl.alignment = "Table Grid", WD_TABLE_ALIGNMENT.LEFT
@@ -72,7 +77,7 @@ def _suggested_points(doc, t: dict):
     sug = (t.get("suggestions") or {}).get("points") or {}
     rows = []
     for kp in t["points"]:
-        cur = TAG_LABEL.get(kp.get("kind"), kp.get("kind") or "") + (f"\n{kp['ref']}" if kp.get("ref") else "")
+        cur = TAG_LABEL.get(kp.get("kind"), kp.get("kind") or "") + (f"\n{r}" if (r := _ref(kp, kp.get("kind"), kp.get("ref"))) else "")
         s = sug.get(kp["id"])
         if not s:
             rows.append((kp["id"], kp["point"], cur, ("no suggestion", False, True), "", ""))
@@ -83,7 +88,7 @@ def _suggested_points(doc, t: dict):
             tag += f"\n(second look with {', '.join(s['second_look'])})"
         if s.get("status"):
             tag += f"\n[{STATUS.get(s['status'], s['status'])}]"
-        para = f"{s['paragraph']}\n{s['document']}" if s.get("paragraph") else "—"
+        para = f"{s['paragraph']}\n{s['document']}" if _ref(s, s.get("tag"), s.get("paragraph")) else "—"
         rows.append((kp["id"], kp["point"], cur, (tag, changed or not s.get("found", True), False), para, s.get("reason") or ""))
     _table(doc, ("ID", "Key point", "Current tag", "Suggested tag", "Paragraph (document)", "Reason"), rows,
            (Cm(1.2), Cm(7.6), Cm(3.0), Cm(3.0), Cm(3.4), Cm(7.5)))
@@ -119,7 +124,7 @@ def _suggestions_after(doc, t: dict):
         _note(doc, "None: the reference answer for this topic has no hard facts, so exact match would not be measured for it.")
         return
     rows = [(f["id"], f["fact"], (TAG_LABEL.get(f.get("tag"), f.get("tag") or "—") + ("" if f.get("found", True) else "\nCHECK"), False, False),
-             f"{f['paragraph']}\n{f['document']}" if f.get("paragraph") else "—", f.get("reason") or "") for f in items]
+             f"{f['paragraph']}\n{f['document']}" if _ref(f, f.get("tag"), f.get("paragraph")) else "—", f.get("reason") or "") for f in items]
     _table(doc, ("ID", "Fact", "Suggested tag", "Paragraph (document)", "Reason"), rows,
            (Cm(1.2), Cm(9.6), Cm(3.0), Cm(3.4), Cm(8.5)))
 
@@ -183,7 +188,7 @@ def build(reference_name: str, ref_sha: str, topics: list[dict], filters: str, c
             for kp in t["points"]:
                 row = tbl.add_row().cells
                 row[0].text, row[1].text = kp["id"], kp["point"]
-                row[2].text = TAG_LABEL.get(kp.get("kind"), kp.get("kind") or "") + (f"\n{kp['ref']}" if kp.get("ref") else "")
+                row[2].text = TAG_LABEL.get(kp.get("kind"), kp.get("kind") or "") + (f"\n{r}" if (r := _ref(kp, kp.get("kind"), kp.get("ref"))) else "")
             tbl.autofit = False
             widths = (Cm(1.3), Cm(12.2), Cm(3.5))  # the page is 17 cm wide between the margins
             grid = tbl._tbl.tblGrid
@@ -208,8 +213,8 @@ def build(reference_name: str, ref_sha: str, topics: list[dict], filters: str, c
             q = doc.add_paragraph(style="List Bullet")
             q.add_run(f"{f['id']}  ").bold = True
             q.add_run(f["fact"])
-            if f.get("kind") or f.get("ref"):
-                r = q.add_run("  (" + ", ".join(x for x in (TAG_LABEL.get(f.get("kind"), f.get("kind")), f.get("ref")) if x) + ")")
+            if f.get("kind") or _ref(f, f.get("kind"), f.get("ref")):
+                r = q.add_run("  (" + ", ".join(x for x in (TAG_LABEL.get(f.get("kind"), f.get("kind")), _ref(f, f.get("kind"), f.get("ref"))) if x) + ")")
                 r.font.size, r.font.color.rgb = Pt(9), GREY
         if suggestions:
             _suggestions_after(doc, t)

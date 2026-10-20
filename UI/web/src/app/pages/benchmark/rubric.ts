@@ -205,7 +205,8 @@ const INFO = {
                             <td><span [class]="'pill tagpill ' + r.orig.kind" [matTooltip]="tip(r.orig.kind)">{{ shortTag[r.orig.kind] }}</span></td>
                             <td><span [class]="'pill tagpill ' + r.s.tag" [matTooltip]="tip(r.s.tag)">{{ shortTag[r.s.tag] }}</span>
                               @if (!r.s.found) { <span class="pill warn" [matTooltip]="info.colSuggested">Check</span> }</td>
-                            <td class="small">{{ r.s.paragraph ? r.s.paragraph : '—' }}<div class="muted">{{ r.s.paragraph ? r.s.document : '' }}</div></td>
+                            @let rp = r.s.tag !== 'beyond_standard' && r.s.paragraph;
+                            <td class="small">{{ rp ? r.s.paragraph : '—' }}<div class="muted">{{ rp ? r.s.document : '' }}</div></td>
                             <td class="small">{{ r.s.reason }}
                               @if (r.s.second_look) { <span class="pill" [matTooltip]="info.colReason">Second look: {{ r.s.second_look.join(', ') }}</span> }</td>
                             <td class="dec">
@@ -230,7 +231,7 @@ const INFO = {
                         <tr>
                           <td class="id mono">{{ p.id }}</td>
                           <td><textarea class="edit autosize" rows="1" [(ngModel)]="p.point"></textarea>
-                            @if (p.ref) { <div class="muted small">Backed by {{ p.ref }}</div> }</td>
+                            @if (p.ref && p.kind !== 'beyond_standard') { <div class="muted small">Backed by {{ p.ref }}</div> }</td>
                           <td><mat-select [(ngModel)]="p.kind" class="tagsel">
                             @for (k of tags; track k) { <mat-option [value]="k">{{ tagLabel[k] }}</mat-option> }
                           </mat-select></td>
@@ -280,7 +281,8 @@ const INFO = {
                           @for (f of sf.items; track f.id) {
                             <tr><td class="id mono">{{ f.id }}</td><td>{{ f.fact }}</td>
                               <td><span [class]="'pill tagpill ' + f.tag" [matTooltip]="tip(f.tag)">{{ shortTag[f.tag] ?? '—' }}</span></td>
-                              <td class="small">{{ f.paragraph || '—' }}<div class="muted">{{ f.paragraph ? f.document : '' }}</div></td></tr>
+                              @let fp = f.tag !== 'beyond_standard' && f.paragraph;
+                              <td class="small">{{ fp ? f.paragraph : '—' }}<div class="muted">{{ fp ? f.document : '' }}</div></td></tr>
                           }
                         </tbody>
                       </table>
@@ -529,7 +531,7 @@ export class BenchRubric {
     const p = t.points.find((x) => x.id === id);
     if (!p) return;
     p.kind = s.tag;
-    const ref = this.refOf(s);
+    const ref = s.tag === 'beyond_standard' ? undefined : this.refOf(s);
     if (ref) p.ref = ref; else delete p.ref;
     this.decide(t, 'point:' + id, 'accepted');
   }

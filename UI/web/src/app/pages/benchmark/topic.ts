@@ -36,7 +36,7 @@ const SYMBOL: Record<string, string> = { full: '✅', partial: '⚠️', missing
               @for (p of t.key_points; track p.id) {
                 <tr>
                   <td><b>{{ p.id }}</b> <span class="pill" [class.ok]="p.kind === 'standard'" [class.sup]="p.kind === 'supporting'" [class.warn]="p.kind !== 'standard' && p.kind !== 'supporting'">{{ tagLabel[p.kind] ?? p.kind }}</span>
-                    {{ p.point }}@if (p.ref) { <span class="muted small"> · {{ p.ref }}</span> }</td>
+                    {{ p.point }}@if (p.ref && p.kind !== 'beyond_standard') { <span class="muted small"> · {{ p.ref }}</span> }</td>
                   @for (r of runIds(); track r) { <td class="c" [title]="note(r, p.id)">{{ sym(r, 'rag', p.id) }}</td> }
                   @for (r of runIds(); track r) { <td class="c" [title]="note(r, p.id)">{{ sym(r, 'wiki', p.id) }}</td> }
                 </tr>
