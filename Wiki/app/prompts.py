@@ -151,6 +151,17 @@ def write_page_prompt(
         "Do not write a 'Not yet covered' list; it is added automatically.\n"
         if auto_gaps else ""
     )
+    detail = (
+        "For every paragraph in <source_paragraphs>, capture what it actually says, not only that it exists: its "
+        "definitions, numbers, thresholds, time periods, conditions, exceptions and who must do what. Mentioning or "
+        "citing a paragraph without its content is not enough. Keep the source's exact force words (such as shall, "
+        "must, is required to, may, is permitted to, unless, only if) and every condition; never soften, strengthen "
+        "or drop them. Still write a synthesised wiki page, not a copy of the source: organise the detail under "
+        "sub-headings by subject (not one heading per paragraph number), state each point once and cite every "
+        "paragraph that supports it, remove repetition, and where a point is covered on another page, link that page "
+        "instead of repeating it.\n"
+        if source_paragraphs else ""
+    )
     paragraphs = (
         "<source_paragraphs>\nThe source's own text for this page, each paragraph labelled with its [paragraph number], "
         "in document order. Write from these first; use the material for context.\n\n"
@@ -169,8 +180,8 @@ def write_page_prompt(
             "This page is already written, but it does not yet cover the paragraphs in <source_paragraphs>. Write only "
             "those paragraphs, to be added to the end of the page: no introduction, no summary, and nothing about any "
             "other paragraph. Use one of the page's headings below or a new one.\n"
-            f"Write ONLY about paragraph(s) {refs}: a few sentences each, and every sentence must cite one of them. "
-            "Do not rewrite the page or write about any other paragraph.\n"
+            f"Write ONLY about paragraph(s) {refs}: capture each one's full content as described above, and every "
+            "sentence must cite one of them. Do not rewrite the page or write about any other paragraph.\n"
             f"<page_headings>\n{earlier_parts or '(none)'}\n</page_headings>\n"
         )
     elif part:
@@ -199,7 +210,7 @@ def write_page_prompt(
         current = "This is a new page.\n"
     return (
         f"Write the wiki page `{slug}` (type: {ptype}, title: \"{title}\").\n"
-        f"Focus: {focus}\n{cite}{scope}{gaps}"
+        f"Focus: {focus}\n{cite}{scope}{gaps}{detail}"
         "Link other pages with [[slug]] using ONLY slugs listed in <linkable_pages>.\n"
         f"{ONE_TOP_PAGE}\n\n"
         f"{current}\n"
