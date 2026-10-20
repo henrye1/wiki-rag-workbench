@@ -102,6 +102,7 @@ class Finder:
 
     def __init__(self, lib: Library, http: httpx.AsyncClient):
         self.lib, self.http, self.semantic = lib, http, True
+        self._terms: dict[str, str] | None = None
         self.by_file = {f"{lib.titles[s]}.pdf": s for s in lib.by_source}
 
     async def _by_meaning(self, text: str, k: int) -> list[dict]:
@@ -133,6 +134,21 @@ class Finder:
                 out.append(h)
         return out[:14]
 
+    def define(self, phrase: str) -> list[dict]:
+        """The defined term (an "Appendix A: ..." paragraph of any ticked document) a phrase names: the same words, singular
+        or plural, or else the longest defined term the phrase ends with ("the IFRS 9 credit losses" -> credit loss)."""
+        if self._terms is None:
+            self._terms = {}
+            for paras in self.lib.by_source.values():
+                for label in paras:
+                    if m := re.match(r"Appendix ([A-Z]): (.+)$", label):
+                        self._terms.setdefault(_norm_term(m.group(2)), label)
+        words = _norm_term(phrase).split()
+        for k in range(len(words)):  # whole phrase first, then shorter endings
+            if (label := self._terms.get(" ".join(words[k:]))) and len(words) - k >= 1:
+                return self.lookup(label)
+        return []
+
     def lookup(self, label: str) -> list[dict]:
         """A paragraph named in a reason (e.g. "5.5.1"), in any ticked document."""
         return [{"paragraph": label, "source": slug, "document": self.lib.names[slug], "tier": self.lib.tiers[slug], "text": text}
@@ -145,6 +161,44 @@ NAMED = re.compile(r"\b(?:Appendix [A-Z]: [a-z][a-z \-]+?(?=[,.;)]|$)|IG [A-Z]\.
 
 # defined terms named in other ways: "the Appendix A 'credit loss' definition", "Appendix A definition of 'credit loss'"
 NAMED_TERM = re.compile(r"Appendix ([A-Z])(?: definition of| defin\w+ of)?\s*['‘\"“]([^'’\"”]{3,80})['’\"”]", re.I)
+
+
+QUOTE = "['‘\"“]"
+UNQUOTE = "['’\"”]"
+# definitions a reason may name: "Appendix A: effective interest rate", "'credit loss' definition",
+# "credit losses definition", "definition of credit-impaired financial asset", "the defined term 'default'"
+DEFINITION = [
+    re.compile(r"Appendix [A-Z]:\s*([A-Za-z0-9][A-Za-z0-9\- ]{2,80}?)(?=\s+(?:and|or|in|is|as|under|of|to|for|with|but)\b|\s*[.,;:()'’\"”]|\s+\d|$)"),
+    re.compile(QUOTE + r"([^'’\"”]{3,80})" + UNQUOTE + r"\s+(?:definition|defined term)", re.I),
+    re.compile(r"(?:definitions?|meanings?) of (?:the terms? |the )?" + QUOTE + r"?([A-Za-z][A-Za-z0-9\- ]{2,80}?)" + UNQUOTE
+               + r"?(?=\s*(?:[(),.;:]|$|\s(?:in|under|is|as|and|or|shows|says|covers|includes|does|would|which|that)\b))", re.I),
+    re.compile(r"defined terms? " + QUOTE + r"([^'’\"”]{3,80})" + UNQUOTE, re.I),
+    re.compile(r"((?:[A-Za-z0-9\-]+ ){1,5}?)definition\b", re.I),  # "the credit losses definition": the words before it
+]
+TERM_STOP = {"the", "a", "an", "ifrs", "ias", "9", "7", "standard's", "standard", "appendix", "its", "this", "that", "of"}
+
+
+def _norm_term(t: str) -> str:
+    """Lower case, hyphens as spaces, each word singular, leading filler words dropped."""
+    def one(w: str) -> str:
+        if len(w) <= 3 or w.endswith("ss"):
+            return w
+        if w.endswith(("sses", "xes", "ches", "shes")):
+            return w[:-2]
+        if w.endswith("ies"):
+            return w[:-3] + "y"
+        return w[:-1] if w.endswith("s") else w
+    words = [one(w) for w in re.sub(r"[-‐–]", " ", t.lower()).replace("'s ", " ").split()]
+    while words and words[0] in TERM_STOP:
+        words = words[1:]
+    return " ".join(words)
+
+
+def _definitions(reason: str) -> list[str]:
+    out = []
+    for rx in DEFINITION:
+        out += [m.group(1).strip() for m in rx.finditer(reason or "")]
+    return list(dict.fromkeys(p for p in out if _norm_term(p) and _norm_term(p) not in TERM_STOP and not re.fullmatch(r"(?:under|in|see|per|by) the", p.strip(), re.I)))
 
 
 def _named(reason: str) -> list[str]:
@@ -203,7 +257,10 @@ async def suggest_topic(t, row: dict, finder: Finder) -> dict:
     again, added = [], {}
     for iid, text, kind, cs in items:
         shown = {h["paragraph"] for h in cs}
-        extra = [h for lab in _named((verdict.get(iid) or {}).get("reason", "")) if lab not in shown for h in finder.lookup(lab)]
+        reason = (verdict.get(iid) or {}).get("reason", "")
+        extra = [h for lab in _named(reason) if lab not in shown for h in finder.lookup(lab)]
+        extra += [h for ph in _definitions(reason) for h in finder.define(ph) if h["paragraph"] not in shown]  # definitions it names
+        extra = list({(h["source"], h["paragraph"]): h for h in extra}.values())
         if extra:
             again.append((iid, text, kind, cs + extra))
             added[iid] = sorted({h["paragraph"] for h in extra})
