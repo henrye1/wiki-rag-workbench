@@ -62,6 +62,10 @@ const TAG_LABEL: Record<string, string> = {
           <a mat-stroked-button [href]="exportUrl()" download
              [title]="anyDirty() ? 'Exports the saved rubric: approve your changes first to include them' : 'The saved rubric as a Word document, with the filters above'">
             <mat-icon>download</mat-icon> Export to Word</a>
+          @if (suggestedCount()) {
+            <a mat-stroked-button [href]="exportUrl(true)" download title="The same export with each key point's suggested tag, paragraph and reason, and the suggested merges and hard-fact list">
+              <mat-icon>download</mat-icon> Export with suggestions</a>
+          }
         }
       </div>
       @if (anyDirty()) { <p class="muted small">You have unsaved changes; the export contains the saved rubric only.</p> }
@@ -188,8 +192,9 @@ export class BenchRubric {
   tagFilter = '';
   unreviewedOnly = false;
 
-  exportUrl() {
-    const q = new URLSearchParams({ topic: String(this.topicFilter || 0), tag: this.tagFilter, unreviewed: String(this.unreviewedOnly) });
+  exportUrl(suggestions = false) {
+    const q = new URLSearchParams({ topic: String(this.topicFilter || 0), tag: this.tagFilter, unreviewed: String(this.unreviewedOnly),
+                                    suggestions: String(suggestions) });
     return `/api/bench/rubrics/${enc(this.ref())}/export.docx?${q}`;
   }
 

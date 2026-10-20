@@ -393,7 +393,7 @@ async def make_facts(ref_sha: str):
 
 
 @router.get("/rubrics/{ref_sha}/export.docx")
-async def export_rubric(ref_sha: str, topic: int = 0, tag: str = "", unreviewed: bool = False):
+async def export_rubric(ref_sha: str, topic: int = 0, tag: str = "", unreviewed: bool = False, suggestions: bool = False):
     """The saved rubric as a Word document laid out like the review screen, with the screen's filters (topic, tag,
     not yet reviewed). Unsaved edits on the screen are not in it."""
     from .rubric_export import TAG_LABEL, build
@@ -405,8 +405,8 @@ async def export_rubric(ref_sha: str, topic: int = 0, tag: str = "", unreviewed:
         r["points"] = [p for p in r["key_points"] or [] if not tag or p.get("kind") == tag]
     filters = ", ".join(x for x in (f"topic {topic}" if topic else "", f"tag {TAG_LABEL.get(tag, tag)}" if tag else "",
                                      "not yet reviewed only" if unreviewed else "") if x)
-    data = await asyncio.to_thread(build, rub["reference_name"] or "reference", ref_sha, shown, filters, counts)
-    name = f"Rubric - {rub['reference_name'] or ref_sha[:10]}.docx".replace("/", "-")
+    data = await asyncio.to_thread(build, rub["reference_name"] or "reference", ref_sha, shown, filters, counts, suggestions)
+    name = f"Rubric - {rub['reference_name'] or ref_sha[:10]}{' - suggestions' if suggestions else ''}.docx".replace("/", "-")
     return Response(data, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
 
