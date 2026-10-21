@@ -356,13 +356,13 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         # The issuer's labelled examples go to the section the schema names for them; nothing else does
         ex_sec = next((x for x in sections if chk and x["num"] == chk.examples_section), None)
         if ex_sec:
-            # Illustrative examples (IE, from a Part B) by the reader's kind; in a Standard, paragraphs carrying one of
-            # the schema's example labels
+            # Paragraphs of a kind the schema routes to the examples section (by the reader's kind, e.g. a Part B's
+            # illustrative examples); in a Standard, paragraphs carrying one of the schema's example labels
             kinds = ex.meta.get("kinds") or []
             kinds = kinds if len(kinds) == len(paras) else [""] * len(paras)
             label_re = checks.example_label_re(chk)
             labelled = {_ref(p) or i for i, p in enumerate(paras)
-                        if (kinds[i] == "example" if kinds[i] else bool(label_re and label_re.search(p)))}
+                        if (checks.routed_to_examples(chk, kinds[i]) if kinds[i] else bool(label_re and label_re.search(p)))}
             owner.update({i: ex_sec["num"] for i, p in enumerate(paras) if (_ref(p) or i) in labelled})
         targets = [x for x in sections if x is not ex_sec]
         briefs = "\n\n".join(x["brief"] for x in targets)
