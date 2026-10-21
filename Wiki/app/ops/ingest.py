@@ -259,11 +259,26 @@ def _also_key(line: str) -> str:
     return " ".join(cites) or _norm(line)
 
 
+HEADING_IN_TEXT = re.compile(r"(?<=[^\s#])[ \t]*(#{2,4} )")  # a heading run on after the previous text
+HEADING_RUN_ON = re.compile(r"^(#{2,4} [^\n\[]*?[a-z)])([A-Z][a-z][^\n]*\[\[)", re.M)  # "### Loss allowanceAn entity ... [["
+
+
+def _fix_breaks(text: str) -> str:
+    """Put back line breaks the model left out: escaped "\\n" as text, a heading run on after a sentence, or a heading
+    run together with the text under it (a heading line that cites something is two lines)."""
+    fixed = text.replace("\\n", "\n")
+    fixed = HEADING_IN_TEXT.sub(r"\n\n\1", fixed)
+    fixed = HEADING_RUN_ON.sub(r"\1\n\2", fixed)
+    if fixed != text:
+        log.info("ingest: line breaks restored in page text")
+    return fixed
+
+
 def _join_parts(texts: list[str]) -> str:
     """Join a page's parts, dropping any block (paragraph, heading, list) that repeats one from an earlier part."""
     seen: set[str] = set()
     out = []
-    for t in texts:
+    for t in map(_fix_breaks, texts):
         blocks = [b for b in re.split(r"\n\s*\n", t.strip()) if b.strip()]
         keys = [_norm(b) for b in blocks]
         out += [b for b, k in zip(blocks, keys) if not k or k not in seen]
@@ -449,6 +464,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     linkable = f"{index}\n{source['slug']} | source | {ex.title}\n{planned}"
     material = f"Source: {ex.title}\n\n{notes_md}"
     failed_pages: list[dict] = []
+    empty_retries: list[dict] = []  # page parts that came back empty and were asked for once more
     fill_passes: list[dict] = []  # what each extra writing pass was asked for and returned
     missed: list[dict] = []  # paragraphs still not written up (or not also recorded) after the extra passes
 
@@ -493,18 +509,22 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         outs = []
         for n, group in enumerate(groups, start=1):
             part = (n, len(groups)) if len(groups) > 1 else None
+            prompt = prompts.with_schema(schema, prompts.write_page_prompt(
+                slug=slug, title=title, ptype=ptype, focus=focus, existing_md=cur_body,
+                material=page_material, linkable=linkable, source_slug=source_slug,
+                source_paragraphs="\n\n".join(group) or None, background_paragraphs="\n\n".join(background) or None,
+                auto_gaps=auto_gaps, part=part,
+                earlier_parts="\n\n".join(o["content_md"] for o in outs),
+            ))
             try:
-                outs.append(await llm.generate_json(
-                    system,
-                    prompts.with_schema(schema, prompts.write_page_prompt(
-                        slug=slug, title=title, ptype=ptype, focus=focus, existing_md=cur_body,
-                        material=page_material, linkable=linkable, source_slug=source_slug,
-                        source_paragraphs="\n\n".join(group) or None, background_paragraphs="\n\n".join(background) or None,
-                        auto_gaps=auto_gaps, part=part,
-                        earlier_parts="\n\n".join(o["content_md"] for o in outs),
-                    )),
-                    prompts.PAGE_SCHEMA,
-                ))
+                out = await llm.generate_json(system, prompt, prompts.PAGE_SCHEMA)
+                if not out["content_md"].strip():  # an empty reply is retried once
+                    log.warning("ingest: page %s%s came back empty; retrying once", slug, f" part {n}/{len(groups)}" if part else "")
+                    out = await llm.generate_json(system, prompt, prompts.PAGE_SCHEMA)
+                    empty_retries.append({"page": slug, "part": n if part else None, "empty_again": not out["content_md"].strip()})
+                    if not out["content_md"].strip():
+                        log.warning("ingest: page %s came back empty again", slug)
+                outs.append(out)
             except Exception as e:
                 if part is None:
                     raise
@@ -548,7 +568,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                             )),
                             prompts.FILL_SCHEMA,
                         )
-                        kept = cited_only(out["content_md"], refs)
+                        kept = cited_only(_fix_breaks(out["content_md"]), refs)
                         content = _join_parts([content, kept])
                         rec |= {"returned": out["content_md"], "kept_words": len(kept.split())}
                     except Exception as e:
@@ -617,10 +637,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             base_version=cur["version"] if cur else None, change_note=first["change_note"],
         )
 
-    source_focus = (
-        "Source page: what the source is, its scope, key takeaways, and which wiki pages it informs "
-        f"(link them). One-line summary: {plan['source_summary']}"
-    )
+    source_focus = f"Source page. One-line summary: {plan['source_summary']}"
 
     async def write_safe(slug, *args):
         try:
@@ -662,7 +679,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     label = lambda i: _ref(paras[i]) or f"paragraph {i + 1}"
     routing = {f"{x['num']:02d} {x['name']}": [label(i) for i in own.get(x["num"], [])] for x in sections} if owner else {}
     also_recorded = {f"{x['num']:02d} {x['name']}": [label(i) for i in also[x["num"]]] for x in sections if x["num"] in also}
-    return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "routing": routing, "unassigned": unassigned,
+    return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "empty_retries": empty_retries, "routing": routing, "unassigned": unassigned,
             "also_recorded": also_recorded, "missed_paragraphs": missed, "citations": citations, "fill_passes": fill_passes, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
 
 

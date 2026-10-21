@@ -56,7 +56,7 @@ def notes_prompt(source_title: str, idx: int, total: int, section: str) -> str:
 
 ONE_TOP_PAGE = (
     "- `overview` is the wiki's only top-level page. Never create or link a second top-level or index page "
-    "(for example one named after the standard, such as `ifrs-9`), even where the schema describes one; link to [[overview]] instead."
+    "(for example one named after the standard), even where the schema describes one; link to [[overview]] instead."
 )
 
 PLAN_SCHEMA = {
