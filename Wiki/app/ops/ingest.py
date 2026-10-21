@@ -261,17 +261,62 @@ def _also_key(line: str) -> str:
 
 HEADING_IN_TEXT = re.compile(r"(?<=[^\s#])[ \t]*(#{2,4} )")  # a heading run on after the previous text
 HEADING_RUN_ON = re.compile(r"^(#{2,4} [^\n\[]*?[a-z)])([A-Z][a-z][^\n]*\[\[)", re.M)  # "### Loss allowanceAn entity ... [["
+CITE_RUN_ON = re.compile(r"(\]\][.;:]?)(?=[A-Z])")  # "...|5.5.7]].The objective ...": the paragraph break was left out
 
 
 def _fix_breaks(text: str) -> str:
     """Put back line breaks the model left out: escaped "\\n" as text, a heading run on after a sentence, or a heading
-    run together with the text under it (a heading line that cites something is two lines)."""
+    run together with the text under it (a heading line that cites something is two lines), or the next paragraph run
+    on straight after a citation."""
     fixed = text.replace("\\n", "\n")
     fixed = HEADING_IN_TEXT.sub(r"\n\n\1", fixed)
     fixed = HEADING_RUN_ON.sub(r"\1\n\2", fixed)
+    fixed = CITE_RUN_ON.sub(r"\1\n\n", fixed)
     if fixed != text:
         log.info("ingest: line breaks restored in page text")
     return fixed
+
+
+# The schema's openers for each paragraph kind the PDF reader gives ("Say what kind of paragraph a sentence comes from").
+# Editorial notes never reach the writer (the reader leaves them out), so there is nothing to check for them.
+OPENER_FOR = {
+    "appendix_b": ("application guidance", re.compile(r"^Application guidance\b")),
+    "example": ("an example", re.compile(r"^In Example\b")),
+    "basis_for_conclusions": ("the basis for conclusions",
+                              re.compile(r"^The [A-Z][\w-]*(?: [A-Z][\w-]*)* (?:concluded|considered|noted|observed|decided|rejected)\b")),
+}
+PART_RE = re.compile(r"(?:^|(?<=[\s:;\u2013\u2014]))\(([a-z]{1,2}|[ivx]{1,5})\)(?=\s)")  # "(a) ...", "; (ii) ...", not "2.1(g)"
+
+
+def _schema_failures(content: str, given: list[str], kinds: dict[str, str], source_slug: str) -> list[str]:
+    """Where a written page breaks two of the schema's every-page rules: a lettered or numbered part of an assigned
+    paragraph that does not appear, and a sentence citing a non-Standard paragraph without its opener."""
+    failures = []
+    blocks = [b for b in re.split(r"\n\s*\n", content) if b.strip()]
+    for p in given:
+        ref = _ref(p)
+        body = re.sub(r"^\[[^\]]+\]\s*(?:\([A-Z][^)]*\)\s*)?", "", p)
+        parts = list(dict.fromkeys(PART_RE.findall(body)))
+        if len(parts) < 2:
+            continue
+        near = "\n".join(b for b in blocks if any(
+            m.group(1) == source_slug and m.group(2) and _covers(m.group(2), ref) for m in store.LINK_RE.finditer(b)))
+        if near and (lost := [f"({x})" for x in parts if f"({x})" not in near]):
+            failures.append(f"Paragraph {ref} has lettered or numbered parts {', '.join(f'({x})' for x in parts)}; "
+                            f"{', '.join(lost)} do not appear on the page.")
+    for line in content.split("\n"):
+        line = line.strip().lstrip("-*\u2022 ").strip()
+        if not line or line.startswith("#"):
+            continue
+        for s in re.split(r"(?<=\]\])[.;:]?\s+(?=[A-Z(])", line):
+            labels = [m.group(2) for m in store.LINK_RE.finditer(s) if m.group(1) == source_slug and m.group(2)]
+            if not labels or not s[:1].isupper():  # no citation, or a list item continuing a lead-in sentence
+                continue
+            found = {kinds.get(re.sub(r"\(.*$", "", lab).strip()) for lab in labels}
+            if len(found) == 1 and (k := found.pop()) in OPENER_FOR and not OPENER_FOR[k][1].match(s):
+                failures.append(f"The sentence citing {', '.join(labels)} (\"{s[:90]}...\") comes from {OPENER_FOR[k][0]} "
+                                f"but does not open with the schema's opener for {OPENER_FOR[k][0]}.")
+    return failures
 
 
 def _join_parts(texts: list[str]) -> str:
@@ -465,6 +510,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     material = f"Source: {ex.title}\n\n{notes_md}"
     failed_pages: list[dict] = []
     empty_retries: list[dict] = []  # page parts that came back empty and were asked for once more
+    check_fixes: list[dict] = []  # pages sent back once to fix what the schema check found
+    para_kinds = ex.meta.get("para_kinds") or {}
     fill_passes: list[dict] = []  # what each extra writing pass was asked for and returned
     missed: list[dict] = []  # paragraphs still not written up (or not also recorded) after the extra passes
 
@@ -579,6 +626,27 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             if still := list(dict.fromkeys(_ref(p) for p in _uncited(content, given))):
                 missed.append({"page": slug, "paragraphs": still, "reason": "not written up after two extra passes"})
 
+        if given and source_slug and (failures := _schema_failures(content, given, para_kinds, source_slug)):
+            rec = {"page": slug, "failures": failures}
+            try:
+                out = await llm.generate_json(system, prompts.with_schema(schema, prompts.fix_page_prompt(
+                    slug=slug, title=title, content_md=content, failures=failures, linkable=linkable,
+                    source_paragraphs="\n\n".join(given))), prompts.PAGE_SCHEMA)
+                new = _fix_breaks(out["content_md"]).strip()
+                after = _schema_failures(new, given, para_kinds, source_slug)
+                lost = {_ref(p) for p in _uncited(new, given)} - {_ref(p) for p in _uncited(content, given)}
+                keep = bool(new) and len(after) < len(failures) and not lost and len(new.split()) >= 0.8 * len(content.split())
+                rec |= {"kept": keep, "fixed": [f for f in failures if f not in after], "still": after,
+                        **({"lost_citations": sorted(lost)} if lost else {})}
+                if keep:
+                    content = new
+                log.info("ingest: page %s check: %s failures, %s fixed, fix %s", slug, len(failures),
+                         len(rec["fixed"]), "kept" if keep else "discarded")
+            except Exception as e:
+                log.warning("ingest: page %s check-and-fix pass failed: %s", slug, e)
+                rec["error"] = f"{type(e).__name__}: {e}"
+            check_fixes.append(rec)
+
         if extra:  # one short line per also-recorded paragraph, linking to its main page
             main_page = {x["num"]: sl for sl, x in sec_of.items()}
 
@@ -679,7 +747,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     label = lambda i: _ref(paras[i]) or f"paragraph {i + 1}"
     routing = {f"{x['num']:02d} {x['name']}": [label(i) for i in own.get(x["num"], [])] for x in sections} if owner else {}
     also_recorded = {f"{x['num']:02d} {x['name']}": [label(i) for i in also[x["num"]]] for x in sections if x["num"] in also}
-    return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "empty_retries": empty_retries, "routing": routing, "unassigned": unassigned,
+    return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "empty_retries": empty_retries, "check_fixes": check_fixes, "routing": routing, "unassigned": unassigned,
             "also_recorded": also_recorded, "missed_paragraphs": missed, "citations": citations, "fill_passes": fill_passes, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
 
 

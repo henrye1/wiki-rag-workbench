@@ -209,6 +209,18 @@ def write_page_prompt(
     )
 
 
+def fix_page_prompt(*, slug: str, title: str, content_md: str, failures: list[str], source_paragraphs: str, linkable: str) -> str:
+    return (
+        f"The wiki page `{slug}` (\"{title}\") below does not follow the wiki schema in the places listed in <failures>. "
+        "Return the full page with those places fixed as the schema requires. Change nothing else: keep every other "
+        "sentence, heading, link and citation as it is.\n\n"
+        f"<failures>\n" + "\n".join(f"- {f}" for f in failures) + "\n</failures>\n\n"
+        f"<linkable_pages>\n{linkable}\n</linkable_pages>\n\n"
+        f"<source_paragraphs>\n{source_paragraphs}\n</source_paragraphs>\n\n"
+        f"<page>\n{content_md}\n</page>"
+    )
+
+
 # ---------- ingest: route paragraphs to sections ----------
 
 ROUTE_SCHEMA = {
