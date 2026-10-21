@@ -478,6 +478,13 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     check_fixes: list[dict] = []  # pages sent back once to fix what the schema check found
     para_kinds = ex.meta.get("para_kinds") or {}
     authority = checks.authority_sentences(ex.text, chk) if chk else []
+    cite_matchers = await citecheck.sources(wiki_id)  # the wiki's sources, this one included, for checking citations
+
+    def cite_failures(text: str) -> list[str]:
+        """Citations the citation check would flag, as failures for the fix round to correct."""
+        _, _, flagged = citecheck.check(text, cite_matchers)
+        return [f'The citation [[{src}|{label}]] does not match a paragraph of that source ({reason}); cite the paragraph '
+                "it states, by its own label." for (src, label, reason) in flagged]
     fill_passes: list[dict] = []  # what each extra writing pass was asked for and returned
     missed: list[dict] = []  # paragraphs still not written up (or not also recorded) after the extra passes
 
@@ -629,9 +636,10 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             if still := list(dict.fromkeys(_ref(p) for p in _uncited(content, given))):
                 missed.append({"page": slug, "paragraphs": still, "reason": "not written up after two extra passes"})
 
-        if given and source_slug and chk:
+        if given and source_slug:
             content = await check_and_fix(
-                "section", content, lambda x: checks.section_failures(x, given, para_kinds, source_slug, chk, _covers),
+                "section", content, lambda x: (checks.section_failures(x, given, para_kinds, source_slug, chk, _covers)
+                                               if chk else []) + cite_failures(x),
                 sources_text="\n\n".join(given), parse=lambda r: _fix_breaks(r).strip(),
                 ok=lambda old, new: not ({_ref(p) for p in _uncited(new, given)} - {_ref(p) for p in _uncited(old, given)}))
 
@@ -641,7 +649,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                         source_slug=source["slug"], c=chk)
             if skipped := checks.source_failures(content, **args)[1]:
                 log.info("ingest: source page %s: not checked: %s", slug, "; ".join(skipped))
-            content = await check_and_fix("source page", content, lambda x: checks.source_failures(x, **args)[0],
+            content = await check_and_fix("source page", content, lambda x: checks.source_failures(x, **args)[0] + cite_failures(x),
                                           sources_text="\n\n".join(authority), parse=lambda r: _fix_breaks(r).strip(),
                                           may_shrink=True)  # a source page with too many takeaways must lose some
 

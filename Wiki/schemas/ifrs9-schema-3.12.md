@@ -234,7 +234,7 @@ These rules apply every time the maintainer writes or rewrites page text, whethe
 The engine reads these lists to route the issuer's labelled examples and, after a page is written, to check it as set out in Workflow: Maintain. It reads the words only from here: a list that is missing switches off what uses it.
 - Paragraph kinds (as the PDF reader names them): appendix_b = application guidance; example = example; basis_for_conclusions = basis for conclusions; note = editorial note
 - Openers: application guidance = "Application guidance states"; example = "In Example <n>,"; editorial note = "The editorial note states"; basis for conclusions = "The <issuer> concluded", "The <issuer> considered"
-- Linking words allowed before an opener: "However,", "In addition,", "For example,", "Alternatively,", "Similarly,", "Furthermore,"
+- Linking words allowed before an opener: "However,", "In addition,", "For example,", "Alternatively,", "Similarly,", "Furthermore,", "Nevertheless,"
 - Lettered part forms: "(a)", "(i)"
 - Condition phrases: "only if", "unless", "except", "subject to", "regardless of"
 - Authority forms: "is set out in paragraphs ... and ...", "This appendix is an integral part of the Standard"
