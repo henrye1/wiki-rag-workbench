@@ -24,12 +24,16 @@ class Checks:
     conditions: list[str] = field(default_factory=list)
     authority: list[str] = field(default_factory=list)
     source_parts: dict[str, str] = field(default_factory=dict)  # part as the schema names it -> what is checked
+    max_takeaways: int | None = None
+    examples_section: int | None = None  # the section the issuer's labelled examples are routed to
+    example_labels: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
 
 
 LISTS = {  # attribute -> how the schema names the list (its label up to the first word that differs)
     "kinds": "paragraph kinds", "openers": "openers", "linking": "linking words", "part_forms": "lettered part forms",
     "conditions": "condition phrases", "authority": "authority forms", "source_parts": "source-page parts",
+    "max_takeaways": "key takeaways", "examples_section": "examples section", "example_labels": "example labels",
 }
 
 
@@ -62,6 +66,9 @@ def load(schema_md: str) -> Checks | None:
             c.openers = {k: QUOTED.findall(v) for k, v in _mapping(value).items()}
         elif attr == "source_parts":
             c.source_parts = {k: v.casefold() for k, v in _mapping(value).items()}
+        elif attr in ("max_takeaways", "examples_section"):
+            n = re.search(r"\d+", value)
+            setattr(c, attr, int(n.group(0)) if n else None)
         else:
             setattr(c, attr, QUOTED.findall(value))
     return c
@@ -88,6 +95,14 @@ def _part_re(c: Checks) -> re.Pattern | None:
     pats = {re.sub(r"\\?[A-Za-z]+|\d+", lambda m: "[a-z]{1,5}" if m.group(0).lstrip("\\").islower() else
                    "[A-Z]{1,5}" if m.group(0).lstrip("\\").isalpha() else r"\d{1,3}", re.escape(f)) for f in c.part_forms}
     return re.compile(r"(?:^|(?<=[\s:;\u2013\u2014]))(" + "|".join(sorted(pats)) + r")(?=\s)")
+
+
+def example_label_re(c: Checks) -> re.Pattern | None:
+    """The schema's example labels ("Example <n>") as one pattern; <n> stands for a number or a capital letter."""
+    if not c.example_labels:
+        return None
+    pats = [re.escape(x).replace(re.escape("<n>"), "<n>").replace("<n>", r"(?:\d+[A-Z]?|[A-Z])") for x in c.example_labels]
+    return re.compile(r"\b(?:" + "|".join(p.replace(r"\ ", r"\s+") for p in pats) + r")\b")
 
 
 def cites(text: str) -> set[str]:
@@ -171,10 +186,15 @@ def source_failures(content: str, *, fields: dict[str, str], authority: list[str
                 failures.append(f"The page lists " + ", ".join(f"[[{x}]]" for x in wrong)
                                 + " as sections this source informs, but no paragraph of this source is on them.")
         elif "cited claims" in what:
-            if not any(m.group(1) == source_slug and m.group(2) and re.search(r"\d", m.group(2))
-                       and not re.fullmatch(r"p(?:age)?\s*\d+", m.group(2).strip())  # the reader's page label, not a paragraph
-                       for m in store.LINK_RE.finditer(content)):
+            claims = [s for s in re.split(r"(?<=\]\])[.;:]?\s+|\n+", content) if any(
+                m.group(1) == source_slug and m.group(2) and re.search(r"\d", m.group(2))
+                and not re.fullmatch(r"p(?:age)?\s*\d+", m.group(2).strip())  # the reader's page label, not a paragraph
+                for m in store.LINK_RE.finditer(s))]
+            if not claims:
                 failures.append(f"The page lacks {part}: no line states a claim of this source with its paragraph citation.")
+            elif c.max_takeaways is not None and len(claims) > c.max_takeaways:
+                failures.append(f"The page has {len(claims)} {part}; the schema allows at most {c.max_takeaways}. "
+                                "Keep only the source's highest-ranked claims.")
         else:  # recorded fields named in the entry
             names = [n.strip() for n in re.split(r",|\band\b", what) if n.strip()]
             for n in names:
@@ -183,4 +203,14 @@ def source_failures(content: str, *, fields: dict[str, str], authority: list[str
                     skipped.append(f"{part}: no {n} recorded for this source")
                 elif _words(value) not in text:
                     failures.append(f'The page lacks {part}: it does not give the {n} as recorded ("{value}").')
+    # the source page holds only the parts listed: a heading that names none of them is a section it should not have
+    names = [set(re.findall(r"[a-z]{4,}", p)) - STOP for p in c.source_parts]
+    extra = [h.strip() for h in re.findall(r"^#{1,4}\s+(.+)$", content, re.M)
+             if not any(n & (set(re.findall(r"[a-z]{4,}", h.casefold())) - STOP) for n in names)]
+    if names and extra:
+        failures.append("The page has sections the schema's source page does not have: "
+                        + ", ".join(f'"{h}"' for h in extra) + ". It holds only " + ", ".join(c.source_parts) + ".")
     return failures, skipped
+
+
+STOP = {"what", "which", "that", "this", "with", "linked", "their", "from", "into"}

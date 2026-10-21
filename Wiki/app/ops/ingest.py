@@ -152,8 +152,6 @@ def _parts(paras: list[str], max_words: int) -> list[list[str]]:
     return parts
 
 
-# An issuer's own example label, e.g. "Example 1", "Instrument A" (not "Entity A", a party inside guidance)
-EXAMPLE_LABEL = re.compile(r"\b(?:Example|Instrument|Scenario|Illustration)\s+(?:\d+[A-Z]?|[A-Z])\b")
 
 
 def _ref(para: str) -> str:
@@ -300,6 +298,11 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     s = get_settings()
     wiki_id, schema = wiki["id"], wiki["schema_md"]
     system = prompts.MAINTAINER_SYSTEM
+    chk = checks.load(schema)  # example routing and the page checks read their words from the schema's Checks section
+    if chk is None:
+        log.info("ingest: the schema has no Checks section; example routing by label and the page checks are off")
+    elif chk.missing:
+        log.info("ingest: the schema's Checks section has no list for %s; what uses them is off", ", ".join(chk.missing))
 
     # 1. Notes per section
     await ctx.progress(stage="notes", sections=len(ex.sections))
@@ -350,14 +353,16 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         await ctx.progress(stage="route")
         heads = ex.meta.get("headings") or []
         heads = heads if len(heads) == len(paras) else [""] * len(paras)
-        # The issuer's labelled examples go to the examples section; nothing else does
-        ex_sec = next((x for x in sections if "example" in _norm(x["name"])), None)
+        # The issuer's labelled examples go to the section the schema names for them; nothing else does
+        ex_sec = next((x for x in sections if chk and x["num"] == chk.examples_section), None)
         if ex_sec:
-            # Illustrative examples (IE, from a Part B) by their kind; in a Standard, paragraphs carrying an example label
+            # Illustrative examples (IE, from a Part B) by the reader's kind; in a Standard, paragraphs carrying one of
+            # the schema's example labels
             kinds = ex.meta.get("kinds") or []
             kinds = kinds if len(kinds) == len(paras) else [""] * len(paras)
+            label_re = checks.example_label_re(chk)
             labelled = {_ref(p) or i for i, p in enumerate(paras)
-                        if (kinds[i] == "example" if kinds[i] else EXAMPLE_LABEL.search(p))}
+                        if (kinds[i] == "example" if kinds[i] else bool(label_re and label_re.search(p)))}
             owner.update({i: ex_sec["num"] for i, p in enumerate(paras) if (_ref(p) or i) in labelled})
         targets = [x for x in sections if x is not ex_sec]
         briefs = "\n\n".join(x["brief"] for x in targets)
@@ -472,11 +477,6 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     empty_retries: list[dict] = []  # page parts that came back empty and were asked for once more
     check_fixes: list[dict] = []  # pages sent back once to fix what the schema check found
     para_kinds = ex.meta.get("para_kinds") or {}
-    chk = checks.load(schema)  # the page checks read their words from the schema's Checks section, nothing else
-    if chk is None:
-        log.info("ingest: the schema has no Checks section; page checks are off")
-    elif chk.missing:
-        log.info("ingest: the schema's Checks section has no list for %s; those checks are off", ", ".join(chk.missing))
     authority = checks.authority_sentences(ex.text, chk) if chk else []
     fill_passes: list[dict] = []  # what each extra writing pass was asked for and returned
     missed: list[dict] = []  # paragraphs still not written up (or not also recorded) after the extra passes
@@ -494,10 +494,10 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
 
     async def write(slug, title, ptype, focus, source_slug):
         async def check_and_fix(kind: str, text: str, check, *, sources_text: str, parse, out_schema=prompts.PAGE_SCHEMA,
-                                ok=lambda old, new: True) -> str:
+                                ok=lambda old, new: True, may_shrink: bool = False) -> str:
             """Check the page; if anything fails, send it back with the list, at most twice. A rewrite is kept only if
             it has fewer failures, loses no citation, stays about the same length (a fix changes what was listed, not
-            the whole page) and passes ok."""
+            the whole page; may_shrink when a failure asks for something to be taken out) and passes ok."""
             rounds = []
             for rnd in (1, 2):
                 failures = check(text)
@@ -510,10 +510,10 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                         source_paragraphs=sources_text or "(none)")), out_schema)
                     new = parse(out["content_md"])
                     after = check(new)
-                    lost = sorted(checks.cites(text) - checks.cites(new))
+                    lost = [] if may_shrink else sorted(checks.cites(text) - checks.cites(new))
                     n_old, n_new = len(text.split()), len(new.split())
                     keep = (bool(new.strip()) and len(after) < len(failures) and not lost and ok(text, new)
-                            and n_new <= 1.5 * n_old + 200 and n_new >= 0.8 * n_old)
+                            and n_new <= 1.5 * n_old + 200 and (may_shrink or n_new >= 0.8 * n_old))
                     rec |= {"kept": keep, "fixed": len(failures) - len(after) if keep else 0, "still": after,
                             "words": [n_old, n_new],
                             **({"lost_citations": lost} if lost else {})}
@@ -642,7 +642,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             if skipped := checks.source_failures(content, **args)[1]:
                 log.info("ingest: source page %s: not checked: %s", slug, "; ".join(skipped))
             content = await check_and_fix("source page", content, lambda x: checks.source_failures(x, **args)[0],
-                                          sources_text="\n\n".join(authority), parse=lambda r: _fix_breaks(r).strip())
+                                          sources_text="\n\n".join(authority), parse=lambda r: _fix_breaks(r).strip(),
+                                          may_shrink=True)  # a source page with too many takeaways must lose some
 
         if extra:  # one short line per also-recorded paragraph, linking to its main page
             main_page = {x["num"]: sl for sl, x in sec_of.items()}

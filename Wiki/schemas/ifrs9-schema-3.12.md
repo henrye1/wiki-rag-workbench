@@ -13,7 +13,7 @@ Four further rules apply on every page without exception. A sentence from applic
 There are seven page types, and the vocabulary is fixed rather than minted per document, so the same structure exists for every standard and nothing drifts between ingests. Every page is created from a controlled list or a saved question, never from free text or from whatever a source happened to say.
 Only topic pages hold claims. Every other page type is composed: it holds no claims of its own and is built from links to claims already filed, so nothing is stated twice in different words. Any page that is not a requirement says so.
 - overview — the single top-level page, slug overview. Lists the fifteen sections with what each covers and whether it holds requirements or non-authoritative material. It is the only page the librarian reads when choosing where to look. No second top-level page is created, under the framework slug (e.g. ifrs-9) or any other name.
-- source — one per registered source document, slug source-<name>. States what the document is (issuer, edition, part), its authority sentence transcribed verbatim, and which sections it informs. Dates and counts are stated only when the engine supplies them; they are never estimated. Key takeaways are the source's own highest-ranked claims, linked, not a written summary.
+- source — one per registered source document, slug source-<name>. States what the document is (issuer, edition, part), its authority sentence transcribed verbatim, and which sections it informs. Dates and counts are stated only when the engine supplies them; they are never estimated. Key takeaways are at most five of the source's own highest-ranked claims, linked, not a written summary. The source page holds only these parts; it has no other sections.
 - entity — a specific, named thing the standard refers to: another standard or interpretation, an issuing or interpretive body, or a document. Lists every claim that names it and the nature of the link (scope boundary, disclosure partner, measurement input). Created only from a controlled list of designations. Parties in examples (Bank A, Entity B) are not entities; they stay inside their example claims.
 - concept — a term, rule or method the standard uses: a defined term, a named rule such as a rebuttable presumption, or a method. States whether the standard defines it, presumes it or leaves it open, links to its definition in Definitions rather than copying it, and links to every claim that uses it. Created only from terms recorded in Definitions or from a controlled list of named rules.
 - topic — one of the fifteen fixed sections. Created from the vocabulary before any claim is written, so an empty section is a page that says it is empty, not a missing page. A claim that names a section outside the fifteen is discarded and counted, never defaulted onto whichever page happens to be first.
@@ -77,7 +77,7 @@ Every claim filed to any section carries its statement kind — requirement, app
 - Simplifications, approximations and practical expedients are recorded with every condition under which they are permitted and any circumstance the standard says rules them out.
 - An outcome reached in an example or illustration (a party recognising a loss, moving between stages or buckets, or rebutting a presumption) is recorded as that example's outcome, naming the example, and never as a trigger or rule.
 - Hand off: computing the amount compared against -> Measurement. Interest on a written-down item -> Measurement. Input estimation methodology -> methodology/research. Client parameters and thresholds -> client working papers. Regulatory floors or add-ons -> supervisory/regulatory. Disclosure of the loss -> Presentation and disclosure.
-- Boundary: this section holds the TRIGGER, the COMPARISON, the CONSEQUENCE and the REVERSAL, plus any amount representing THE LOSS ITSELF. Amounts representing what the item is worth belong to Measurement.
+- Boundary: this section holds the TRIGGER, the COMPARISON, the CONSEQUENCE and the REVERSAL, plus any amount representing THE LOSS ITSELF. Amounts representing what the item is worth belong to Measurement. How the loss amount itself is measured (for example how expected losses are estimated) belongs here, not in Measurement.
 - Weak source if: a rebuttable presumption is recorded without what rebuts it, or the reversal position is left unstated. Some standards require reversal, others forbid it; silence is not neutral.
 ### 09. Elections and special regimes
 - Belongs here: optional or conditional regimes sitting alongside the main requirements, each with its own qualifying criteria, mechanics and discontinuation rules. Irrevocable policy choices carrying their own machinery. Temporary reliefs that operate during normal running.
@@ -231,7 +231,7 @@ These rules apply every time the maintainer writes or rewrites page text, whethe
 - Synthesis and comparison pages whose cited claims have changed are rebuilt or flagged stale. Contradictions and supersessions are handled as set out in Contradictions and updates.
 
 ## Checks
-After a page is written, the engine checks it against these lists, as set out in Workflow: Maintain. It reads the words only from here: a list that is missing switches its check off.
+The engine reads these lists to route the issuer's labelled examples and, after a page is written, to check it as set out in Workflow: Maintain. It reads the words only from here: a list that is missing switches off what uses it.
 - Paragraph kinds (as the PDF reader names them): appendix_b = application guidance; example = example; basis_for_conclusions = basis for conclusions; note = editorial note
 - Openers: application guidance = "Application guidance states"; example = "In Example <n>,"; editorial note = "The editorial note states"; basis for conclusions = "The <issuer> concluded", "The <issuer> considered"
 - Linking words allowed before an opener: "However,", "In addition,", "For example,", "Alternatively,", "Similarly,", "Furthermore,"
@@ -239,3 +239,6 @@ After a page is written, the engine checks it against these lists, as set out in
 - Condition phrases: "only if", "unless", "except", "subject to", "regardless of"
 - Authority forms: "is set out in paragraphs ... and ...", "This appendix is an integral part of the Standard"
 - Source-page parts: what the document is = issuer, edition, part; authority sentence = authority forms; sections it informs = informed sections; key takeaways as linked claims = cited claims
+- Key takeaways: at most 5
+- Examples section: 14
+- Example labels (an issuer's own example, routed to the examples section): "Example <n>", "Instrument <n>", "Scenario <n>", "Illustration <n>"

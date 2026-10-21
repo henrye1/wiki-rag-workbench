@@ -54,11 +54,6 @@ def notes_prompt(source_title: str, idx: int, total: int, section: str) -> str:
 
 # ---------- ingest: plan ----------
 
-ONE_TOP_PAGE = (
-    "- `overview` is the wiki's only top-level page. Never create or link a second top-level or index page "
-    "(for example one named after the standard), even where the schema describes one; link to [[overview]] instead."
-)
-
 PLAN_SCHEMA = {
     "type": "object",
     "properties": {
@@ -90,7 +85,6 @@ def plan_prompt(source_title: str, source_slug: str, notes: str, index: str, can
         "- Create pages for important entities/concepts/topics that the source covers substantively.\n"
         "- Always include the `overview` page (create it if missing, otherwise update it).\n"
         "- If the schema defines a fixed list of sections, include one page for every section.\n"
-        f"{ONE_TOP_PAGE}\n"
         "- Do not include the source page itself.\n"
         "- Do not create a page whose content would come only from open questions; those belong on the source page.\n\n"
         f"<current_index>\nslug | type | title | summary\n{index}\n</current_index>\n\n"
@@ -200,8 +194,7 @@ def write_page_prompt(
     return (
         f"Write the wiki page `{slug}` (type: {ptype}, title: \"{title}\").\n"
         f"Focus: {focus}\n{cite}{scope}{gaps}"
-        "Link other pages with [[slug]] using ONLY slugs listed in <linkable_pages>.\n"
-        f"{ONE_TOP_PAGE}\n\n"
+        "Link other pages with [[slug]] using ONLY slugs listed in <linkable_pages>.\n\n"
         f"{current}\n"
         f"<linkable_pages>\n{linkable}\n</linkable_pages>\n\n"
         f"{paragraphs}{background}"
@@ -270,9 +263,8 @@ ALSO_SCHEMA = {
 def also_prompt(brief: str, lines: str) -> str:
     return (
         "The section below is an \"also record here\" section: a paragraph stays on its own section's page and is ALSO "
-        "recorded here. From the paragraphs below, return the ids of those that contain a presumption, an election, a "
-        "policy choice, a judgement or an estimate that the Standard leaves to the entity, as the section brief describes. "
-        "Leave out paragraphs that contain none.\n\n"
+        "recorded here. From the paragraphs below, return the ids of those the section brief says are recorded here. "
+        "Leave out the others.\n\n"
         f"<section_brief>\n{brief}\n</section_brief>\n\n<paragraphs>\nid | text\n{lines}\n</paragraphs>"
     )
 
