@@ -343,14 +343,15 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         briefs = "\n\n".join(x["brief"] for x in targets)
         nums = {x["num"] for x in targets}
         note = (f"Section {ex_sec['num']:02d} ({ex_sec['name']}) is not offered: the issuer's labelled examples have already "
-                "been placed there, and every other paragraph, including application guidance that says \"for example\", "
-                "goes to the section that owns its requirement." if ex_sec else "")
+                "been placed there, and every other paragraph goes to the section that owns it." if ex_sec else "")
         outline = "\n".join(ex.meta.get("outline") or [])
 
         async def route(batch: list[int]) -> dict[int, int]:
             lines = "\n".join(f"{i} | {heads[i] or '-'} | {' '.join(paras[i].split()[:60])}" for i in batch)
             try:
-                out = await llm.generate_json(system, prompts.route_prompt(briefs, lines, outline, note), prompts.ROUTE_SCHEMA)
+                out = await llm.generate_json(
+                    system, prompts.with_schema(schema, prompts.route_prompt(briefs, lines, outline, note)), prompts.ROUTE_SCHEMA
+                )
             except Exception as e:  # unrouted paragraphs are retried, then placed by the fallbacks below
                 log.warning("ingest: routing batch failed: %s", e)
                 return {}

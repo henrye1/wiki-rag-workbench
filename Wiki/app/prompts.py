@@ -151,21 +151,6 @@ def write_page_prompt(
         "Do not write a 'Not yet covered' list; it is added automatically.\n"
         if auto_gaps else ""
     )
-    detail = (
-        "For every paragraph in <source_paragraphs>, capture what it actually says, not only that it exists: its "
-        "definitions, numbers, thresholds, time periods, conditions, exceptions and who must do what. Mentioning or "
-        "citing a paragraph without its content is not enough. Keep the source's exact force words (such as shall, "
-        "must, is required to, may, is permitted to, unless, only if) and every condition; never soften, strengthen "
-        "or drop them. Only open a sentence with \"Application guidance states ...\", \"In Example <n>, ...\", \"The "
-        "editorial note states ...\" or \"The <issuer> concluded ...\" when its paragraph genuinely is that kind; a "
-        "paragraph of the main Standard (a plain number label such as [5.5.4], not B, IE or BC) is a requirement, even "
-        "when it says may or states an objective, and its sentences get no opener. Still write a synthesised wiki page, "
-        "not a copy of the source: organise the detail under "
-        "sub-headings by subject (not one heading per paragraph number), state each point once and cite every "
-        "paragraph that supports it, remove repetition, and where a point is covered on another page, link that page "
-        "instead of repeating it.\n"
-        if source_paragraphs else ""
-    )
     paragraphs = (
         "<source_paragraphs>\nThe source's own text for this page, each paragraph labelled with its [paragraph number], "
         "in document order. Write from these first; use the material for context.\n\n"
@@ -184,8 +169,8 @@ def write_page_prompt(
             "This page is already written, but it does not yet cover the paragraphs in <source_paragraphs>. Write only "
             "those paragraphs, to be added to the end of the page: no introduction, no summary, and nothing about any "
             "other paragraph. Use one of the page's headings below or a new one.\n"
-            f"Write ONLY about paragraph(s) {refs}: capture each one's full content as described above, and every "
-            "sentence must cite one of them. Do not rewrite the page or write about any other paragraph.\n"
+            f"Write ONLY about paragraph(s) {refs}, and every sentence must cite one of them. "
+            "Do not rewrite the page or write about any other paragraph.\n"
             f"<page_headings>\n{earlier_parts or '(none)'}\n</page_headings>\n"
         )
     elif part:
@@ -214,7 +199,7 @@ def write_page_prompt(
         current = "This is a new page.\n"
     return (
         f"Write the wiki page `{slug}` (type: {ptype}, title: \"{title}\").\n"
-        f"Focus: {focus}\n{cite}{scope}{gaps}{detail}"
+        f"Focus: {focus}\n{cite}{scope}{gaps}"
         "Link other pages with [[slug]] using ONLY slugs listed in <linkable_pages>.\n"
         f"{ONE_TOP_PAGE}\n\n"
         f"{current}\n"
@@ -280,8 +265,7 @@ def route_prompt(briefs: str, lines: str, outline: str = "", note: str = "") -> 
     return (
         "Assign each source paragraph to the ONE section whose brief says it belongs there (follow the briefs' hand-off "
         "rules). That section's page is the only one that writes it up. Return every id exactly once, with its section number. "
-        "Keep a topic together: paragraphs under the same heading, and application guidance (B paragraphs) with the "
-        "chapter its number points to (B6.x goes with chapter 6), go to the same section unless a brief hands one off.\n"
+        "Keep a topic together: paragraphs under the same heading go to the same section unless a brief hands one off.\n"
         f"{note}\n"
         + (f"<source_outline>\nNumbered headings of the source:\n{outline}\n</source_outline>\n\n" if outline else "")
         + f"<section_briefs>\n{briefs}\n</section_briefs>\n\n<paragraphs>\nid | heading | text (first words)\n{lines}\n</paragraphs>"
