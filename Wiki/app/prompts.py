@@ -209,6 +209,25 @@ def write_page_prompt(
     )
 
 
+DESCRIBE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "issuer": {"type": "string", "description": "Who issued the document, as printed; empty if not stated"},
+        "edition": {"type": "string", "description": "The edition or version, as printed; empty if not stated"},
+        "part": {"type": "string", "description": "The part of a larger publication it is, as printed; empty if not stated"},
+    },
+    "required": ["issuer", "edition", "part"],
+}
+
+
+def describe_prompt(name: str, opening: str) -> str:
+    return (
+        f"These are the opening pages of the uploaded file \"{name}\". Give the document's issuer, edition and part "
+        "exactly as these pages print them. Leave a field empty if the pages do not state it; never guess.\n\n"
+        f"<opening_pages>\n{opening}\n</opening_pages>"
+    )
+
+
 def fix_page_prompt(*, slug: str, title: str, content_md: str, failures: list[str], source_paragraphs: str, linkable: str) -> str:
     return (
         f"The wiki page `{slug}` (\"{title}\") below does not follow the wiki schema in the places listed in <failures>. "

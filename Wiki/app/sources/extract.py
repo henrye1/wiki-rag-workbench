@@ -143,6 +143,17 @@ async def from_url(url: str, max_words: int) -> Extracted:
     return Extracted(title, "url", text, _pack(_blocks(text), max_words), {"url": url, "content_type": ctype})
 
 
+def opening_text(name: str, data: bytes, pages: int = 3, chars: int = 6000) -> str:
+    """The first pages of an upload as plain text (with a PDF's own title, author and subject), so the document's
+    issuer, edition and part can be read from its title page."""
+    if name.lower().endswith(".pdf"):
+        doc = pymupdf.open(stream=data, filetype="pdf")
+        info = "\n".join(f"{k}: {v}" for k, v in (doc.metadata or {}).items() if k in ("title", "author", "subject") and v)
+        text = "\n\n".join(doc[i].get_text() for i in range(min(pages, doc.page_count)))
+        return (f"[PDF properties]\n{info}\n\n" if info else "") + text[:chars]
+    return from_upload(name, data, 3000).text[:chars]
+
+
 def from_upload(name: str, data: bytes, max_words: int) -> Extracted:
     low = name.lower()
     if low.endswith(".pdf"):
