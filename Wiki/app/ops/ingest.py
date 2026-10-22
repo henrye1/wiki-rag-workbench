@@ -277,6 +277,21 @@ def _fix_breaks(text: str) -> str:
     return fixed
 
 
+def _same_label_together(paras: list[str], placed: dict[int, int]) -> None:
+    """The reader splits a long paragraph into chunks that share its label: send them all where most of them went (on a
+    tie, where the first went), so the paragraph is written up whole, e.g. an example's facts with its analysis."""
+    chunks: dict[str, list[int]] = {}
+    for i in sorted(placed):
+        if ref := _ref(paras[i]):
+            chunks.setdefault(ref, []).append(i)
+    for idx in chunks.values():
+        if len({placed[i] for i in idx}) > 1:
+            votes = [placed[i] for i in idx]
+            best = max(votes, key=lambda n: (votes.count(n), -votes.index(n)))
+            for i in idx:
+                placed[i] = best
+
+
 def _join_parts(texts: list[str]) -> str:
     """Join a page's parts, dropping any block (paragraph, heading, list) that repeats one from an earlier part."""
     seen: set[str] = set()
@@ -402,6 +417,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             else:
                 owner[i], by = targets[int(np.argmax(brief_vecs @ para_vecs[i]))]["num"], "closest section brief"
             unassigned.append({"paragraph": _ref(paras[i]) or f"paragraph {i + 1}", "placed_in": name[owner[i]], "by": by})
+        _same_label_together(paras, owner)  # the chunks of one long paragraph go to one page
         if unassigned:
             await ctx.progress(unassigned=unassigned)
 
@@ -454,6 +470,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                 near = [got[j] for j in reversed(mine[:k]) if j in got][:1] or [got[j] for j in mine[k + 1:] if j in got][:1]
                 if near:
                     got[i] = near[0]
+        _same_label_together(paras, got)  # ... and to one subtopic page
         group_of.update(got)
         log.info("ingest: section %s split into %s groups (%s of %s paragraphs grouped)", num, len(set(got.values())),
                  len(got), len(mine))
