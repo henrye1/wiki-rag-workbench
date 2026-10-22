@@ -11,7 +11,7 @@ from ..db import get_pool
 from ..sources.text import split_long
 from . import saved
 
-PAGE_TYPES = ("overview", "topic", "concept", "entity", "comparison", "synthesis", "source")
+PAGE_TYPES = ("overview", "topic", "subtopic", "concept", "entity", "comparison", "synthesis", "source")
 LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]")
 
 

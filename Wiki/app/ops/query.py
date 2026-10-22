@@ -3,6 +3,7 @@
 Synthesis pages are never chosen as one of the pages for a question. Saved answers (synthesis pages filed with the
 Save button) relevant to the question are read in addition, as earlier answers to check against those pages."""
 import hashlib
+import logging
 import re
 from collections.abc import AsyncIterator
 
@@ -11,6 +12,8 @@ from ..config import get_settings
 from ..db import get_pool
 from ..wiki import citecheck, saved, search, store
 from ..wiki.store import Op, slugify
+
+log = logging.getLogger(__name__)
 
 
 async def _select_pages(wiki: dict, question: str) -> list[dict]:
@@ -22,7 +25,8 @@ async def _select_pages(wiki: dict, question: str) -> list[dict]:
     if synth & {h["slug"] for h in hits[:5]}:  # look further so the top 5 are five other pages
         hits = await search.search_pages(wiki_id, question, s.query_top_k + len(synth))
     hits = [h for h in hits if h["slug"] not in synth]
-    index = await store.compact_index(wiki_id, exclude_types=("synthesis",))
+    # subtopic pages are not navigation targets: they are reached from their section page's index (and by search)
+    index = await store.compact_index(wiki_id, exclude_types=("synthesis", "subtopic"))
     picked = await llm.generate_json(
         prompts.MAINTAINER_SYSTEM, prompts.select_prompt(question, index, s.query_max_pages), prompts.SELECT_SCHEMA
     )
@@ -30,8 +34,31 @@ async def _select_pages(wiki: dict, question: str) -> list[dict]:
     for slug in [h["slug"] for h in hits[:5]] + [slugify(x) for x in picked["slugs"]]:
         if slug not in order and slug not in synth:
             order.append(slug)
+    order = await _with_subtopics(wiki_id, question, order[: s.query_max_pages + 5])
     pages = {p["slug"]: p for p in await store.get_pages(wiki_id, order[: s.query_max_pages + 5])}
     return [pages[x] for x in order if x in pages]
+
+
+async def _with_subtopics(wiki_id, question: str, order: list[str]) -> list[str]:
+    """Where a chosen page is a split section's index, read it and then only the subtopic pages that bear on the
+    question (picked from that section's subtopic pages), placed right after the index."""
+    subs = [p for p in await store.list_pages(wiki_id) if p["type"] == "subtopic"]
+    out: list[str] = []
+    for slug in order:
+        if slug not in out:
+            out.append(slug)
+        mine = [p for p in subs if p["slug"].startswith(slug + "-")]
+        if not mine or slug.startswith(tuple(p["slug"] for p in subs)):
+            continue
+        listing = "\n".join(f"{p['slug']} | subtopic | {p['title']} | {p['summary']}" for p in mine)
+        try:
+            got = await llm.generate_json(prompts.MAINTAINER_SYSTEM, prompts.select_prompt(question, listing, 3), prompts.SELECT_SCHEMA)
+        except Exception as e:
+            log.warning("query: choosing subtopic pages of %s failed: %s", slug, e)
+            continue
+        valid = {p["slug"] for p in mine}
+        out += [x for x in dict.fromkeys(slugify(x) for x in got["slugs"]) if x in valid and x not in out]
+    return out
 
 
 async def _select_saved(wiki: dict, question: str) -> list[dict]:

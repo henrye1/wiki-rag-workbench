@@ -7,7 +7,7 @@ import { MatInputModule } from '@angular/material/input';
 import { RouterLink } from '@angular/router';
 import { Api } from '../../core/api';
 
-const TYPES = ['overview', 'topic', 'concept', 'entity', 'comparison', 'synthesis', 'source'];
+const TYPES = ['overview', 'topic', 'subtopic', 'concept', 'entity', 'comparison', 'synthesis', 'source'];
 
 @Component({
   selector: 'app-wiki-pages',

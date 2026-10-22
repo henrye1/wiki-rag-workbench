@@ -28,6 +28,7 @@ class Checks:
     examples_section: int | None = None  # the section the issuer's labelled examples are routed to
     example_labels: list[str] = field(default_factory=list)
     routed_kinds: list[str] = field(default_factory=list)  # the schema's kind names routed to the examples section
+    split: dict[int, str] = field(default_factory=dict)  # section number -> what its subtopic pages are grouped by
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
 
 
@@ -35,7 +36,7 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "kinds": "paragraph kinds", "openers": "openers", "linking": "linking words", "part_forms": "lettered part forms",
     "conditions": "condition phrases", "authority": "authority forms", "source_parts": "source-page parts",
     "max_takeaways": "key takeaways", "examples_section": "examples section", "example_labels": "example labels",
-    "routed_kinds": "kinds routed to the examples section",
+    "routed_kinds": "kinds routed to the examples section", "split": "split sections",
 }
 
 
@@ -68,6 +69,8 @@ def load(schema_md: str) -> Checks | None:
             c.openers = {k: QUOTED.findall(v) for k, v in _mapping(value).items()}
         elif attr == "source_parts":
             c.source_parts = {k: v.casefold() for k, v in _mapping(value).items()}
+        elif attr == "split":
+            c.split = {int(k): v for k, v in _mapping(value).items() if k.strip().isdigit()}
         elif attr == "routed_kinds":
             c.routed_kinds = [x.strip().strip('"').casefold() for x in value.split(",") if x.strip()]
         elif attr in ("max_takeaways", "examples_section"):

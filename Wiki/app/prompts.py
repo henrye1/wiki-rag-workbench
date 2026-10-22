@@ -284,6 +284,23 @@ def also_record_prompt(*, slug: str, title: str, items: str, linkable: str, sour
     )
 
 
+def group_prompt(brief: str, grouped_by: str, groups: str, lines: str) -> str:
+    return (
+        "The section below is split into subtopic pages. Assign each of its paragraphs to ONE group, by what the "
+        f"section's subtopic pages are grouped by: {grouped_by}. Choose only from <groups>; return every id exactly "
+        "once, with its group number.\n\n"
+        f"<section_brief>\n{brief}\n</section_brief>\n\n<groups>\n{groups}\n</groups>\n\n"
+        f"<paragraphs>\nid | heading | text (first words)\n{lines}\n</paragraphs>"
+    )
+
+
+def index_prompt_focus(name: str) -> str:
+    """Focus for a split section's own page: the index of its subtopic pages, as the wiki schema sets out."""
+    return (f"{name}. This section is split: write its page as the index of its subtopic pages, as the wiki schema "
+            "sets out, from <material>, which lists each subtopic page with its headings and the clauses each cites. "
+            "Keep the index lines already on the current page for subtopic pages not in <material>.")
+
+
 def route_prompt(briefs: str, lines: str, outline: str = "", note: str = "") -> str:
     return (
         "Assign each source paragraph to the ONE section whose brief says it belongs there (follow the briefs' hand-off "

@@ -424,15 +424,52 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         picked = await llm.gather_limited(pick(cand[k : k + s.route_batch]) for k in range(0, len(cand), s.route_batch))
         also[sec["num"]] = sorted({i for got in picked for i in got})
 
+    # 2c. Split sections (the schema's Checks list): a split section's paragraphs are grouped into its subtopic pages,
+    # by what the schema says they are grouped by; the groups offered are the schema's own sections
+    group_of: dict[int, int] = {}  # paragraph -> the section number of its group
+    for num, grouped_by in (chk.split.items() if chk and owner else []):
+        parent = next((x for x in sections if x["num"] == num), None)
+        mine = [i for i, n in sorted(owner.items()) if n == num]
+        if not parent or not mine:
+            continue
+        await ctx.progress(stage="group")
+        vocab = [x for x in sections if x["num"] != num]
+        listing, gnums = "\n".join(f"{x['num']}. {x['name']}" for x in vocab), {x["num"] for x in vocab}
+
+        async def group(batch: list[int]) -> dict[int, int]:
+            lines = "\n".join(f"{i} | {heads[i] or '-'} | {' '.join(paras[i].split()[:80])}" for i in batch)
+            try:
+                out = await llm.generate_json(system, prompts.with_schema(schema, prompts.group_prompt(
+                    parent["brief"], grouped_by, listing, lines)), prompts.ROUTE_SCHEMA)
+            except Exception as e:
+                log.warning("ingest: grouping batch for section %s failed: %s", num, e)
+                return {}
+            return {a["id"]: a["section"] for a in out["assignments"] if a["id"] in batch and a["section"] in gnums}
+
+        got: dict[int, int] = {}
+        for d in await llm.gather_limited(group(mine[i : i + s.route_batch]) for i in range(0, len(mine), s.route_batch)):
+            got.update(d)
+        for k, i in enumerate(mine):  # left without a group: its neighbour's (an example runs over several paragraphs)
+            if i not in got:
+                near = [got[j] for j in reversed(mine[:k]) if j in got][:1] or [got[j] for j in mine[k + 1:] if j in got][:1]
+                if near:
+                    got[i] = near[0]
+        group_of.update(got)
+        log.info("ingest: section %s split into %s groups (%s of %s paragraphs grouped)", num, len(set(got.values())),
+                 len(got), len(mine))
+
     # 3. Plan
     await ctx.progress(stage="plan")
+    # pages one ingest writes, from the schema: every section page and the overview (the source page and any subtopic
+    # pages come on top); a schema without fixed sections uses the setting
+    cap = len(sections) + 1 if sections else s.max_pages_per_ingest - 1
     # synthesis pages (answers filed back from queries) are never source material: not offered to the planner
     index = await store.compact_index(wiki_id, exclude_types=("synthesis",))
     hits = [h for h in await search.search_many(wiki_id, _names(notes), k=3) if h["type"] != "synthesis"]
     candidates = "\n".join(f"{h['slug']} | {h['type']} | {h['title']} | {h['summary']}" for h in hits[:40]) or "(none)"
     plan = await llm.generate_json(
         system,
-        prompts.with_schema(schema, prompts.plan_prompt(ex.title, source["slug"], notes_md, index, candidates, s.max_pages_per_ingest - 1)),
+        prompts.with_schema(schema, prompts.plan_prompt(ex.title, source["slug"], notes_md, index, candidates, cap)),
         prompts.PLAN_SCHEMA,
     )
     existing = {p["slug"]: p for p in await store.list_pages(wiki_id, with_content=True)}
@@ -443,6 +480,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             continue
         if p["type"] == "synthesis" or existing.get(slug, {}).get("type") == "synthesis":
             continue  # only queries file synthesis pages; an upload never writes or rewrites one
+        if existing.get(slug, {}).get("type") == "subtopic":
+            continue  # subtopic pages are made from the grouping below, never planned
         seen.add(slug)
         items.append({**p, "slug": slug, "action": "update" if slug in existing else "create"})
     if "overview" not in seen:
@@ -466,7 +505,22 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             sec_of[slug] = sec
     # the source page counts toward the limit; section pages first, then the overview, then the rest
     rank = lambda i: 0 if sec_of.get(i["slug"]) else 1 if i["slug"] == "overview" else 2
-    items = sorted(items, key=rank)[: s.max_pages_per_ingest - 1]
+    items = sorted(items, key=rank)[:cap]
+    # subtopic pages of split sections: one per group that has paragraphs, named <section-slug>-<group>
+    by_num = {x["num"]: x for x in sections}
+    slug_of = {x["num"]: sl for sl, x in sec_of.items()}
+    sub_of: dict[str, dict] = {}  # subtopic page -> its section, its group and its paragraphs
+    for i, g in sorted(group_of.items()):
+        if owner.get(i) in slug_of and g in by_num:
+            sl = f"{slug_of[owner[i]]}-{slugify(by_num[g]['name'])}"
+            sub_of.setdefault(sl, {"sec": by_num[owner[i]], "group": by_num[g], "paras": []})["paras"].append(i)
+    index_of: dict[str, list[str]] = {}  # split section page -> its subtopic pages written now
+    for sl, sub in sub_of.items():
+        index_of.setdefault(slug_of[sub["sec"]["num"]], []).append(sl)
+        items.append({"action": "update" if sl in existing else "create", "slug": sl, "type": "subtopic",
+                      "title": f"{sub['sec']['name']}: {sub['group']['name']}",
+                      "focus": f"Section {sub['sec']['num']:02d}: {sub['sec']['name']}, subtopic {sub['group']['name']}"})
+    para_sub = {i: sl for sl, sub in sub_of.items() for i in sub["paras"]}
 
     # 4. Write pages (source page + planned pages)
     await ctx.progress(stage="write", pages=len(items) + 1)
@@ -539,12 +593,13 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
 
         cur = existing.get(slug)
         sec = sec_of.get(slug) if owner else None
+        sub = sub_of.get(slug)
         # the page's "Also recorded here" lines are kept as they are; the writer sees (and rewrites) only the rest
         cur_body, old_also = _split_also(cur["content_md"]) if cur and sec else (cur["content_md"] if cur else None, [])
         background, auto_gaps, page_material = [], False, material
         extra = also.get(sec["num"], []) if sec else []  # paragraphs also recorded here as one line each
-        if sec:  # a section page writes up only its own paragraphs; a few related ones from other sections are context
-            mine = own.get(sec["num"], [])
+        if sec or sub:  # a section (or subtopic) page writes up only its own paragraphs; a few related ones are context
+            mine = sub["paras"] if sub else own.get(sec["num"], [])
             given = [paras[i] for i in mine]
             if not given and not extra:  # nothing from this source: leave an existing page alone, otherwise say the section is empty
                 if cur:
@@ -556,7 +611,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             auto_gaps, page_material = True, f"Source: {ex.title}"
             # labels removed: under the schema an uncitable paragraph cannot be written up
             background = [re.sub(r"^\[[^\]]+\]\s*", "", p)
-                          for p in await relevant(sec["brief"], s.page_background_words, set(mine) | set(extra))] if given else []
+                          for p in await relevant((sub or {"sec": sec})["sec"]["brief"], s.page_background_words, set(mine) | set(extra))] if given else []
         elif owner:  # overview, source and other composed pages: every paragraph belongs to a section page, so context only
             given = []
             background = [re.sub(r"^\[[^\]]+\]\s*", "", p) for p in await relevant(f"{title}\n{focus}", s.page_background_words)]
@@ -657,7 +712,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             main_page = {x["num"]: sl for sl, x in sec_of.items()}
 
             def item(i: int) -> str:
-                link = f"(main page: [[{main_page.get(owner.get(i), 'overview')}]])"
+                link = f"(main page: [[{para_sub.get(i) or main_page.get(owner.get(i), 'overview')}]])"
                 return re.sub(r"^(\[[^\]]+\])", lambda m: f"{m.group(1)} {link}", paras[i], count=1)
 
             def also_lines(reply: str, refs: set[str]) -> list[str]:
@@ -726,6 +781,39 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     source_focus = f"Source page. One-line summary: {plan['source_summary']}" + (
         "\nRecorded for this source: " + "; ".join(f"{k}: {v}" for k, v in fields.items()) if fields else "")
 
+    async def write_index(slug: str, title: str, outline: str) -> Op | None:
+        """A split section's own page: the index of its subtopic pages, from what those pages say and cite."""
+        cur = existing.get(slug)
+        out = await llm.generate_json(system, prompts.with_schema(schema, prompts.write_page_prompt(
+            slug=slug, title=title, ptype="topic", focus=prompts.index_prompt_focus(title),
+            existing_md=cur["content_md"] if cur else None, material=outline, linkable=linkable, source_slug=source["slug"],
+        )), prompts.PAGE_SCHEMA)
+        content = _fix_breaks(out["content_md"]).strip()
+        if not content:
+            raise RuntimeError(f"index page {slug} came back empty")
+        return Op(op="update" if cur else "create", slug=slug, title=out["title"] or title, type="topic",
+                  summary=out["summary"], content_md=content, tags=out["tags"], base_version=cur["version"] if cur else None,
+                  change_note=out["change_note"])
+
+    def outline(sec_slug: str, written: dict) -> str:
+        """Each subtopic page with its headings and the clauses cited under each: the material for the index."""
+        lines = []
+        for sl in index_of.get(sec_slug, []):
+            if not (o := written.get(sl)):
+                continue
+            lines.append(f"[[{sl}]] {o.title}")
+            n = len(lines)
+            for block in re.split(r"(?m)^(?=#{2,4} )", o.content_md):
+                head = re.match(r"#{2,4} (.*)", block)
+                labs = list(dict.fromkeys(m.group(2) for m in store.LINK_RE.finditer(block)
+                                          if m.group(1).startswith("source-") and m.group(2)))
+                if labs:  # under its heading, or (a page without sub-headings) its opening words
+                    name = head.group(1).strip() if head else " ".join(store.LINK_RE.sub("", block).split()[:25]) + " ..."
+                    lines.append(f"- {name}: cites {', '.join(labs[:40])}")
+            if len(lines) == n:
+                lines.append("- (no citations on this page)")
+        return "\n".join(lines)
+
     async def write_safe(slug, *args):
         try:
             return await write(slug, *args)
@@ -736,8 +824,20 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
 
     ops = [o for o in await llm.gather_limited(
         [write_safe(source["slug"], ex.title, "source", source_focus, None)]
-        + [write_safe(i["slug"], i["title"], i["type"], i["focus"], source["slug"]) for i in items]
+        + [write_safe(i["slug"], i["title"], i["type"], i["focus"], source["slug"]) for i in items if i["slug"] not in index_of]
     ) if o]
+    if index_of:  # split sections: their own pages become the index of the subtopic pages just written
+        written = {o.slug: o for o in ops}
+
+        async def index_safe(i):
+            try:
+                return await write_index(i["slug"], i["title"], outline(i["slug"], written))
+            except Exception as e:
+                log.warning("ingest: index page %s failed: %s", i["slug"], e)
+                failed_pages.append({"slug": i["slug"], "error": f"{type(e).__name__}: {e}"})
+                return None
+
+        ops += [o for o in await llm.gather_limited([index_safe(i) for i in items if i["slug"] in index_of]) if o]
     if not ops:
         raise RuntimeError(f"Page writing failed for every page: {failed_pages[:3]}")
     if failed_pages:
@@ -765,8 +865,9 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     await store.add_log(wiki_id, "ingest", ex.title, detail + f"\n\nMode: {mode} ({result['status']})")
     label = lambda i: _ref(paras[i]) or f"paragraph {i + 1}"
     routing = {f"{x['num']:02d} {x['name']}": [label(i) for i in own.get(x["num"], [])] for x in sections} if owner else {}
+    subtopics = {sl: [label(i) for i in sub["paras"]] for sl, sub in sub_of.items()}
     also_recorded = {f"{x['num']:02d} {x['name']}": [label(i) for i in also[x["num"]]] for x in sections if x["num"] in also}
-    return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "empty_retries": empty_retries, "check_fixes": check_fixes, "routing": routing, "unassigned": unassigned,
+    return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "empty_retries": empty_retries, "check_fixes": check_fixes, "routing": routing, "subtopics": subtopics, "unassigned": unassigned,
             "also_recorded": also_recorded, "missed_paragraphs": missed, "citations": citations, "fill_passes": fill_passes, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
 
 
