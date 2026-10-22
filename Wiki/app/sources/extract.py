@@ -69,14 +69,26 @@ UNRECOGNISED_IFRS = ("This PDF looks like an IFRS publication, but its paragraph
 NOT_IFRS = "This PDF does not have the IFRS layout: the text was kept page by page, without paragraph numbers."
 
 
-def from_pdf(name: str, data: bytes, max_words: int) -> Extracted:
+def _example_heads(chunks, example_re) -> list[str]:
+    """Each chunk's example heading: its own heading when that carries one of the wiki schema's example labels
+    ("Example 1—<title>"). A chunk under some other heading gets none: the reader cannot tell a sub-heading of the same
+    example ("Fact pattern") from the start of something new, and a wrong name is worse than none."""
+    return [h if example_re and (h := (c.heading or "").strip()) and example_re.search(h) else "" for c in chunks]
+
+
+def _with_head(content: str, head: str) -> str:
+    return f"{head}: {content}" if head and not content.startswith(head) else content
+
+
+def from_pdf(name: str, data: bytes, max_words: int, example_re=None) -> Extracted:
     doc = pymupdf.open(stream=data, filetype="pdf")
     meta = {"pages": doc.page_count, **{k: v for k, v in (doc.metadata or {}).items() if v}}
     chunks, layout = pdf_ifrs.parse_document(doc)
     if layout == "standard":
         # Binding text only, labelled by paragraph number so notes can cite it
         chunks = [c for c in chunks if c.source_type in ("standard", "appendix_a", "appendix_b")]
-        blocks = [f"[{c.para_ref or 'p' + str(c.page)}] {c.content}" for c in chunks]
+        heads = _example_heads(chunks, example_re)
+        blocks = [f"[{c.para_ref or 'p' + str(c.page)}] {_with_head(c.content, h)}" for c, h in zip(chunks, heads)]
         meta["parser"] = "ifrs"
         meta["headings"] = [(c.heading or "").strip() for c in chunks]  # one per block, for routing to schema sections
         meta["outline"] = _outline(chunks)
@@ -84,7 +96,8 @@ def from_pdf(name: str, data: bytes, max_words: int) -> Extracted:
     elif layout == "accompanying":
         # Parts B and C: numbered paragraphs, each marked with its kind (never presented as a requirement)
         chunks = [c for c in chunks if c.source_type in KIND_LABELS]
-        blocks = [f"[{c.para_ref}] ({KIND_LABELS[c.source_type]}) {c.content}" for c in chunks]
+        heads = _example_heads(chunks, example_re)
+        blocks = [f"[{c.para_ref}] ({KIND_LABELS[c.source_type]}) {_with_head(c.content, h)}" for c, h in zip(chunks, heads)]
         meta["parser"] = "ifrs_accompanying"
         meta["headings"] = [(c.heading or "").strip() for c in chunks]
         meta["kinds"] = [c.source_type for c in chunks]
@@ -154,10 +167,11 @@ def opening_text(name: str, data: bytes, pages: int = 3, chars: int = 6000) -> s
     return from_upload(name, data, 3000).text[:chars]
 
 
-def from_upload(name: str, data: bytes, max_words: int) -> Extracted:
+def from_upload(name: str, data: bytes, max_words: int, example_re=None) -> Extracted:
+    """example_re: the wiki schema's example labels, so the issuer's example headings are kept with their paragraphs."""
     low = name.lower()
     if low.endswith(".pdf"):
-        return from_pdf(name, data, max_words)
+        return from_pdf(name, data, max_words, example_re)
     if low.endswith(".docx"):
         return from_docx(name, data, max_words)
     if low.endswith(TEXT_EXT):

@@ -29,6 +29,7 @@ class Checks:
     example_labels: list[str] = field(default_factory=list)
     routed_kinds: list[str] = field(default_factory=list)  # the schema's kind names routed to the examples section
     split: dict[int, str] = field(default_factory=dict)  # section number -> what its subtopic pages are grouped by
+    defined_term_form: str = ""  # how a defined term is cited, e.g. a prefix followed by <term>
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
 
 
@@ -37,6 +38,7 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "conditions": "condition phrases", "authority": "authority forms", "source_parts": "source-page parts",
     "max_takeaways": "key takeaways", "examples_section": "examples section", "example_labels": "example labels",
     "routed_kinds": "kinds routed to the examples section", "split": "split sections",
+    "defined_term_form": "defined-term citation form",
 }
 
 
@@ -69,6 +71,8 @@ def load(schema_md: str) -> Checks | None:
             c.openers = {k: QUOTED.findall(v) for k, v in _mapping(value).items()}
         elif attr == "source_parts":
             c.source_parts = {k: v.casefold() for k, v in _mapping(value).items()}
+        elif attr == "defined_term_form":
+            c.defined_term_form = (QUOTED.findall(value) or [""])[0]
         elif attr == "split":
             c.split = {int(k): v for k, v in _mapping(value).items() if k.strip().isdigit()}
         elif attr == "routed_kinds":
@@ -89,7 +93,7 @@ def _template(text: str, wild: str) -> str:
     """A schema phrase as a pattern: <n> matches a number or a letter; other "<...>" placeholders and "..." match any
     short run of words."""
     out = re.escape(text)
-    out = re.sub(r"<([^>]*)>", lambda m: NUMBER if m.group(1) == "n" else wild, out.replace(r"\<", "<").replace(r"\>", ">"))
+    out = re.sub(r"<([^>]*)>", lambda m: f"({NUMBER if m.group(1) == 'n' else wild})", out.replace(r"\<", "<").replace(r"\>", ">"))
     return out.replace(re.escape("..."), r".+?")
 
 
@@ -133,7 +137,8 @@ def _label(para: str) -> str:
     return m.group(1).strip() if m else ""
 
 
-def section_failures(content: str, given: list[str], kinds: dict[str, str], source_slug: str, c: Checks, covers) -> list[str]:
+def section_failures(content: str, given: list[str], kinds: dict[str, str], source_slug: str, c: Checks, covers,
+                     labels: set[str] = frozenset()) -> list[str]:
     """Where a written page breaks the schema's checks for its own paragraphs: a lettered part or a condition phrase of
     a paragraph missing near its citation, and a sentence citing a non-Standard paragraph without the schema's opener."""
     failures = []
@@ -162,15 +167,72 @@ def section_failures(content: str, given: list[str], kinds: dict[str, str], sour
             if not line or line.startswith("#"):
                 continue
             for s in re.split(r"(?<=\]\])[.;:]?\s+(?=[A-Z(])", line):
-                labels = [m.group(2) for m in store.LINK_RE.finditer(s) if m.group(1) == source_slug and m.group(2)]
-                if not labels or not s[:1].isupper():  # no citation, or a list item continuing a lead-in sentence
+                cited = [m.group(2) for m in store.LINK_RE.finditer(s) if m.group(1) == source_slug and m.group(2)]
+                if not cited or not s[:1].isupper():  # no citation, or a list item continuing a lead-in sentence
                     continue
                 body = LIST_LABEL.sub("", s, count=1)  # "Interest rate swap**: The implementation guidance states ..."
-                found = {c.kinds.get(kinds.get(re.sub(r"\(.*$", "", lab).strip(), "")) for lab in labels}
-                if len(found) == 1 and (k := found.pop()) in openers and not openers[k].match(body):
-                    failures.append(f"The sentence citing {', '.join(labels)} (\"{s[:90]}...\") comes from {k} but does not "
-                                    f"open with the schema's opener for {k} ({', '.join(c.openers[k])}).")
+                found = {c.kinds.get(kinds.get(re.sub(r"\(.*$", "", lab).strip(), "")) for lab in cited}
+                if len(found) == 1 and (k := found.pop()) in openers:
+                    m = openers[k].match(body)
+                    if not m:
+                        failures.append(f"The sentence citing {', '.join(cited)} (\"{s[:90]}...\") comes from {k} but does not "
+                                        f"open with the schema's opener for {k} ({', '.join(c.openers[k])}).")
+                    elif named := [g.strip() for g in m.groups() if g and g.strip() in labels]:
+                        failures.append(f"The sentence citing {', '.join(cited)} (\"{s[:90]}...\") names its example "
+                                        f"\"{named[0]}\", which is one of the source's paragraph labels, not the example's name.")
     return failures
+
+
+PAGE_LABEL = re.compile(r"p(?:age)?\s*\d+", re.I)  # the PDF reader's label for a page it could not number
+
+
+def citation_failures(content: str, labels: dict[str, set[str]], names: set[str], c: Checks | None) -> list[str]:
+    """Citations that cite something other than a clause of the source they name: a page label of the reader, a
+    document or section name (the wiki's own source and section names), or a defined term not in the schema's
+    citation form."""
+    failures = []
+    prefix = c.defined_term_form.split("<", 1)[0] if c and "<" in c.defined_term_form else ""
+    flat_names = {_flat(n) for n in names if n}
+    for m in store.LINK_RE.finditer(content):
+        slug, lab = m.group(1), (m.group(2) or "").strip()
+        if slug not in labels or not lab:
+            continue
+        have = {x.casefold() for x in labels[slug]}
+        cite = f"[[{slug}|{lab}]]"
+        if PAGE_LABEL.fullmatch(lab):
+            failures.append(f"The citation {cite} cites a page label of the PDF reader, not a clause: cite the paragraph's own label.")
+        elif prefix and not lab.casefold().startswith(prefix.casefold()) and (
+                f"{prefix}{(term := lab.split(':', 1)[-1].strip())}".casefold() in have):
+            failures.append(f"The citation {cite} cites a defined term in the wrong form: cite it as \"{prefix}{term}\".")
+        elif lab.casefold() not in have and not (prefix and lab.casefold().startswith(prefix.casefold())) and any(
+                re.search(rf"(?<!\w){re.escape(_flat(lab))}(?!\w)", n) for n in flat_names):
+            failures.append(f"The citation {cite} cites a document or section name, not a clause: cite the clause it rests on.")
+    return list(dict.fromkeys(failures))
+
+
+def detail_lines(content: str, c: Checks) -> str:
+    """On a source page, each recorded detail the schema lists (e.g. issuer, edition, part) on a line of its own."""
+    names = [n.strip() for what in c.source_parts.values()
+             if not any(k in what for k in ("authority", "informed sections", "cited claims"))
+             for n in re.split(r",|\band\b", what) if n.strip()]
+    if not names:
+        return content
+    pat = re.compile(r"(?:\*\*)?\b(?:" + "|".join(map(re.escape, names)) + r")\b(?:\*\*)?\s*:", re.I)
+    out = []
+    for line in content.split("\n"):
+        hits = [m.start() for m in pat.finditer(line)]
+        if len(hits) < 2:
+            out.append(line)
+            continue
+        bullet = re.match(r"^\s*([-*\u2022])\s+", line)
+        mark = bullet.group(1) if bullet else "-"
+        lead_text = line[:hits[0]].strip(" -*\u2022")
+        cuts = ([0, hits[0]] if lead_text else [0]) + hits[1:] + [len(line)]
+        parts = [re.sub(r"(?:\s+[-*\u2022])?\s*[,;]?\s*$", "", line[a:b]).strip() for a, b in zip(cuts, cuts[1:])]
+        out += [parts[0]] + [f"{mark} {re.sub(r'^[-*\u2022]\s+', '', p)}" for p in parts[1:] if p]
+        if lead_text and not bullet:  # the sentence before the details stays a line of its own, the details become a list
+            out[-len(parts):] = [parts[0]] + [f"- {re.sub(r'^[-*\u2022]\s+', '', p)}" for p in parts[1:] if p]
+    return "\n".join(out)
 
 
 def authority_sentences(text: str, c: Checks) -> list[str]:

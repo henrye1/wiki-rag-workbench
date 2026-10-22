@@ -10,6 +10,7 @@ from ..config import get_settings
 from ..db import get_pool
 from ..ops import ingest
 from ..sources import extract
+from ..wiki import checks
 from .deps import Mode, wiki_dep
 
 router = APIRouter(tags=["sources"])
@@ -72,7 +73,8 @@ async def add_file(file: UploadFile, mode: Mode = MODE_Q, wiki: dict = Depends(w
         raise HTTPException(413, f"Max upload is {s.max_upload_mb} MB")
     name = file.filename or "upload.txt"
     try:
-        ex = await asyncio.to_thread(extract.from_upload, name, data, s.section_words)
+        chk = checks.load(wiki.get("schema_md") or "")
+        ex = await asyncio.to_thread(extract.from_upload, name, data, s.section_words, checks.example_label_re(chk) if chk else None)
     except ValueError as e:
         raise HTTPException(415, str(e))
     if document := {k: v.strip() for k, v in (("issuer", issuer), ("edition", edition), ("part", part)) if v.strip()}:

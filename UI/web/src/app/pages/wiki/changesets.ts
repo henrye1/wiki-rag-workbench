@@ -25,7 +25,7 @@ import { Api, enc } from '../../core/api';
             <td><span class="pill" [class.warn]="c.status === 'pending'" [class.ok]="c.status === 'applied'">{{ c.status }}</span></td>
             <td>{{ c.created_at | date: 'short' }}</td>
           </tr>
-        } @empty { <tr><td colspan="5" class="muted">Nothing here.</td></tr> }
+        } @empty { <tr><td colspan="5" class="muted empty">Nothing here.</td></tr> }
       </tbody>
     </table>
   `,

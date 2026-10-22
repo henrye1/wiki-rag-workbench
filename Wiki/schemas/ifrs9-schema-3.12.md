@@ -88,6 +88,7 @@ Every claim filed to any section carries its statement kind — requirement, app
 - Hand off: designations that only change a measurement category -> Classification and categorisation. A straight either/or choice with no machinery of its own -> the section that owns the mechanic, with the choice recorded in Judgements. Reliefs available only on first application -> Transition and effective date.
 - Boundary: a regime needs all three of qualifying criteria, mechanics, and discontinuation. Missing any one and it is a policy choice, not a regime.
 - Weak source if: a regime is captured with how to qualify and how to apply but not when it must stop. Discontinuation is the part most often omitted and the part most often breached.
+- Examples that illustrate a regime filed here (for example hedge accounting) are grouped with this section on the Worked examples pages, not with Measurement, even where they show arithmetic.
 ### 10. Presentation and disclosure
 - Belongs here: what appears on the face of the primary statements and what must be told to the reader. Presentation requirements; disclosure requirements whether in this standard or its disclosure partner; where disclosure sits in a separate standard, the link and an explicit statement of how the split runs; disclosure attached to a specific election or regime; disclosure of judgements made.
 - Each disclosure keeps its strength as stated: required ("shall disclose"), encouraged or permitted ("is encouraged to", "may"), or required only when a condition is met ("if material", "when the entity has elected"). A disclosure objective is recorded as an objective and is not turned into a list of specific required items, and specific items are not merged into the objective.
@@ -249,3 +250,4 @@ The engine reads these lists to route the issuer's labelled examples, to split s
 - Kinds routed to the examples section: example
 - Example labels (an issuer's own example, routed to the examples section; <n> is a number or a letter, as in Instrument A): "Example <n>", "Instrument <n>", "Scenario <n>", "Illustration <n>"
 - Split sections (section number = what each subtopic page is grouped by): 14 = the section of the fifteen that owns the requirement each example illustrates
+- Defined-term citation form: "Appendix A: <term>"

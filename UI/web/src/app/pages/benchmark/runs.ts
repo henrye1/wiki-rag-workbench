@@ -126,7 +126,7 @@ import { poller } from '../../shared/poll';
                   @else { <button mat-stroked-button (click)="rebuild(r)" [disabled]="active()" title="Build the key points again with the same judge prompt and replace the saved ones"><mat-icon>refresh</mat-icon> Rebuild</button> }
                 </td>
               </tr>
-            } @empty { <tr><td colspan="6" class="muted">No saved rubric yet: the first run with a reference file builds and saves it.</td></tr> }
+            } @empty { <tr><td colspan="6" class="muted empty">No saved rubric yet: the first run with a reference file builds and saves it.</td></tr> }
           </tbody>
         </table>
       </div>
@@ -166,7 +166,7 @@ import { poller } from '../../shared/poll';
                 }
               </td>
             </tr>
-          } @empty { <tr><td colspan="10" class="muted">No runs yet.</td></tr> }
+          } @empty { <tr><td colspan="10" class="muted empty">No runs yet.</td></tr> }
         </tbody>
       </table>
     </div>

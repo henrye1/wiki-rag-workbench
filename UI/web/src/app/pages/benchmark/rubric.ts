@@ -11,6 +11,7 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../../core/api';
+import { quietly } from '../../core/loading';
 
 interface Point { id: string; point: string; kind: string; ref?: string }
 interface Fact { id: string; fact: string; kind?: string; ref?: string }
@@ -696,7 +697,7 @@ export class BenchRubric {
     if (this.factsTimer) return;
     this.factsTimer = setInterval(async () => {
       try {
-        const d = await this.api.get<any>(`/api/bench/rubrics/${enc(this.ref())}`);
+        const d = await quietly(() => this.api.get<any>(`/api/bench/rubrics/${enc(this.ref())}`));
         const fresh = new Map<number, any>(d.topics.map((t: any) => [t.topic_number, t]));
         this.topics.update((ts) => ts.map((t) => {
           const f = fresh.get(t.n);
@@ -726,7 +727,7 @@ export class BenchRubric {
     if (this.sugTimer) return;
     this.sugTimer = setInterval(async () => {
       try {
-        const d = await this.api.get<any>(`/api/bench/rubrics/${enc(this.ref())}`);
+        const d = await quietly(() => this.api.get<any>(`/api/bench/rubrics/${enc(this.ref())}`));
         const fresh = new Map<number, any>(d.topics.map((t: any) => [t.topic_number, t]));
         this.topics.update((ts) => ts.map((t) => {
           const f = fresh.get(t.n);

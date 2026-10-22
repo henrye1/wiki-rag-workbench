@@ -10,6 +10,7 @@ import numpy as np
 from psycopg.types.json import Jsonb
 
 from .. import llm, prompts, storage
+from . import fixpass
 from ..config import get_settings
 from ..db import get_pool
 from ..jobs import JobContext
@@ -549,13 +550,9 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     check_fixes: list[dict] = []  # pages sent back once to fix what the schema check found
     para_kinds = ex.meta.get("para_kinds") or {}
     authority = checks.authority_sentences(ex.text, chk) if chk else []
-    cite_matchers = await citecheck.sources(wiki_id)  # the wiki's sources, this one included, for checking citations
-
-    def cite_failures(text: str) -> list[str]:
-        """Citations the citation check would flag, as failures for the fix round to correct."""
-        _, _, flagged = citecheck.check(text, cite_matchers)
-        return [f'The citation [[{src}|{label}]] does not match a paragraph of that source ({reason}); cite the paragraph '
-                "it states, by its own label." for (src, label, reason) in flagged]
+    cite_ctx = await fixpass.cite_context(wiki_id, [x["name"] for x in sections])  # this source included
+    src_labels = cite_ctx["labels"].get(source["slug"], set())
+    cite_failures = lambda text: fixpass.cite_failures(text, cite_ctx, chk)
     fill_passes: list[dict] = []  # what each extra writing pass was asked for and returned
     missed: list[dict] = []  # paragraphs still not written up (or not also recorded) after the extra passes
 
@@ -573,40 +570,9 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     async def write(slug, title, ptype, focus, source_slug):
         async def check_and_fix(kind: str, text: str, check, *, sources_text: str, parse, out_schema=prompts.PAGE_SCHEMA,
                                 ok=lambda old, new: True, may_shrink: bool = False) -> str:
-            """Check the page; if anything fails, send it back with the list, at most twice. A rewrite is kept only if
-            it has fewer failures, loses no citation, stays about the same length (a fix changes what was listed, not
-            the whole page; may_shrink when a failure asks for something to be taken out) and passes ok."""
-            rounds = []
-            for rnd in (1, 2):
-                failures = check(text)
-                if not failures:
-                    break
-                rec = {"round": rnd, "failures": failures}
-                try:
-                    out = await llm.generate_json(system, prompts.with_schema(schema, prompts.fix_page_prompt(
-                        slug=slug, title=title, content_md=text or "(nothing yet)", failures=failures, linkable=linkable,
-                        source_paragraphs=sources_text or "(none)")), out_schema)
-                    new = parse(out["content_md"])
-                    after = check(new)
-                    lost = [] if may_shrink else sorted(checks.cites(text) - checks.cites(new))
-                    n_old, n_new = len(text.split()), len(new.split())
-                    keep = (bool(new.strip()) and len(after) < len(failures) and not lost and ok(text, new)
-                            and n_new <= 1.5 * n_old + 200 and (may_shrink or n_new >= 0.8 * n_old))
-                    rec |= {"kept": keep, "fixed": len(failures) - len(after) if keep else 0, "still": after,
-                            "words": [n_old, n_new],
-                            **({"lost_citations": lost} if lost else {})}
-                    if keep:
-                        text = new
-                    log.info("ingest: page %s %s check, round %s: %s failures, %s fixed, rewrite %s", slug, kind, rnd,
-                             len(failures), len(failures) - len(after), "kept" if keep else "discarded")
-                except Exception as e:
-                    log.warning("ingest: page %s %s check, round %s failed: %s", slug, kind, rnd, e)
-                    rec["error"] = f"{type(e).__name__}: {e}"
-                rounds.append(rec)
-            if rounds:
-                check_fixes.append({"page": slug, "kind": kind, "found": len(rounds[0]["failures"]),
-                                    "still": len(check(text)), "rounds": rounds})
-            return text
+            return await fixpass.fix_rounds(schema=schema, slug=slug, title=title, text=text, check=check,
+                                            sources_text=sources_text, linkable=linkable, parse=parse, kind=kind,
+                                            record=check_fixes, out_schema=out_schema, ok=ok, may_shrink=may_shrink)
 
         cur = existing.get(slug)
         sec = sec_of.get(slug) if owner else None
@@ -710,7 +676,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
 
         if given and source_slug:
             content = await check_and_fix(
-                "section", content, lambda x: (checks.section_failures(x, given, para_kinds, source_slug, chk, _covers)
+                "section", content, lambda x: (checks.section_failures(x, given, para_kinds, source_slug, chk, _covers, src_labels)
                                                if chk else []) + cite_failures(x),
                 sources_text="\n\n".join(given), parse=lambda r: _fix_breaks(r).strip(),
                 ok=lambda old, new: not ({_ref(p) for p in _uncited(new, given)} - {_ref(p) for p in _uncited(old, given)}))
@@ -721,8 +687,10 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                         source_slug=source["slug"], c=chk)
             if skipped := checks.source_failures(content, **args)[1]:
                 log.info("ingest: source page %s: not checked: %s", slug, "; ".join(skipped))
-            content = await check_and_fix("source page", content, lambda x: checks.source_failures(x, **args)[0] + cite_failures(x),
-                                          sources_text="\n\n".join(authority), parse=lambda r: _fix_breaks(r).strip(),
+            content = await check_and_fix("source page", checks.detail_lines(content, chk),
+                                          lambda x: checks.source_failures(x, **args)[0] + cite_failures(x),
+                                          sources_text="\n\n".join(authority),
+                                          parse=lambda r: checks.detail_lines(_fix_breaks(r).strip(), chk),
                                           may_shrink=True)  # a source page with too many takeaways must lose some
 
         if extra:  # one short line per also-recorded paragraph, linking to its main page

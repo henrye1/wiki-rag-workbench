@@ -77,7 +77,7 @@ import { FileDrop } from '../../shared/file-drop';
               } @else { <button mat-icon-button (click)="confirming.set(s.slug)" title="Delete raw source (pages are kept)"><mat-icon>delete</mat-icon></button> }
             </td>
           </tr>
-        } @empty { <tr><td colspan="5" class="muted">No sources yet.</td></tr> }
+        } @empty { <tr><td colspan="5" class="muted empty">No sources yet.</td></tr> }
       </tbody>
     </table>
   `,

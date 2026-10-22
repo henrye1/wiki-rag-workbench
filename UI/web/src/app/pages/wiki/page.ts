@@ -44,12 +44,12 @@ import { Markdown } from '../../shared/markdown';
           <div class="card">
             <h3>Linked from ({{ p.backlinks.length }})</h3>
             @for (b of p.backlinks; track b.slug) { <div><a [routerLink]="['..', b.slug]">{{ b.title }}</a></div> }
-            @empty { <div class="muted">No backlinks</div> }
+            @empty { <div class="muted empty">No backlinks</div> }
           </div>
           <div class="card">
             <h3>Sources</h3>
             @for (s of p.sources; track s.slug) { <div><a [routerLink]="['..', s.slug]">{{ s.title }}</a> <span class="pill">{{ s.kind }}</span></div> }
-            @empty { <div class="muted">None recorded</div> }
+            @empty { <div class="muted empty">None recorded</div> }
           </div>
           <div class="card">
             <h3>History</h3>

@@ -35,7 +35,7 @@ const TYPES = ['overview', 'topic', 'subtopic', 'concept', 'entity', 'comparison
           }
         </tbody>
       </table>
-    } @empty { <p class="muted">No pages. Add a source under “Sources & ingest”.</p> }
+    } @empty { <p class="muted empty">No pages. Add a source under “Sources & ingest”.</p> }
   `,
   styles: `.t { width: 30%; } .nowrap { white-space: nowrap; } h3 { text-transform: capitalize; margin-top: 20px; }`,
 })
