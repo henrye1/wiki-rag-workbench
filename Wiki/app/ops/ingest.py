@@ -281,10 +281,15 @@ def _fix_breaks(text: str) -> str:
 NUMBERED = re.compile(r"^(?:[A-Z][a-z]+\s+)?(\d+(?:\.\d+)*)\s")  # a numbered heading, "6.4 ..." or "Chapter 6 ..."
 
 
-def _anchored_paths(paras: list[str], heading_paths: list) -> list[list[str]]:
+REFERS = re.compile(r"\bparagraphs?\s+([0-9][\w.]*|[A-Z]{1,3}\d[\w.]*)")  # "(paragraph 34)", "paragraphs 42A–42H"
+
+
+def _anchored_paths(paras: list[str], heading_paths: list, kinds: dict | None = None) -> list[list[str]]:
     """Each paragraph's heading path (top heading first). A paragraph under no numbered heading whose label number
     (any letter prefix aside) falls under a numbered heading elsewhere in the source takes that heading's path, so
-    guidance in an appendix sits with the requirement it is numbered after (B6.4.2 with "6.4 ...")."""
+    guidance in an appendix sits with the requirement it is numbered after (B6.4.2 with "6.4 ..."). Otherwise a
+    paragraph whose headings (or, failing those, its text) refer to a paragraph of another kind takes that paragraph's
+    path ("Market risk (paragraph 40)" goes with paragraph 40)."""
     paths = [[h for _, h in hp] for hp in heading_paths]
     prefix: dict[str, list[str]] = {}
     for p in paths:
@@ -299,6 +304,19 @@ def _anchored_paths(paras: list[str], heading_paths: list) -> list[list[str]]:
             if best:
                 p = prefix[best] + [h for h in p[-1:] if h not in prefix[best]]
         out.append(p)
+    if kinds:
+        at = {}
+        for k, para in enumerate(paras):
+            at.setdefault(_ref(para), k)
+        for k, para in enumerate(paras):
+            own = kinds.get(_ref(para))
+            if not own or any(NUMBERED.match(h) for h in out[k]):
+                continue
+            for text in (" ".join(paths[k]), para):  # its headings first, then its text
+                hit = next((at[r] for r in (m.rstrip(".") for m in REFERS.findall(text)) if r in at and kinds.get(r) not in (None, own)), None)
+                if hit is not None:
+                    out[k] = list(out[hit])
+                    break
     return out
 
 
@@ -407,7 +425,7 @@ async def _move_old_write_ups(wiki_id, index_of: dict, sub_of: dict, existing: d
         for r in rows:
             sp = [b.strip() for b in re.split(r"\n\s*\n", r["text"] or "") if b.strip()]
             hp = (r["meta"] or {}).get("heading_paths") or []
-            paths = _anchored_paths(sp, hp if len(hp) == len(sp) else [[] for _ in sp])
+            paths = _anchored_paths(sp, hp if len(hp) == len(sp) else [[] for _ in sp], (r["meta"] or {}).get("para_kinds"))
             src[r["slug"]] = {"title": r["title"], "path": {_ref(p): pa for p, pa in zip(sp, paths) if _ref(p)}}
         to: dict[str, list[str]] = {}
         for b in blocks:
@@ -675,17 +693,33 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     if "overview" not in seen:
         items.append({"action": "update" if "overview" in existing else "create", "slug": "overview", "title": wiki["name"],
                       "type": "overview", "focus": f"Integrate the new source {ex.title} into the overview"})
+    # a section that already has a page keeps it: a planned page for the same section is that page
+    has_page: dict[int, str] = {}
+    for sl, p in sorted(existing.items(), key=lambda kv: len(kv[0])):
+        if p["type"] == "topic" and (sec := _section_for(sections, p["title"], sl)) and sec["num"] not in has_page:
+            has_page[sec["num"]] = sl
+    kept = []
+    for i in items:
+        sec = _section_for(sections, i["title"], i["slug"]) if i["type"] == "topic" else None
+        if sec and sec["num"] in has_page and i["slug"] != has_page[sec["num"]]:
+            if any(x["slug"] == has_page[sec["num"]] for x in kept):
+                continue  # the section's page is planned already
+            i = {**i, "slug": has_page[sec["num"]], "action": "update", "title": existing[has_page[sec["num"]]]["title"]}
+        kept.append(i)
+    items = kept
+    seen |= {i["slug"] for i in items}
     sec_of: dict[str, dict] = {}  # topic page -> its section (one page per section)
     for i in items:
         sec = _section_for(sections, i["title"], i["slug"]) if i["type"] == "topic" else None
         if sec and sec["num"] not in {x["num"] for x in sec_of.values()}:
             sec_of[i["slug"]] = sec
-    if sections:  # every section gets a page, named like the planned ones (e.g. ifrs-9-<section>)
+    if sections:  # every section gets a page: its existing one, else named like the others (e.g. ifrs-9-<section>)
         covered = {x["num"] for x in sec_of.values()}
-        prefix = next((sl[: -len(slugify(x["name"]))] for sl, x in sec_of.items() if sl.endswith(slugify(x["name"]))), "")
+        named = {**{sl: s for s in sections for sl in [has_page.get(s["num"])] if sl}, **sec_of}
+        prefix = next((sl[: -len(slugify(x["name"]))] for sl, x in named.items() if sl.endswith(slugify(x["name"]))), "")
         for sec in sections:
-            slug = prefix + slugify(sec["name"])
-            if sec["num"] in covered or slug in seen:
+            slug = has_page.get(sec["num"]) or prefix + slugify(sec["name"])
+            if sec["num"] in covered or slug in sec_of:
                 continue
             seen.add(slug)
             items.append({"action": "update" if slug in existing else "create", "slug": slug, "title": sec["name"],
@@ -706,7 +740,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     limit = chk.page_size_limit if chk else None
     if limit and owner:
         hp = ex.meta.get("heading_paths") or []
-        paths = _anchored_paths(paras, hp if len(hp) == len(paras) else [[] for _ in paras])
+        paths = _anchored_paths(paras, hp if len(hp) == len(paras) else [[] for _ in paras], ex.meta.get("para_kinds"))
         words = [len(p.split()) for p in paras]
         split_basis.update(paths=paths, words=words)
         additive = {x["num"] for x in sections if re.search(r"\bADDITIVE\b", x["brief"])}  # its also-recorded lines stay together
@@ -1039,11 +1073,12 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             if len(parts) < 2:
                 continue  # no heading below to split by: the page stays as written
             sec_slug = slug_of[sub["sec"]["num"]]
+            del sub_of[o.slug]  # replaced by its pieces: its plain slug is free again
             new = []
             for names, part in parts:
                 full = sub["names"] + names[-1:]  # the parent heading was only for joining
                 sl = _sub_slug(sec_slug, full, chk.slug_words)
-                if sl in sub_of or sl == o.slug:
+                if sl in sub_of:
                     sl = _sub_slug(o.slug, names, chk.slug_words)
                 sub_of[sl] = {"sec": sub["sec"], "names": full, "paras": part}
                 for i in part:
@@ -1053,7 +1088,6 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                      len(o.content_md.split()), limit, ", ".join(new))
             resplit.append({"page": o.slug, "words": len(o.content_md.split()), "into": new})
             ops.remove(o)
-            del sub_of[o.slug]
             subs = index_of[sec_slug]
             subs[subs.index(o.slug):subs.index(o.slug) + 1] = new
             ops += [x for x in await llm.gather_limited([write_safe(

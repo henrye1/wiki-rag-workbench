@@ -169,6 +169,7 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
     heading_key: tuple = ()
     ranks = _heading_styles(doc)
     path: list = []  # [(level, heading, numbered)], top down: the headings the current text sits under
+    title_size = 0.0  # while set: headings this large are the document's title, not a heading of its text
     paras: list[_Para] = []
     cur = _Para(None, section, 1, None)
     last_label: tuple = ()  # (page, y) of last margin label, to join multi-line defined terms
@@ -190,20 +191,28 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
                 if _is_heading(font, size):
                     prev = heading_key
                     heading_key = (pno, y, font, size)
-                    if prev and prev[0] == pno and prev[2:] == (font, size) and 0 <= y - prev[1] < 14:
-                        heading_buf.append(text)
+                    continued = bool(prev and prev[0] == pno and prev[2:] == (font, size) and 0 <= y - prev[1] < 14)
+                    heading_buf = heading_buf + [text] if continued else [text]
+                    new_section = section if accompanying else _section_for_heading(text, section)
+                    is_title = not accompanying and not continued and _section_for_heading(text, "") == "standard"
+                    part_starts = new_section != section
+                    if part_starts:
+                        flush()
+                        section = new_section
+                        cur = _Para(None, section, pno, None)
+                    if is_title:  # the Standard's own title (wherever it is printed) is no heading of its text
+                        path, title_size = [], round(size, 1)
+                    elif part_starts:  # an appendix starts its own headings, under its own heading
+                        path, title_size = [(1, " ".join(heading_buf), False)], 0.0
+                    elif title_size and round(size, 1) >= title_size:
+                        pass  # more of the title (its subtitle lines)
+                    elif continued:
                         if path:  # the heading runs over two lines
                             path[-1] = (path[-1][0], " ".join(heading_buf), path[-1][2])
                     else:
-                        heading_buf = [text]
+                        title_size = 0.0
                         lvl = _level(text, ranks.get(_style(font, size), len(ranks) + 1), path)
                         path = [p for p in path if p[0] < lvl] + [(lvl, text, bool(NUMBERED_HEADING.match(text)))]
-                    new_section = section if accompanying else _section_for_heading(text, section)
-                    if new_section != section:
-                        flush()
-                        section = new_section
-                        path = [(1, " ".join(heading_buf), False)]  # a new part (an appendix) starts its own headings
-                        cur = _Para(None, section, pno, None)
                     heading = " ".join(heading_buf)
                     if accompanying:
                         m = IG_HEADING_RE.match(text) if len(heading_buf) == 1 else None
@@ -223,6 +232,7 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
                             flush()  # a placeholder holds only its own note: text after the next heading is not part of it
                             cur = _Para(None, section, pno, heading, path=tuple((l, h) for l, h, _ in path))
                     continue
+                title_size = 0.0  # text after the title: later headings are headings of the text
                 if accompanying:
                     margin_label = x < MARGIN_MAX_X and font.startswith("Swift") and ACCOMPANYING_RE.match(text.rstrip("".join(RANGE_DASH)))
                     if margin_label and cur.ref and cur.ref.endswith(RANGE_DASH) and last_label and last_label[0] == pno and 0 < y - last_label[1] < 14:
