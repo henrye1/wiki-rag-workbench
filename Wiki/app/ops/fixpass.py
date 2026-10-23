@@ -21,9 +21,28 @@ async def cite_context(wiki_id: UUID, section_names: list[str]) -> dict:
     for r in rows:
         names.add(r["title"])
         names.update(v for v in ((r["meta"] or {}).get("document") or {}).values() if v)
+    texts = {r["slug"]: {} for r in rows}
+    for r in rows:
+        for b in re.split(r"\n\s*\n", r["text"] or ""):
+            if m := LABEL_RE.match(b.strip()):
+                texts[r["slug"]].setdefault(m.group(1), []).append(b.strip())
     return {"matchers": {r["slug"]: m for r in rows if (m := citecheck._matcher(r["text"]))},
             "labels": {r["slug"]: set(LABEL_RE.findall(r["text"] or "")) for r in rows},
+            "texts": {sl: {k: "\n\n".join(v) for k, v in t.items()} for sl, t in texts.items()},
             "names": names}
+
+
+def earlier_cites(before: str, ctx: dict) -> set[str]:
+    """The source paragraphs a page cited before it is rewritten (slug|clause): citations of a paragraph a source
+    holds, not of a source's name."""
+    return {c for c in checks.cites(before) if c.split("|", 1)[1] not in ctx["names"]
+            and c.split("|", 1)[1] in ctx["labels"].get(c.split("|", 1)[0], set())}
+
+
+def kept_failures(text: str, earlier: set[str]) -> list[str]:
+    """The paragraphs a page cited before a rewrite that it no longer cites."""
+    return [f"Before this rewrite the page cited paragraph {c.split('|', 1)[1]} of [[{c.split('|', 1)[0]}]]; it no "
+            "longer does. Keep what the page said about it, with its citation." for c in sorted(earlier - checks.cites(text))]
 
 
 def cite_failures(text: str, ctx: dict, chk: checks.Checks | None) -> list[str]:

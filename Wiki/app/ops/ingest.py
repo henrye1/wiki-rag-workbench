@@ -946,6 +946,21 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                                           parse=lambda r: checks.detail_lines(_fix_breaks(r).strip(), chk),
                                           may_shrink=True)  # a source page with too many takeaways must lose some
 
+        if cur and not (chk and slug in chk.no_claim_pages):
+            # a rewrite keeps every source paragraph the page cited before: one it dropped is sent back, then reported
+            earlier = fixpass.earlier_cites(cur_body, cite_ctx)
+            if dropped := earlier - checks.cites(content):
+                texts = "\n\n".join(f"From [[{c.split('|', 1)[0]}]]: {cite_ctx['texts'][c.split('|', 1)[0]][c.split('|', 1)[1]]}"
+                                     for c in sorted(dropped))
+                old = "\n\n".join(b for b in _blocks(cur_body) if checks.cites(b) & dropped)
+                content = await check_and_fix(
+                    "earlier citations", content, lambda x: fixpass.kept_failures(x, earlier),
+                    sources_text=f"{texts}\n\nWhat the page said about them before:\n\n{old}",
+                    parse=(lambda r: checks.detail_lines(_fix_breaks(r).strip(), chk)) if ptype == "source" and chk
+                    else (lambda r: _fix_breaks(r).strip()))
+                if still := sorted(earlier - checks.cites(content)):
+                    missed.append({"page": slug, "paragraphs": still, "reason": "cited before this upload, dropped on rewrite"})
+
         if extra:  # one short line per also-recorded paragraph, linking to its main page
             main_page = {x["num"]: sl for sl, x in sec_of.items()}
 
@@ -1185,6 +1200,16 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     citations = await citecheck.check_ops(wiki_id, ops)
     if citations["corrected"] or citations["flagged"]:
         await ctx.progress(citations=citations)
+    # a page whose write-ups moved to other pages (a section page now an index, a page that holds no claims): what it
+    # cited before must be cited on one of the wiki's pages after this upload
+    final = {sl: p["content_md"] for sl, p in existing.items()} | {o.slug: o.content_md for o in ops}
+    on_some_page = set().union(*map(checks.cites, final.values()))
+    for o in ops:
+        if o.slug in existing and (o.slug in index_of or (chk and o.slug in chk.no_claim_pages)):
+            if gone := sorted(fixpass.earlier_cites(existing[o.slug]["content_md"], cite_ctx) - on_some_page):
+                missed.append({"page": o.slug, "paragraphs": gone, "reason": "cited before this upload, on no page after it moved"})
+    if missed:
+        await ctx.progress(missed_paragraphs=missed)
 
     # 5. Commit
     await ctx.progress(stage="commit")
