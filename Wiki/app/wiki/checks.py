@@ -30,6 +30,7 @@ class Checks:
     routed_kinds: list[str] = field(default_factory=list)  # the schema's kind names routed to the examples section
     split: dict[int, str] = field(default_factory=dict)  # section number -> what its subtopic pages are grouped by
     defined_term_form: str = ""  # how a defined term is cited, e.g. a prefix followed by <term>
+    unlabelled_forms: dict[str, str] = field(default_factory=dict)  # kind of text without a paragraph label -> its citation form
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
 
 
@@ -39,6 +40,7 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "max_takeaways": "key takeaways", "examples_section": "examples section", "example_labels": "example labels",
     "routed_kinds": "kinds routed to the examples section", "split": "split sections",
     "defined_term_form": "defined-term citation form",
+    "unlabelled_forms": "citation forms for text without a paragraph label",
 }
 
 
@@ -71,6 +73,8 @@ def load(schema_md: str) -> Checks | None:
             c.openers = {k: QUOTED.findall(v) for k, v in _mapping(value).items()}
         elif attr == "source_parts":
             c.source_parts = {k: v.casefold() for k, v in _mapping(value).items()}
+        elif attr == "unlabelled_forms":
+            c.unlabelled_forms = {k: (QUOTED.findall(v) or [v.strip()])[0] for k, v in _mapping(value).items()}
         elif attr == "defined_term_form":
             c.defined_term_form = (QUOTED.findall(value) or [""])[0]
         elif attr == "split":
@@ -193,14 +197,23 @@ def citation_failures(content: str, labels: dict[str, set[str]], names: set[str]
     failures = []
     prefix = c.defined_term_form.split("<", 1)[0] if c and "<" in c.defined_term_form else ""
     flat_names = {_flat(n) for n in names if n}
+    forms = list((c.unlabelled_forms if c else {}).values())
+    page_ok = any("<page label>" in f for f in forms)  # the schema lets unlabelled text be cited by its page label
+    tagged = [f.split("<", 1)[0] for f in forms if "<" in f and not f.startswith("<")]  # e.g. a prefix before <clause>
     for m in store.LINK_RE.finditer(content):
         slug, lab = m.group(1), (m.group(2) or "").strip()
         if slug not in labels or not lab:
             continue
         have = {x.casefold() for x in labels[slug]}
         cite = f"[[{slug}|{lab}]]"
+        if any(lab.casefold().startswith(t.casefold()) for t in tagged):
+            continue  # a form the schema gives for unlabelled text; the citation check tests the clause it names
         if PAGE_LABEL.fullmatch(lab):
-            failures.append(f"The citation {cite} cites a page label of the PDF reader, not a clause: cite the paragraph's own label.")
+            if page_ok and lab in labels[slug]:
+                continue  # text the reader kept without a paragraph label, cited by its page label as the schema allows
+            failures.append(f"The citation {cite} cites a page label that is not a block of this source, or that the "
+                            "schema does not allow: cite the paragraph's own label"
+                            + (f", or use the form the schema gives ({', '.join(forms)})." if forms else "."))
         elif prefix and not lab.casefold().startswith(prefix.casefold()) and (
                 f"{prefix}{(term := lab.split(':', 1)[-1].strip())}".casefold() in have):
             failures.append(f"The citation {cite} cites a defined term in the wrong form: cite it as \"{prefix}{term}\".")
