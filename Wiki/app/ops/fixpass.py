@@ -34,6 +34,30 @@ def cite_failures(text: str, ctx: dict, chk: checks.Checks | None) -> list[str]:
     return out + checks.citation_failures(text, ctx["labels"], ctx["names"], chk)
 
 
+def move_claims(slug: str, text: str, home, holds, record: list, names: set[str] = frozenset()) -> tuple[str, dict[str, list[str]]]:
+    """A page the schema says holds no claims: each sentence on it that cites a source paragraph moves, word for word,
+    to the page that holds that paragraph (home: slug|clause -> page slug, or None); where that page already cites it
+    (holds: page slug -> its citations) the sentence is dropped. A sentence with no page to go to stays. Returns the
+    page's text and, per page, the sentences to add to it."""
+    clauses = lambda x: {c for c in checks.cites(x) if c.split("|", 1)[1] not in names}
+    target = lambda x: next((t for t in map(home, sorted(clauses(x))) if t), None)
+    found = checks.take_claims(text, names=names)[1]
+    rest, taken = checks.take_claims(text, lambda x: target(x) is not None, names)
+    moves: dict[str, list[str]] = {}
+    for x in taken:
+        if not clauses(x) <= holds(target(x)):
+            moves.setdefault(target(x), []).append(x)
+    stayed = [x for x in found if x not in taken]
+    if found:
+        record.append({"page": slug, "kind": "no claims", "found": len(found), "still": len(stayed),
+                       "moved": {t: len(xs) for t, xs in moves.items()},
+                       "dropped_already_there": len(taken) - sum(map(len, moves.values())),
+                       "stayed": [" ".join(x.split()[:20]) for x in stayed]})
+        log.info("page %s holds no claims: %s found, %s moved, %s already on their page, %s stayed", slug, len(found),
+                 sum(map(len, moves.values())), len(taken) - sum(map(len, moves.values())), len(stayed))
+    return rest, moves
+
+
 async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, sources_text: str, linkable: str, parse,
                      kind: str, record: list, out_schema=prompts.PAGE_SCHEMA, ok=lambda old, new: True,
                      may_shrink: bool = False) -> str:

@@ -299,6 +299,12 @@ def _anchored_paths(paras: list[str], heading_paths: list, kinds: dict | None = 
     out = []
     for para, p in zip(paras, paths):
         num = re.sub(r"^[A-Za-z]+", "", _ref(para))
+        if re.fullmatch(r"\d+(?:\.\d+)+", num):  # a numbered heading the paragraph's own number is not under was
+            # carried over a gap in the source (an excerpt that jumps from 3.2.2 to 5.7.9): it is not this paragraph's
+            under = lambda h: not (m := NUMBERED.match(h)) or num == m.group(1) or num.startswith(m.group(1) + ".")
+            if not all(map(under, p)):
+                p = [h for h in p if under(h)]
+                p = p or [num.rsplit(".", 1)[0]]  # no heading left: the paragraph's own parent number (5.7.9 -> 5.7)
         if not any(NUMBERED.match(h) for h in p) and num:
             best = max((n for n in prefix if num.startswith(n + ".")), key=len, default=None)
             if best:
@@ -393,6 +399,14 @@ def _sub_slug(sec_slug: str, names: list[str], slug_words: int | None) -> str:
     return f"{sec_slug}-{slugify(' '.join(head.split()[:slug_words]) if slug_words else head)}"
 
 
+def _add_blocks(md: str, text: str) -> str:
+    """A page with text added word for word at the end of its body: before its "Also recorded here" lines and its
+    "Not yet covered" note."""
+    body, also_lines = _split_also(md)
+    head, sep, tail = body.partition("\n\nNot yet covered")
+    return _with_also(f"{head}\n\n{text}{sep}{tail}", also_lines)
+
+
 def _blocks(md: str) -> list[str]:
     """A page's text as blocks (a heading stays with the block under it)."""
     out, held = [], []
@@ -409,7 +423,8 @@ async def _move_old_write_ups(wiki_id, index_of: dict, sub_of: dict, existing: d
                               sec_of: dict, chk) -> dict:
     """A section page split for the first time may hold write-ups from earlier uploads. Each block moves, word for
     word, to the sub-page whose heading is on the heading path of the source paragraph the block cites; a block with
-    no matching heading goes to a sub-page named after its source. Returns, per section, what moved where."""
+    no matching heading goes to a sub-page named after that paragraph's nearest heading, never the source's title.
+    Returns, per section, what moved where."""
     out = {}
     for sec_slug, subs in index_of.items():
         cur = existing.get(sec_slug)
@@ -428,7 +443,12 @@ async def _move_old_write_ups(wiki_id, index_of: dict, sub_of: dict, existing: d
             sp = [b.strip() for b in re.split(r"\n\s*\n", r["text"] or "") if b.strip()]
             hp = (r["meta"] or {}).get("heading_paths") or []
             paths = _anchored_paths(sp, hp if len(hp) == len(sp) else [[] for _ in sp], (r["meta"] or {}).get("para_kinds"))
-            src[r["slug"]] = {"title": r["title"], "path": {_ref(p): pa for p, pa in zip(sp, paths) if _ref(p)}}
+            path_of, last = {}, []
+            for p, pa in zip(sp, paths):  # a paragraph with no heading of its own is under the one before it
+                last = pa or last
+                if _ref(p):
+                    path_of[_ref(p)] = last
+            src[r["slug"]] = {"title": r["title"], "path": path_of}
         to: dict[str, list[str]] = {}
         for b in blocks:
             m = next((m for m in store.LINK_RE.finditer(b) if m.group(1) in src and m.group(2)), None)
@@ -437,19 +457,18 @@ async def _move_old_write_ups(wiki_id, index_of: dict, sub_of: dict, existing: d
             match = [sl for sl in subs if sub_of.get(sl) and any(h in path for h in heads_of(sl))]
             if match:  # the sub-page whose heading is deepest on the block's path
                 sl = max(match, key=lambda x: max(path.index(h) for h in heads_of(x) if h in path))
-            else:
-                title = src[m.group(1)]["title"] if m else cur["title"]
-                sl = _sub_slug(sec_slug, [title], chk.slug_words if chk else None)
+            elif path:  # a sub-page named after the cited paragraph's nearest heading
+                sl = _sub_slug(sec_slug, path[-1:], chk.slug_words if chk else None)
                 if sl not in sub_of:
-                    sub_of[sl] = {"sec": sec_of[sec_slug], "names": [title], "paras": []}
+                    sub_of[sl] = {"sec": sec_of[sec_slug], "names": path[-1:], "paras": []}
+            else:  # the source has no headings: the section's first sub-page
+                sl = subs[0]
             to.setdefault(sl, []).append(b)
         new_pages = []
         for sl, bs in to.items():
             text = "\n\n".join(bs)
             if sl in written:  # added word for word, before the page's "Not yet covered" line
-                o = written[sl]
-                head, sep, tail = o.content_md.partition("\n\nNot yet covered")
-                o.content_md = f"{head}\n\n{text}{sep}{tail}"
+                written[sl].content_md = _add_blocks(written[sl].content_md, text)
             else:
                 sec = sec_of[sec_slug]
                 o = Op(op="update" if sl in existing else "create", slug=sl, type="subtopic",
@@ -1137,6 +1156,36 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                 return None
 
         ops += [o for o in await llm.gather_limited([index_safe(i) for i in items if i["slug"] in index_of]) if o]
+    for top in [o for o in ops if chk and o.slug in chk.no_claim_pages]:
+        # a page that holds no claims (the schema's Checks): each claim on it moves to the page that holds the paragraph
+        # it cites (this upload's paragraphs: the page they were written up on; earlier ones: a page that cites them)
+        on = {o.slug: o for o in ops}
+        is_index = lambda sl: sl in index_of or any(x.startswith(sl + "-") and existing[x]["type"] == "subtopic" for x in existing)
+        holders = [sl for sl in list(on) + [x for x in existing if x not in on] if sl not in chk.no_claim_pages and not is_index(sl)
+                   and (on[sl].type if sl in on else existing[sl]["type"]) in ("topic", "subtopic")]
+        cites_of = {sl: checks.cites(on[sl].content_md if sl in on else existing[sl]["content_md"]) for sl in holders}
+        here = {f"{source['slug']}|{_ref(p)}": i for i, p in enumerate(paras) if _ref(p)}
+
+        def home(cite: str) -> str | None:
+            if (i := here.get(cite)) is not None and (sl := para_sub.get(i) or slug_of.get(owner.get(i))) in cites_of:
+                return sl
+            return next((sl for sl in holders if cite in cites_of[sl]), None)
+
+        top.content_md, moves = fixpass.move_claims(top.slug, top.content_md, home, lambda sl: cites_of.get(sl, set()),
+                                                    check_fixes, cite_ctx["names"])
+        for sl, xs in moves.items():
+            if sl not in on:
+                cur = existing[sl]
+                on[sl] = Op(op="update", slug=sl, title=cur["title"], type=cur["type"], summary=cur["summary"],
+                            content_md=cur["content_md"], tags=cur["tags"] or [], base_version=cur["version"],
+                            change_note=f"Claims moved here from [[{top.slug}]]")
+                ops.append(on[sl])
+            on[sl].content_md = _add_blocks(on[sl].content_md, "\n\n".join(xs))
+        top.content_md = await fixpass.fix_rounds(
+            schema=schema, slug=top.slug, title=top.title, text=top.content_md, sources_text="", linkable=linkable,
+            check=lambda x, sl=top.slug: checks.no_claim_failures(x, sl, set(sec_of), chk, cite_ctx["names"]) + cite_failures(x),
+            parse=lambda r: _fix_breaks(r).strip(), kind="no claims", record=check_fixes,
+            ok=lambda old, new: not checks.cites(new) - checks.cites(old))  # a fix adds no claim
     if not ops:
         raise RuntimeError(f"Page writing failed for every page: {failed_pages[:3]}")
     if failed_pages:

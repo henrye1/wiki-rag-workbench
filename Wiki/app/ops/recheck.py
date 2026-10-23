@@ -78,7 +78,14 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
                     out += checks.section_failures(x, paras, src[slug]["kinds"], slug, chk, _covers, cite_ctx["labels"].get(slug, set()))
                 return out + cite_check(x)
             kind, sources_text = "section", "\n\n".join(b for paras in given.values() for b in paras)
-        else:  # overview, a split section's index, composed pages: their citations only
+        elif p["slug"] in chk.no_claim_pages:  # a claim already on the page that holds its paragraph is dropped here
+            holders = {x["slug"]: checks.cites(x["content_md"]) for x in pages if x["type"] in ("topic", "subtopic")
+                       and x["slug"] not in index_pages and x["slug"] not in chk.no_claim_pages}
+            home = lambda c: next((sl for sl, cs in holders.items() if c in cs), None)
+            body = fixpass.move_claims(p["slug"], body, home, lambda sl: holders.get(sl, set()), record, cite_ctx["names"])[0]
+            check = lambda x: checks.no_claim_failures(x, p["slug"], section_pages, chk, cite_ctx["names"]) + cite_check(x)
+            kind, sources_text = "no claims", ""
+        else:  # a split section's index, composed pages: their citations only
             check, sources_text = cite_check, ""
         new = await fixpass.fix_rounds(
             schema=schema, slug=p["slug"], title=p["title"], text=body, check=check, sources_text=sources_text,

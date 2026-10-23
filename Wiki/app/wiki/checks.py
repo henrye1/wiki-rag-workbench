@@ -34,6 +34,7 @@ class Checks:
     subtopic_minimum: int | None = None  # words: a smaller group is joined to its neighbour under the same parent
     slug_words: int | None = None  # words of an unnumbered heading used in a subtopic slug
     unlabelled_forms: dict[str, str] = field(default_factory=dict)  # kind of text without a paragraph label -> its citation form
+    no_claim_pages: list[str] = field(default_factory=list)  # slugs of pages that link every section and hold no claims
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
 
 
@@ -44,7 +45,7 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "routed_kinds": "kinds routed to the examples section", "split": "split sections",
     "defined_term_form": "defined-term citation form",
     "unlabelled_forms": "citation forms for text without a paragraph label", "page_size_limit": "page size limit",
-    "subtopic_minimum": "subtopic page minimum", "slug_words": "subtopic slug",
+    "subtopic_minimum": "subtopic page minimum", "slug_words": "subtopic slug", "no_claim_pages": "pages that hold no claims",
 }
 
 
@@ -85,6 +86,8 @@ def load(schema_md: str) -> Checks | None:
             c.split = {int(k): v for k, v in _mapping(value).items() if k.strip().isdigit()}
         elif attr == "routed_kinds":
             c.routed_kinds = [x.strip().strip('"').casefold() for x in value.split(",") if x.strip()]
+        elif attr == "no_claim_pages":  # the slugs, up to the first full stop
+            c.no_claim_pages = [x.strip() for x in value.split(".")[0].split(",") if x.strip()]
         elif attr in ("max_takeaways", "examples_section", "page_size_limit", "subtopic_minimum", "slug_words"):
             n = re.search(r"\d+", value)
             setattr(c, attr, int(n.group(0)) if n else None)
@@ -138,6 +141,51 @@ def cites(text: str) -> set[str]:
     """The source citations on a page, as slug|clause (sub-paragraph letters aside: 5.5.17(a) is a citation of 5.5.17)."""
     return {f"{m.group(1)}|{re.sub(r'(?:\s*\([^)]*\))+$', '', m.group(2).strip())}" for m in store.LINK_RE.finditer(text)
             if m.group(1).startswith("source-") and m.group(2)}
+
+
+SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
+BULLET = re.compile(r"^(\s*(?:[-*]|\d+\.)\s+)")
+
+
+def _is_claim(sentence: str, names: set[str] = frozenset()) -> bool:
+    """A sentence citing a source paragraph: a source link with a clause, not with the source's own name."""
+    return any(m.group(1).startswith("source-") and m.group(2) and m.group(2).strip() not in names
+               for m in store.LINK_RE.finditer(sentence))
+
+
+def take_claims(text: str, movable=lambda sentence: True, names: set[str] = frozenset()) -> tuple[str, list[str]]:
+    """A page's text without the sentences that cite a source paragraph (those movable allows), and those sentences.
+    A line left with no words is dropped, and so is a heading left with nothing under it. names: the wiki's source and
+    section names, which a link may show in place of a clause."""
+    lines, taken = [], []
+    is_claim = lambda x: _is_claim(x, names)
+    take = lambda x: is_claim(x) and movable(x.strip())
+    for line in text.split("\n"):
+        if re.match(r"^#{1,6} ", line) or not is_claim(line):
+            lines.append(line)
+            continue
+        lead = (BULLET.match(line) or [""])[0]
+        parts = SENTENCE_END.split(line[len(lead):])
+        taken += [x.strip() for x in parts if take(x)]
+        rest = " ".join(x for x in parts if not take(x)).strip()
+        if re.search(r"[A-Za-z]", store.LINK_RE.sub("x", rest)):
+            lines.append(lead + rest)
+    blocks = [b for b in re.split(r"\n\s*\n", "\n".join(lines)) if b.strip()]
+    blocks = [b for n, b in enumerate(blocks) if not (re.fullmatch(r"#{1,6} [^\n]*", b.strip()) and (
+        n + 1 == len(blocks) or re.match(r"#{1,%d} " % len(b.strip().split(" ")[0]), blocks[n + 1].strip())))]
+    return "\n\n".join(blocks), taken
+
+
+def no_claim_failures(content: str, slug: str, section_slugs: set[str], c: Checks | None,
+                      names: set[str] = frozenset()) -> list[str]:
+    """Where a page the schema says holds no claims breaks that: a section page it does not link, a sentence on it that
+    cites a source paragraph."""
+    if not c or slug not in c.no_claim_pages:
+        return []
+    linked = {m.group(1) for m in store.LINK_RE.finditer(content)}
+    out = [f"The page does not list the section page [[{s}]]; it lists every section page." for s in sorted(section_slugs - linked)]
+    return out + [f'The sentence "{" ".join(x.split()[:15])} ..." cites a source paragraph, but this page holds no claims: '
+                  "the claim belongs on the page that holds that paragraph." for x in take_claims(content, names=names)[1]]
 
 
 def _label(para: str) -> str:
