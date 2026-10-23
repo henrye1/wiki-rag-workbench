@@ -31,6 +31,8 @@ class Checks:
     split: dict[int, str] = field(default_factory=dict)  # section number -> what its subtopic pages are grouped by
     defined_term_form: str = ""  # how a defined term is cited, e.g. a prefix followed by <term>
     page_size_limit: int | None = None  # words: a section page over this is split by the source's headings
+    subtopic_minimum: int | None = None  # words: a smaller group is joined to its neighbour under the same parent
+    slug_words: int | None = None  # words of an unnumbered heading used in a subtopic slug
     unlabelled_forms: dict[str, str] = field(default_factory=dict)  # kind of text without a paragraph label -> its citation form
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
 
@@ -42,6 +44,7 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "routed_kinds": "kinds routed to the examples section", "split": "split sections",
     "defined_term_form": "defined-term citation form",
     "unlabelled_forms": "citation forms for text without a paragraph label", "page_size_limit": "page size limit",
+    "subtopic_minimum": "subtopic page minimum", "slug_words": "subtopic slug",
 }
 
 
@@ -82,7 +85,7 @@ def load(schema_md: str) -> Checks | None:
             c.split = {int(k): v for k, v in _mapping(value).items() if k.strip().isdigit()}
         elif attr == "routed_kinds":
             c.routed_kinds = [x.strip().strip('"').casefold() for x in value.split(",") if x.strip()]
-        elif attr in ("max_takeaways", "examples_section", "page_size_limit"):
+        elif attr in ("max_takeaways", "examples_section", "page_size_limit", "subtopic_minimum", "slug_words"):
             n = re.search(r"\d+", value)
             setattr(c, attr, int(n.group(0)) if n else None)
         else:

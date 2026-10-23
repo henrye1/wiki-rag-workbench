@@ -303,7 +303,7 @@ def _anchored_paths(paras: list[str], heading_paths: list) -> list[list[str]]:
 
 
 def _size_split(idx: list[int], paths: list[list[str]], words: list[int], limit: int, depth: int = 0,
-                extra_words: int = 0) -> list[tuple[list[str], list[int]]]:
+                extra_words: int = 0, once: bool = False) -> list[tuple[list[str], list[int]]]:
     """Paragraphs over the size limit, split by the source's headings: at the highest heading level (from depth down)
     where they fall under more than one heading, each group split again one level down while still over the limit.
     Returns (heading names, paragraphs) per group; a paragraph with no heading at that level stays with the one before."""
@@ -311,6 +311,8 @@ def _size_split(idx: list[int], paths: list[list[str]], words: list[int], limit:
         return [([], idx)]
     for d in range(depth, max((len(paths[i]) for i in idx), default=0)):
         heads = [paths[i][d] if d < len(paths[i]) else None for i in idx]
+        if once:  # a paragraph with no heading at this level keeps its own heading (the level above) as its group
+            heads = [h or (paths[i][d - 1] if 0 < d <= len(paths[i]) else None) for i, h in zip(idx, heads)]
         if len({h for h in heads if h}) > 1:
             groups: dict[str, list[int]] = {}
             last = next((h for h in heads if h), None)
@@ -319,9 +321,131 @@ def _size_split(idx: list[int], paths: list[list[str]], words: list[int], limit:
                 groups.setdefault(last, []).append(i)
             out = []
             for name, part in groups.items():
-                out += [([name] + sub, p) for sub, p in _size_split(part, paths, words, limit, d + 1)]
+                if once:  # one level only: with its parent heading, so small groups join only within the same parent
+                    i0 = part[0]
+                    at = paths[i0].index(name) if name in paths[i0] else d
+                    out.append(([paths[i0][at - 1] if at > 0 else "", name], part))
+                else:
+                    out += [([name] + sub, p) for sub, p in _size_split(part, paths, words, limit, d + 1)]
             return out
     return [([], idx)]  # no heading to split by: it stays one page
+
+
+def _join_small(parts: list, words: list[int], minimum: int, limit: int | None = None) -> tuple[list, list]:
+    """Groups under the minimum joined to the group before them under the same parent heading (or the one after, if
+    first), until none is under it or none can be joined. A join that would go over the limit goes to the other side
+    instead; if both would, the small group stays as it is. Returns (groups, [(joined, into)])."""
+    parts = [(list(n), list(i), [n[-1]] if n else []) for n, i in parts]  # (path, paragraphs, headings it holds)
+    joined, alone = [], set()  # alone: small groups that cannot join either side without going over
+    size = lambda idx: sum(words[i] for i in idx)
+    while True:
+        for k, (names, idx, heads) in enumerate(parts):
+            if size(idx) >= minimum or tuple(heads) in alone:
+                continue
+            same = [j for j in range(len(parts)) if j != k and parts[j][0][:-1] == names[:-1]]
+            before = max((j for j in same if j < k), default=None)
+            after = min((j for j in same if j > k), default=None)
+            fits = lambda j: j is not None and (not limit or size(parts[j][1]) + size(idx) <= limit)
+            j = next((x for x in ((before, after) if before is not None else (after, before)) if fits(x)), None)
+            if j is None:
+                if before is not None or after is not None:
+                    alone.add(tuple(heads))
+                continue
+            if j is not None:
+                tn, ti, th = parts[j]
+                order = sorted([(min(ti), th), (min(idx), heads)])  # headings in document order
+                parts[j] = (tn, sorted(ti + idx), order[0][1] + order[1][1])
+                joined.append((names[-1] if names else "", tn[-1] if tn else ""))
+                del parts[k]
+                break
+        else:  # a joined group is named after every heading it holds, in document order
+            return [(n[:-1] + [HEADS_SEP.join(h)] if n else n, i) for n, i, h in parts], joined
+
+
+HEADS_SEP = " · "  # between the headings of a group joined from several
+
+
+def _sub_slug(sec_slug: str, names: list[str], slug_words: int | None) -> str:
+    """A subtopic slug: the heading's own number where it has one (6.3 -> <section>-6-3), else its first words."""
+    head = names[-1].split(HEADS_SEP)[0] if names else ""  # a joined group: its first heading
+    if m := NUMBERED.match(head):
+        return f"{sec_slug}-{m.group(1).replace('.', '-')}"
+    return f"{sec_slug}-{slugify(' '.join(head.split()[:slug_words]) if slug_words else head)}"
+
+
+def _blocks(md: str) -> list[str]:
+    """A page's text as blocks (a heading stays with the block under it)."""
+    out, held = [], []
+    for b in (x.strip() for x in re.split(r"\n\s*\n", md) if x.strip()):
+        if re.fullmatch(r"#{1,6} [^\n]*", b):
+            held.append(b)
+            continue
+        out.append("\n\n".join(held + [b]))
+        held = []
+    return out + (["\n\n".join(held)] if held else [])
+
+
+async def _move_old_write_ups(wiki_id, index_of: dict, sub_of: dict, existing: dict, written: dict, ops: list,
+                              sec_of: dict, chk) -> dict:
+    """A section page split for the first time may hold write-ups from earlier uploads. Each block moves, word for
+    word, to the sub-page whose heading is on the heading path of the source paragraph the block cites; a block with
+    no matching heading goes to a sub-page named after its source. Returns, per section, what moved where."""
+    out = {}
+    for sec_slug, subs in index_of.items():
+        cur = existing.get(sec_slug)
+        if not cur or any(x.startswith(sec_slug + "-") and existing[x]["type"] == "subtopic" for x in existing):
+            continue  # nothing held yet, or already an index
+        body = "\n".join(l for l in _split_also(cur["content_md"])[0].split("\n") if not l.startswith("Not yet covered"))
+        blocks = [b for b in _blocks(body) if store.LINK_RE.search(b) and re.search(r"\[\[source-", b)]
+        if not blocks:
+            continue
+        cited = {m.group(1) for b in blocks for m in store.LINK_RE.finditer(b) if m.group(1).startswith("source-")}
+        async with get_pool().connection() as conn:
+            rows = await (await conn.execute("select slug, title, text, meta from wiki.sources where wiki_id = %s and slug = any(%s)",
+                                             (wiki_id, list(cited)))).fetchall()
+        src = {}
+        for r in rows:
+            sp = [b.strip() for b in re.split(r"\n\s*\n", r["text"] or "") if b.strip()]
+            hp = (r["meta"] or {}).get("heading_paths") or []
+            paths = _anchored_paths(sp, hp if len(hp) == len(sp) else [[] for _ in sp])
+            src[r["slug"]] = {"title": r["title"], "path": {_ref(p): pa for p, pa in zip(sp, paths) if _ref(p)}}
+        to: dict[str, list[str]] = {}
+        for b in blocks:
+            m = next((m for m in store.LINK_RE.finditer(b) if m.group(1) in src and m.group(2)), None)
+            path = src[m.group(1)]["path"].get(re.sub(r"(?:\s*\([^)]*\))+$", "", m.group(2).strip()), []) if m else []
+            heads_of = lambda x: [h for n in sub_of[x]["names"] for h in n.split(HEADS_SEP)]
+            match = [sl for sl in subs if sub_of.get(sl) and any(h in path for h in heads_of(sl))]
+            if match:  # the sub-page whose heading is deepest on the block's path
+                sl = max(match, key=lambda x: max(path.index(h) for h in heads_of(x) if h in path))
+            else:
+                title = src[m.group(1)]["title"] if m else cur["title"]
+                sl = _sub_slug(sec_slug, [title], chk.slug_words if chk else None)
+                if sl not in sub_of:
+                    sub_of[sl] = {"sec": sec_of[sec_slug], "names": [title], "paras": []}
+            to.setdefault(sl, []).append(b)
+        new_pages = []
+        for sl, bs in to.items():
+            text = "\n\n".join(bs)
+            if sl in written:  # added word for word, before the page's "Not yet covered" line
+                o = written[sl]
+                head, sep, tail = o.content_md.partition("\n\nNot yet covered")
+                o.content_md = f"{head}\n\n{text}{sep}{tail}"
+            else:
+                sec = sec_of[sec_slug]
+                o = Op(op="update" if sl in existing else "create", slug=sl, type="subtopic",
+                       title=f"{sec['name']}: {sub_of[sl]['names'][-1]}", summary=f"{sec['name']}: {sub_of[sl]['names'][-1]}",
+                       content_md=text, tags=[], base_version=existing[sl]["version"] if sl in existing else None,
+                       change_note="Moved from the section page when it was split")
+                ops.append(o)
+                written[sl] = o
+                new_pages.append(sl)
+            if sl not in subs:
+                subs.append(sl)
+        out[sec_slug] = {"blocks": len(blocks), "to": {sl: len(bs) for sl, bs in to.items()}, "new_pages": new_pages,
+                         "cites": checks.cites("\n\n".join(blocks))}
+        log.info("ingest: section page %s split for the first time: %s earlier blocks moved to %s", sec_slug, len(blocks),
+                 ", ".join(f"{sl} ({n})" for sl, n in out[sec_slug]["to"].items()))
+    return out
 
 
 def _same_label_together(paras: list[str], placed: dict[int, int]) -> None:
@@ -577,11 +701,14 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     # split by size (the schema's Checks list): a section (or one of its groups) whose paragraphs would make a page over
     # the limit is split by the source's own headings; what the page already holds counts too
     splits: list[dict] = []
+    joins: list[dict] = []  # small groups joined to a neighbour (the schema's subtopic minimum)
+    split_basis: dict = {}  # the heading paths and word counts the split used
     limit = chk.page_size_limit if chk else None
     if limit and owner:
         hp = ex.meta.get("heading_paths") or []
         paths = _anchored_paths(paras, hp if len(hp) == len(paras) else [[] for _ in paras])
         words = [len(p.split()) for p in paras]
+        split_basis.update(paths=paths, words=words)
         additive = {x["num"] for x in sections if re.search(r"\bADDITIVE\b", x["brief"])}  # its also-recorded lines stay together
         for num, sl in slug_of.items():
             mine = [i for i, n in sorted(owner.items()) if n == num]
@@ -594,6 +721,9 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                 groups.setdefault(tuple(group_name.get(i, [])), []).append(i)
             for key, idx in groups.items():
                 parts = _size_split(idx, paths, words, limit, extra_words=0 if key else held)
+                if len(parts) > 1 and chk.subtopic_minimum:
+                    parts, joined = _join_small(parts, words, chk.subtopic_minimum, limit)
+                    joins.extend({"section": num, "joined": a, "into": b} for a, b in joined)
                 if len(parts) > 1:
                     for names, part in parts:
                         for i in part:
@@ -603,9 +733,9 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     sub_of: dict[str, dict] = {}  # subtopic page -> its section, its group names and its paragraphs
     for i, names in sorted(group_name.items()):
         if owner.get(i) in slug_of and names:
-            sl = f"{slug_of[owner[i]]}-{slugify(names[-1])}"
-            if sl in sub_of and sub_of[sl]["names"] != names:  # two groups with the same last heading
-                sl = f"{slug_of[owner[i]]}-{slugify('-'.join(names))}"
+            sl = _sub_slug(slug_of[owner[i]], names, chk.slug_words if chk else None)
+            if sl in sub_of and sub_of[sl]["names"] != names:  # two groups with the same short name: add the parent's
+                sl = _sub_slug(_sub_slug(slug_of[owner[i]], names[:-1], chk.slug_words if chk else None), names, chk.slug_words if chk else None)
             sub_of.setdefault(sl, {"sec": by_num[owner[i]], "names": names, "paras": []})["paras"].append(i)
     index_of: dict[str, list[str]] = {}  # split section page -> its subtopic pages written now
     for sl, sub in sub_of.items():
@@ -619,7 +749,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                        "by": ("size" if not (chk and sec["num"] in chk.split)
                               else "examples, then size" if any(len(sub_of[x]["names"]) > 1 for x in subs) else "examples"),
                        "pages": [{"slug": x, "paragraphs": len(sub_of[x]["paras"]),
-                                  "source_words": sum(len(paras[i].split()) for i in sub_of[x]["paras"])} for x in subs]})
+                                  "source_words": sum(len(paras[i].split()) for i in sub_of[x]["paras"])} for x in subs],
+                       "joined": [f"{j['joined']} -> {j['into']}" for j in joins if j["section"] == sec["num"]]})
     para_sub = {i: sl for sl, sub in sub_of.items() for i in sub["paras"]}
 
     # 4. Write pages (source page + planned pages)
@@ -848,12 +979,13 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     source_focus = f"Source page. One-line summary: {plan['source_summary']}" + (
         "\nRecorded for this source: " + "; ".join(f"{k}: {v}" for k, v in fields.items()) if fields else "")
 
-    async def write_index(slug: str, title: str, outline: str) -> Op | None:
+    async def write_index(slug: str, title: str, outline: str, fresh: bool = False) -> Op | None:
         """A split section's own page: the index of its subtopic pages, from what those pages say and cite."""
         cur = existing.get(slug)
         out = await llm.generate_json(system, prompts.with_schema(schema, prompts.write_page_prompt(
             slug=slug, title=title, ptype="topic", focus=prompts.index_prompt_focus(title),
-            existing_md=cur["content_md"] if cur else None, material=outline, linkable=linkable, source_slug=source["slug"],
+            existing_md=cur["content_md"] if cur and not fresh else None, material=outline, linkable=linkable,
+            source_slug=source["slug"],
         )), prompts.PAGE_SCHEMA)
         content = _fix_breaks(out["content_md"]).strip()
         if not content:
@@ -893,8 +1025,48 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         [write_safe(source["slug"], ex.title, "source", source_focus, None)]
         + [write_safe(i["slug"], i["title"], i["type"], i["focus"], source["slug"]) for i in items if i["slug"] not in index_of]
     ) if o]
+    resplit = []  # sub-pages over the limit once written, split again one level down
+    if limit and split_basis and index_of:
+        paths, words = split_basis["paths"], split_basis["words"]
+        for o in [o for o in ops if o.slug in sub_of and len(o.content_md.split()) > limit and sub_of[o.slug]["paras"]]:
+            sub = sub_of[o.slug]
+            top = sub["names"][-1].split(HEADS_SEP)[0]
+            depth = 1 + max((paths[i].index(top) for i in sub["paras"] if top in paths[i]), default=-1)
+            parts = _size_split(sub["paras"], paths, words, 0, depth, once=True)
+            if chk.subtopic_minimum and len(parts) > 1:
+                parts, joined = _join_small(parts, words, chk.subtopic_minimum, limit)
+                joins.extend({"section": sub["sec"]["num"], "joined": a, "into": b} for a, b in joined)
+            if len(parts) < 2:
+                continue  # no heading below to split by: the page stays as written
+            sec_slug = slug_of[sub["sec"]["num"]]
+            new = []
+            for names, part in parts:
+                full = sub["names"] + names[-1:]  # the parent heading was only for joining
+                sl = _sub_slug(sec_slug, full, chk.slug_words)
+                if sl in sub_of or sl == o.slug:
+                    sl = _sub_slug(o.slug, names, chk.slug_words)
+                sub_of[sl] = {"sec": sub["sec"], "names": full, "paras": part}
+                for i in part:
+                    para_sub[i] = sl
+                new.append(sl)
+            log.info("ingest: sub-page %s is %s words once written, over %s: split again into %s", o.slug,
+                     len(o.content_md.split()), limit, ", ".join(new))
+            resplit.append({"page": o.slug, "words": len(o.content_md.split()), "into": new})
+            ops.remove(o)
+            del sub_of[o.slug]
+            subs = index_of[sec_slug]
+            subs[subs.index(o.slug):subs.index(o.slug) + 1] = new
+            ops += [x for x in await llm.gather_limited([write_safe(
+                sl, f"{sub['sec']['name']}: {' – '.join(sub_of[sl]['names'])}", "subtopic",
+                f"Section {sub['sec']['num']:02d}: {sub['sec']['name']}, subtopic {' – '.join(sub_of[sl]['names'])}",
+                source["slug"]) for sl in new]) if x]
+        for x in splits:
+            x["pages"] = [{"slug": sl, "paragraphs": len(sub_of[sl]["paras"]),
+                           "source_words": sum(len(paras[i].split()) for i in sub_of[sl]["paras"])} for sl in index_of.get(x["page"], [])]
+            x["split_again"] = [r for r in resplit if any(sl in index_of.get(x["page"], []) for sl in r["into"])]
     if index_of:  # split sections: their own pages become the index of the subtopic pages just written
         written = {o.slug: o for o in ops}
+        moved = await _move_old_write_ups(wiki_id, index_of, sub_of, existing, written, ops, sec_of, chk)
         labels_here = {_ref(p) for p in paras if re.search(r"[A-Za-z.]", _ref(p))}  # not bare numbers: too common in text
         for sec_slug, subs in index_of.items():
             on_page = {_ref(paras[i]): sl for sl in subs for i in sub_of[sl]["paras"] if _ref(paras[i]) in labels_here}
@@ -912,10 +1084,17 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             rec["coverage"] = {"paragraphs": len(mine), "on_one_page": len(set(mine)) == len(mine),
                                "not_cited_on_their_page": list(dict.fromkeys(x for x in uncited if x)),
                                "pages_not_written": [sl for sl in subs if sl not in written]}
+            if sec_slug in moved:  # what the page held before the split: every citation it had is on one of its pages
+                m = moved[sec_slug]
+                on_pages = set().union(*(checks.cites(written[sl].content_md) for sl in index_of[sec_slug] if sl in written))
+                rec["moved"] = {"blocks": m["blocks"], "to": m["to"], "earlier_citations": len(m["cites"]),
+                                "earlier_citations_missing": sorted(m["cites"] - on_pages)}
+                rec["pages"] += [{"slug": sl, "paragraphs": 0, "source_words": 0, "moved_only": True}
+                                 for sl in m["new_pages"]]
 
         async def index_safe(i):
             try:
-                return await write_index(i["slug"], i["title"], outline(i["slug"], written))
+                return await write_index(i["slug"], i["title"], outline(i["slug"], written), fresh=i["slug"] in moved)
             except Exception as e:
                 log.warning("ingest: index page %s failed: %s", i["slug"], e)
                 failed_pages.append({"slug": i["slug"], "error": f"{type(e).__name__}: {e}"})
