@@ -340,9 +340,11 @@ def _size_split(idx: list[int], paths: list[list[str]], words: list[int], limit:
             out = []
             for name, part in groups.items():
                 if once:  # one level only: with its parent heading, so small groups join only within the same parent
-                    i0 = part[0]
-                    at = paths[i0].index(name) if name in paths[i0] else d
-                    out.append(([paths[i0][at - 1] if at > 0 else "", name], part))
+                    # the heading above this group's own heading, taken from a paragraph that has it
+                    have = [paths[i] for i in part if name in paths[i]]
+                    parent = (have[0][have[0].index(name) - 1] if have[0].index(name) > 0 else "") if have else \
+                        next((paths[i][d - 1] for i in part if 0 < d <= len(paths[i])), "")
+                    out.append(([parent, name], part))
                 else:
                     out += [([name] + sub, p) for sub, p in _size_split(part, paths, words, limit, d + 1)]
             return out
