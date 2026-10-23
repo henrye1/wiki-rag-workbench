@@ -74,7 +74,8 @@ async def add_file(file: UploadFile, mode: Mode = MODE_Q, wiki: dict = Depends(w
     name = file.filename or "upload.txt"
     try:
         chk = checks.load(wiki.get("schema_md") or "")
-        ex = await asyncio.to_thread(extract.from_upload, name, data, s.section_words, checks.example_label_re(chk) if chk else None)
+        ex = await asyncio.to_thread(extract.from_upload, name, data, s.section_words, checks.example_label_re(chk) if chk else None,
+                                       checks.stub_re(chk))
     except ValueError as e:
         raise HTTPException(415, str(e))
     if document := {k: v.strip() for k, v in (("issuer", issuer), ("edition", edition), ("part", part)) if v.strip()}:

@@ -186,30 +186,13 @@ def _covers(label: str, ref: str) -> bool:
     return False
 
 
-_STUB = re.compile(r"\[?(?:This paragraph refers|These paragraphs refer)[^\]]*?not included in this edition\.?\]?", re.I)
-
-
-def _placeholder(para: str) -> bool:
-    """A paragraph that only says the edition leaves it out ("... not included in this edition."): nothing to write up."""
-    body = re.sub(r"^\[[^\]]+\]\s*(?:\([^)]*\)\s*)?", "", para)
-    if "included in this edition" not in body:
-        return False
-    rest = _STUB.sub(" ", body)
-    rest = re.sub(r"(?:not\s+)?included in this edition\.?\]?", " ", rest)  # the tail of a stub split across chunks
-    rest = re.sub(r"\[?(?:This paragraph refers|These paragraphs refer) to amendments that are not yet effective[^\]]*$",
-                  " ", rest, flags=re.I)  # the start of a stub that continues in the next chunk
-    rest = re.sub(rf"{REF_PAT}\s*[\u2013-]?", " ", rest)  # range labels such as 7.2.51–
-    return not re.search(r"[A-Za-z]{3,}", rest)
-
-
 def _uncited(content: str, paras: list[str]) -> list[str]:
-    """The labelled paragraphs in paras that no citation on the page names (each chunk of an uncited paragraph).
-    Placeholders ("not included in this edition") are never counted as uncited."""
+    """The labelled paragraphs in paras that no citation on the page names (each chunk of an uncited paragraph)."""
     labels = [m.group(2) for m in store.LINK_RE.finditer(content) if m.group(2)]
     out, cited = [], {}
     for p in paras:
         ref = _ref(p)
-        if not ref or re.fullmatch(r"p(age )?\d+", ref) or _placeholder(p):
+        if not ref or re.fullmatch(r"p(age )?\d+", ref):
             continue
         if ref not in cited:
             cited[ref] = any(_covers(label, ref) for label in labels)
@@ -570,6 +553,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
 
     # 2. Route: give each source paragraph to exactly one schema section (only that section's page writes it up)
     paras = [b.strip() for b in re.split(r"\n\s*\n", ex.text) if b.strip()]
+    # stubs (the schema's stub forms: a deleted or left-out paragraph) go to no page: not written up, not checked
+    stubs = {i for i, p in enumerate(paras) if checks.is_stub(p, chk)}
     para_vecs = np.asarray(await llm.embed(paras)) if paras else None
     sections = _sections(schema)
     owner: dict[int, int] = {}
@@ -588,7 +573,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             label_re = checks.example_label_re(chk)
             labelled = {_ref(p) or i for i, p in enumerate(paras)
                         if (checks.routed_to_examples(chk, kinds[i]) if kinds[i] else bool(label_re and label_re.search(p)))}
-            owner.update({i: ex_sec["num"] for i, p in enumerate(paras) if (_ref(p) or i) in labelled})
+            owner.update({i: ex_sec["num"] for i, p in enumerate(paras) if (_ref(p) or i) in labelled and i not in stubs})
         targets = [x for x in sections if x is not ex_sec]
         briefs = "\n\n".join(x["brief"] for x in targets)
         nums = {x["num"] for x in targets}
@@ -607,7 +592,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                 return {}
             return {a["id"]: a["section"] for a in out["assignments"] if a["id"] in batch and a["section"] in nums}
 
-        todo = [i for i in range(len(paras)) if i not in owner]
+        todo = [i for i in range(len(paras)) if i not in owner and i not in stubs]
         for size in (s.route_batch, 40):  # second round: only what the first one missed, in smaller batches
             for d in await llm.gather_limited(route(todo[i : i + size]) for i in range(0, len(todo), size)):
                 owner.update(d)
@@ -636,7 +621,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     # judgement or estimate
     also: dict[int, list[int]] = {}
     for sec in [x for x in sections if re.search(r"\bADDITIVE\b", x["brief"])] if owner else []:
-        cand = [i for i in range(len(paras)) if owner.get(i) != sec["num"] and not _placeholder(paras[i])]
+        cand = [i for i in range(len(paras)) if owner.get(i) != sec["num"] and i not in stubs]
 
         async def pick(batch: list[int], sec=sec) -> list[int]:
             lines = "\n".join(f"{i} | {' '.join(paras[i].split()[:200])}" for i in batch)
@@ -1220,7 +1205,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     routing = {f"{x['num']:02d} {x['name']}": [label(i) for i in own.get(x["num"], [])] for x in sections} if owner else {}
     subtopics = {sl: [label(i) for i in sub["paras"]] for sl, sub in sub_of.items()}
     also_recorded = {f"{x['num']:02d} {x['name']}": [label(i) for i in also[x["num"]]] for x in sections if x["num"] in also}
-    return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "empty_retries": empty_retries, "check_fixes": check_fixes, "routing": routing, "subtopics": subtopics, "splits": splits, "unassigned": unassigned,
+    return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "empty_retries": empty_retries, "check_fixes": check_fixes, "routing": routing, "subtopics": subtopics, "splits": splits, "unassigned": unassigned, "stubs": [_ref(paras[i]) for i in sorted(stubs)],
             "also_recorded": also_recorded, "missed_paragraphs": missed, "citations": citations, "fill_passes": fill_passes, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
 
 

@@ -35,6 +35,7 @@ class Checks:
     slug_words: int | None = None  # words of an unnumbered heading used in a subtopic slug
     unlabelled_forms: dict[str, str] = field(default_factory=dict)  # kind of text without a paragraph label -> its citation form
     no_claim_pages: list[str] = field(default_factory=list)  # slugs of pages that link every section and hold no claims
+    stub_forms: list[str] = field(default_factory=list)  # what a deleted or left-out paragraph says instead of its text
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
 
 
@@ -46,6 +47,7 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "defined_term_form": "defined-term citation form",
     "unlabelled_forms": "citation forms for text without a paragraph label", "page_size_limit": "page size limit",
     "subtopic_minimum": "subtopic page minimum", "slug_words": "subtopic slug", "no_claim_pages": "pages that hold no claims",
+    "stub_forms": "stub forms",
 }
 
 
@@ -86,6 +88,10 @@ def load(schema_md: str) -> Checks | None:
             c.split = {int(k): v for k, v in _mapping(value).items() if k.strip().isdigit()}
         elif attr == "routed_kinds":
             c.routed_kinds = [x.strip().strip('"').casefold() for x in value.split(",") if x.strip()]
+        elif attr == "stub_forms":  # "a · b · c. What is done with them.": the forms, up to the sentence after them
+            forms = [x.strip() for x in value.split("\u00b7")]
+            forms[-1] = re.split(r"\.\s+(?=[A-Z])", forms[-1], maxsplit=1)[0]
+            c.stub_forms = [x for x in forms if x]
         elif attr == "no_claim_pages":  # the slugs, up to the first full stop
             c.no_claim_pages = [x.strip() for x in value.split(".")[0].split(",") if x.strip()]
         elif attr in ("max_takeaways", "examples_section", "page_size_limit", "subtopic_minimum", "slug_words"):
@@ -122,6 +128,31 @@ def _part_re(c: Checks) -> re.Pattern | None:
     pats = {re.sub(r"\\?[A-Za-z]+|\d+", lambda m: "[a-z]{1,5}" if m.group(0).lstrip("\\").islower() else
                    "[A-Z]{1,5}" if m.group(0).lstrip("\\").isalpha() else r"\d{1,3}", re.escape(f)) for f in c.part_forms}
     return re.compile(r"(?:^|(?<=[\s:;\u2013\u2014]))(" + "|".join(sorted(pats)) + r")(?=\s)")
+
+
+def stub_re(c: Checks | None) -> re.Pattern | None:
+    """The schema's stub forms as one pattern: "<...>" and "..." stand for any words inside the note, and a form that
+    closes a bracket runs to that bracket (a form "[A ... B]" also matches "[A ... B and more.]")."""
+    if not c or not c.stub_forms:
+        return None
+    pats = []
+    for f in c.stub_forms:
+        closes = f.endswith("]")
+        pat = _template(f[:-1] if closes else f, r"[^\[\]]{0,400}?").replace(r"\ ", r"\s+")
+        pats.append(pat + (r"[^\[\]]{0,200}?\]" if closes else ""))
+    return re.compile("(?:" + "|".join(pats) + ")", re.I)
+
+
+LABEL_TOKEN = re.compile(r"\S*\d\S*")  # a paragraph number or a range of them (30A–30C)
+
+
+def is_stub(text: str, c: Checks | None) -> bool:
+    """A paragraph (or lettered part) that says only one of the schema's stub forms: nothing to write up or check."""
+    rx = stub_re(c)
+    body = re.sub(r"^\[[^\]]+\]\s*(?:\([^)]*\)\s*)?", "", text.strip())  # its label, and a kind such as (example)
+    if not rx or not rx.search(body):
+        return False
+    return not re.search(r"[A-Za-z]{3,}", LABEL_TOKEN.sub(" ", rx.sub(" ", body)))
 
 
 def example_label_re(c: Checks) -> re.Pattern | None:
@@ -193,6 +224,16 @@ def _label(para: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+def _stub_parts(body: str, part_re: re.Pattern, c: Checks) -> set[str]:
+    """The lettered parts of a paragraph whose text starts with one of the schema's stub forms."""
+    rx = stub_re(c)
+    if not rx:
+        return set()
+    marks = list(part_re.finditer(body))
+    return {m.group(1) for k, m in enumerate(marks)
+            if rx.match(body[m.end(): marks[k + 1].start() if k + 1 < len(marks) else len(body)].strip())}
+
+
 def section_failures(content: str, given: list[str], kinds: dict[str, str], source_slug: str, c: Checks, covers,
                      labels: set[str] = frozenset()) -> list[str]:
     """Where a written page breaks the schema's checks for its own paragraphs: a lettered part or a condition phrase of
@@ -208,7 +249,8 @@ def section_failures(content: str, given: list[str], kinds: dict[str, str], sour
         if not near:
             continue  # not written up at all: the coverage passes deal with that
         if part_re and len(parts := list(dict.fromkeys(part_re.findall(body)))) >= 2:
-            if lost := [x for x in parts if x not in near]:
+            stubs = _stub_parts(body, part_re, c)  # a part that is only a stub ("(c) [deleted]") is not written up
+            if lost := [x for x in parts if x not in near and x not in stubs]:
                 failures.append(f"Paragraph {ref} has lettered or numbered parts {', '.join(parts)}; "
                                 f"{', '.join(lost)} do not appear on the page.")
         flat_body, flat_near = _flat(body), _flat(near)

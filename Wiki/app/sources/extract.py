@@ -80,10 +80,10 @@ def _with_head(content: str, head: str) -> str:
     return f"{head}: {content}" if head and not content.startswith(head) else content
 
 
-def from_pdf(name: str, data: bytes, max_words: int, example_re=None) -> Extracted:
+def from_pdf(name: str, data: bytes, max_words: int, example_re=None, stub_re=None) -> Extracted:
     doc = pymupdf.open(stream=data, filetype="pdf")
     meta = {"pages": doc.page_count, **{k: v for k, v in (doc.metadata or {}).items() if v}}
-    chunks, layout = pdf_ifrs.parse_document(doc)
+    chunks, layout = pdf_ifrs.parse_document(doc, stub_re=stub_re)
     if layout == "standard":
         # Binding text only, labelled by paragraph number so notes can cite it
         chunks = [c for c in chunks if c.source_type in ("standard", "appendix_a", "appendix_b")]
@@ -169,11 +169,12 @@ def opening_text(name: str, data: bytes, pages: int = 3, chars: int = 6000) -> s
     return from_upload(name, data, 3000).text[:chars]
 
 
-def from_upload(name: str, data: bytes, max_words: int, example_re=None) -> Extracted:
-    """example_re: the wiki schema's example labels, so the issuer's example headings are kept with their paragraphs."""
+def from_upload(name: str, data: bytes, max_words: int, example_re=None, stub_re=None) -> Extracted:
+    """example_re: the wiki schema's example labels, so the issuer's example headings are kept with their paragraphs.
+    stub_re: its stub forms, so a stub inside the text is read as its own paragraph."""
     low = name.lower()
     if low.endswith(".pdf"):
-        return from_pdf(name, data, max_words, example_re)
+        return from_pdf(name, data, max_words, example_re, stub_re)
     if low.endswith(".docx"):
         return from_docx(name, data, max_words)
     if low.endswith(TEXT_EXT):
