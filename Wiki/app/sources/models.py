@@ -20,6 +20,7 @@ class Chunk:
     heading: str | None
     content: str
     part: int = 0
+    heading_path: tuple = ()  # ((level, heading), ...) from the top heading down to the one this text sits under
 
     def embed_text(self) -> str:
         head = " | ".join(x for x in (self.para_ref, self.heading) if x)

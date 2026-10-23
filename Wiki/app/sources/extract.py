@@ -93,6 +93,7 @@ def from_pdf(name: str, data: bytes, max_words: int, example_re=None) -> Extract
         meta["headings"] = [(c.heading or "").strip() for c in chunks]  # one per block, for routing to schema sections
         meta["outline"] = _outline(chunks)
         meta["para_kinds"] = {c.para_ref: c.source_type for c in chunks if c.para_ref}
+        meta["heading_paths"] = [[list(x) for x in c.heading_path] for c in chunks]  # one per block, top heading first
     elif layout == "accompanying":
         # Parts B and C: numbered paragraphs, each marked with its kind (never presented as a requirement)
         chunks = [c for c in chunks if c.source_type in KIND_LABELS]
@@ -102,6 +103,7 @@ def from_pdf(name: str, data: bytes, max_words: int, example_re=None) -> Extract
         meta["headings"] = [(c.heading or "").strip() for c in chunks]
         meta["kinds"] = [c.source_type for c in chunks]
         meta["para_kinds"] = {c.para_ref: c.source_type for c in chunks if c.para_ref}
+        meta["heading_paths"] = [[list(x) for x in c.heading_path] for c in chunks]
         meta["outline"] = _outline(chunks)
     else:
         blocks = [f"[page {i}]\n{p.get_text()}" for i, p in enumerate(doc, start=1) if p.get_text().strip()]

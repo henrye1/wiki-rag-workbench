@@ -39,6 +39,36 @@ class _Para:
     heading: str | None
     body: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    path: tuple = ()
+
+
+# A numbered heading ("6.4 Qualifying criteria ...", "Chapter 6 Hedge accounting"): its level is its number's depth
+NUMBERED_HEADING = re.compile(r"^(?:[A-Z][a-z]+\s+)?(\d+(?:\.\d+)*)\s+[A-Z]")
+
+
+def _style(font: str, size: float) -> tuple:
+    return (round(size, 1), "Bold" in font and "Obliq" not in font)
+
+
+def _heading_styles(doc: pymupdf.Document) -> dict[tuple, int]:
+    """Rank of each heading style in the document: larger first, then bold before italic (1 = top)."""
+    styles = set()
+    for page in doc:
+        for b in page.get_text("dict")["blocks"]:
+            for l in b.get("lines", []):
+                for s in l["spans"]:
+                    if s["text"].strip() and _is_heading(s["font"], s["size"]):
+                        styles.add(_style(s["font"], s["size"]))
+    return {st: i + 1 for i, st in enumerate(sorted(styles, key=lambda st: (-st[0], not st[1])))}
+
+
+def _level(text: str, style_rank: int, path: list) -> int:
+    """A numbered heading sits at its number's depth; an unnumbered one under the last numbered heading above it,
+    at its style's rank."""
+    if m := NUMBERED_HEADING.match(text):
+        return len(m.group(1).split("."))
+    base = max((lvl for lvl, _, numbered in path if numbered), default=0)
+    return base + style_rank
 
 
 def _is_editorial(font: str, size: float = 8.5, x: float = 999) -> bool:
@@ -137,6 +167,8 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
     heading: str | None = None
     heading_buf: list[str] = []
     heading_key: tuple = ()
+    ranks = _heading_styles(doc)
+    path: list = []  # [(level, heading, numbered)], top down: the headings the current text sits under
     paras: list[_Para] = []
     cur = _Para(None, section, 1, None)
     last_label: tuple = ()  # (page, y) of last margin label, to join multi-line defined terms
@@ -160,30 +192,36 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
                     heading_key = (pno, y, font, size)
                     if prev and prev[0] == pno and prev[2:] == (font, size) and 0 <= y - prev[1] < 14:
                         heading_buf.append(text)
+                        if path:  # the heading runs over two lines
+                            path[-1] = (path[-1][0], " ".join(heading_buf), path[-1][2])
                     else:
                         heading_buf = [text]
+                        lvl = _level(text, ranks.get(_style(font, size), len(ranks) + 1), path)
+                        path = [p for p in path if p[0] < lvl] + [(lvl, text, bool(NUMBERED_HEADING.match(text)))]
                     new_section = section if accompanying else _section_for_heading(text, section)
                     if new_section != section:
                         flush()
                         section = new_section
+                        path = [(1, " ".join(heading_buf), False)]  # a new part (an appendix) starts its own headings
                         cur = _Para(None, section, pno, None)
                     heading = " ".join(heading_buf)
                     if accompanying:
                         m = IG_HEADING_RE.match(text) if len(heading_buf) == 1 else None
                         if m:  # a guidance question starts here: label it IG A.1, IG B.2, ...
                             flush()
-                            cur = _Para(f"IG {m.group(1)}.{m.group(2)}", "implementation_guidance", pno, heading)
+                            cur = _Para(f"IG {m.group(1)}.{m.group(2)}", "implementation_guidance", pno, heading, path=tuple((l, h) for l, h, _ in path))
                         elif IG_TITLE_RE.match(text) and len(heading_buf) == 1:
                             # the guidance's title: the note under it (that the guidance accompanies, but is not part of, the
                             # Standard) is kept as its own block; a contents list under an earlier copy of the title is dropped
                             if cur.ref != IG_INTRO:
                                 flush()
-                            cur = _Para(IG_INTRO, "implementation_guidance", pno, heading)
+                            cur = _Para(IG_INTRO, "implementation_guidance", pno, heading, path=tuple((l, h) for l, h, _ in path))
                         elif cur.ref and cur.ref.startswith("IG ") and len(heading_buf) > 1 and cur.heading == " ".join(heading_buf[:-1]):
                             cur.heading = heading  # the heading runs over two lines
+                            cur.path = tuple((l, h) for l, h, _ in path)
                         elif PLACEHOLDER in " ".join(cur.body):
                             flush()  # a placeholder holds only its own note: text after the next heading is not part of it
-                            cur = _Para(None, section, pno, heading)
+                            cur = _Para(None, section, pno, heading, path=tuple((l, h) for l, h, _ in path))
                     continue
                 if accompanying:
                     margin_label = x < MARGIN_MAX_X and font.startswith("Swift") and ACCOMPANYING_RE.match(text.rstrip("".join(RANGE_DASH)))
@@ -193,7 +231,7 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
                         continue
                     if margin_label:
                         flush()
-                        cur = _Para(text, accompanying_kind(text), pno, heading)
+                        cur = _Para(text, accompanying_kind(text), pno, heading, path=tuple((l, h) for l, h, _ in path))
                         last_label = (pno, y)
                         continue
                     is_label = False
@@ -209,7 +247,7 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
                         cur.ref = f"{cur.ref} {text}"
                     else:
                         flush()
-                        cur = _Para(text, section, pno, heading)
+                        cur = _Para(text, section, pno, heading, path=tuple((l, h) for l, h, _ in path))
                     last_label = (pno, y)
                     continue
                 if _is_editorial(font, size, x):
@@ -227,9 +265,9 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
         body = clean(body)
         if body:
             for i, part in enumerate(split_long(body, max_words)):
-                chunks.append(Chunk(ref, p.section, p.page, p.heading, part, i))
+                chunks.append(Chunk(ref, p.section, p.page, p.heading, part, i, p.path))
         notes = _join(p.notes)
         if notes and len(notes.split()) > 5:
             for i, part in enumerate(split_long(notes, max_words)):
-                chunks.append(Chunk(ref, "note", p.page, p.heading, part, i))
+                chunks.append(Chunk(ref, "note", p.page, p.heading, part, i, p.path))
     return chunks
