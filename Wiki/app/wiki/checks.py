@@ -165,6 +165,12 @@ def is_stub(text: str, c: Checks | None) -> bool:
     return not re.search(r"[A-Za-z]{3,}", LABEL_TOKEN.sub(" ", rx.sub(" ", body)))
 
 
+def footnote_form(c: Checks | None) -> str | None:
+    """How the schema cites a footnote: the citation form for text without a paragraph label of the kind the schema
+    names the reader's footnotes (e.g. editorial note = "ED:<clause>")."""
+    return (c.unlabelled_forms.get(c.kinds.get("footnote", "")) or None) if c else None
+
+
 def example_label_re(c: Checks) -> re.Pattern | None:
     """The schema's example labels ("Example <n>") as one pattern; <n> stands for a number or a capital letter."""
     if not c.example_labels:

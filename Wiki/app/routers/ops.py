@@ -103,9 +103,7 @@ async def ask_stream(body: QueryIn, wiki: dict = Depends(wiki_dep)):
         async for t in tokens:
             parts.append(t)
             yield {"event": "token", "data": json.dumps(t)}
-        linked = store.extract_links("".join(parts))
-        yield {"event": "pages", "data": json.dumps([{"slug": p["slug"], "title": p["title"], "cited": p["slug"] in linked,
-                                                      "saved": bool(p.get("saved"))} for p in pages])}
+        yield {"event": "pages", "data": json.dumps(query.listed(wiki, "".join(parts), pages))}
         yield {"event": "done", "data": ""}
 
     return EventSourceResponse(events())

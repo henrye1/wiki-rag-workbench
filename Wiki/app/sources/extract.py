@@ -73,20 +73,21 @@ def _example_heads(chunks, example_re) -> list[str]:
     """Each chunk's example heading: its own heading when that carries one of the wiki schema's example labels
     ("Example 1—<title>"). A chunk under some other heading gets none: the reader cannot tell a sub-heading of the same
     example ("Fact pattern") from the start of something new, and a wrong name is worse than none."""
-    return [h if example_re and (h := (c.heading or "").strip()) and example_re.search(h) else "" for c in chunks]
+    return [h if example_re and c.source_type != "footnote" and (h := (c.heading or "").strip()) and example_re.search(h)
+            else "" for c in chunks]  # a footnote is not part of the example it is printed in
 
 
 def _with_head(content: str, head: str) -> str:
     return f"{head}: {content}" if head and not content.startswith(head) else content
 
 
-def from_pdf(name: str, data: bytes, max_words: int, example_re=None, stub_re=None) -> Extracted:
+def from_pdf(name: str, data: bytes, max_words: int, example_re=None, stub_re=None, footnote_form=None) -> Extracted:
     doc = pymupdf.open(stream=data, filetype="pdf")
     meta = {"pages": doc.page_count, **{k: v for k, v in (doc.metadata or {}).items() if v}}
-    chunks, layout = pdf_ifrs.parse_document(doc, stub_re=stub_re)
+    chunks, layout = pdf_ifrs.parse_document(doc, stub_re=stub_re, footnote_form=footnote_form)
     if layout == "standard":
         # Binding text only, labelled by paragraph number so notes can cite it
-        chunks = [c for c in chunks if c.source_type in ("standard", "appendix_a", "appendix_b")]
+        chunks = [c for c in chunks if c.source_type in ("standard", "appendix_a", "appendix_b", "footnote")]
         heads = _example_heads(chunks, example_re)
         blocks = [f"[{c.para_ref or 'p' + str(c.page)}] {_with_head(c.content, h)}" for c, h in zip(chunks, heads)]
         meta["parser"] = "ifrs"
@@ -96,9 +97,10 @@ def from_pdf(name: str, data: bytes, max_words: int, example_re=None, stub_re=No
         meta["heading_paths"] = [[list(x) for x in c.heading_path] for c in chunks]  # one per block, top heading first
     elif layout == "accompanying":
         # Parts B and C: numbered paragraphs, each marked with its kind (never presented as a requirement)
-        chunks = [c for c in chunks if c.source_type in KIND_LABELS]
+        chunks = [c for c in chunks if c.source_type in KIND_LABELS or c.source_type == "footnote"]
         heads = _example_heads(chunks, example_re)
-        blocks = [f"[{c.para_ref}] ({KIND_LABELS[c.source_type]}) {_with_head(c.content, h)}" for c, h in zip(chunks, heads)]
+        blocks = [f"[{c.para_ref}] " + (f"({KIND_LABELS[c.source_type]}) " if c.source_type in KIND_LABELS else "")
+                  + _with_head(c.content, h) for c, h in zip(chunks, heads)]
         meta["parser"] = "ifrs_accompanying"
         meta["headings"] = [(c.heading or "").strip() for c in chunks]
         meta["kinds"] = [c.source_type for c in chunks]
@@ -169,12 +171,13 @@ def opening_text(name: str, data: bytes, pages: int = 3, chars: int = 6000) -> s
     return from_upload(name, data, 3000).text[:chars]
 
 
-def from_upload(name: str, data: bytes, max_words: int, example_re=None, stub_re=None) -> Extracted:
+def from_upload(name: str, data: bytes, max_words: int, example_re=None, stub_re=None, footnote_form=None) -> Extracted:
     """example_re: the wiki schema's example labels, so the issuer's example headings are kept with their paragraphs.
-    stub_re: its stub forms, so a stub inside the text is read as its own paragraph."""
+    stub_re: its stub forms, so a stub inside the text is read as its own paragraph.
+    footnote_form: its citation form for a footnote, so footnotes are kept under their paragraph."""
     low = name.lower()
     if low.endswith(".pdf"):
-        return from_pdf(name, data, max_words, example_re, stub_re)
+        return from_pdf(name, data, max_words, example_re, stub_re, footnote_form)
     if low.endswith(".docx"):
         return from_docx(name, data, max_words)
     if low.endswith(TEXT_EXT):

@@ -40,6 +40,7 @@ class _Para:
     body: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     path: tuple = ()
+    footnotes: list[list[str]] = field(default_factory=list)  # footnotes printed under this paragraph, each its lines
 
 
 # A numbered heading ("6.4 Qualifying criteria ...", "Chapter 6 Hedge accounting"): its level is its number's depth
@@ -180,7 +181,7 @@ def accompanying_kind(ref: str) -> str:
     return ACCOMPANYING_KINDS.get(prefix, "basis_for_conclusions" if prefix.startswith("BC") else "intro")
 
 
-def parse_document(doc: pymupdf.Document, max_words: int = 500, stub_re=None) -> tuple[list[Chunk], str]:
+def parse_document(doc: pymupdf.Document, max_words: int = 500, stub_re=None, footnote_form=None) -> tuple[list[Chunk], str]:
     """Read an IFRS PDF. A Standard (Part A) is read exactly as parse() always has; a document published with it
     (illustrative examples, implementation guidance, Basis for Conclusions: Parts B and C) by its own paragraph numbers.
 
@@ -188,18 +189,22 @@ def parse_document(doc: pymupdf.Document, max_words: int = 500, stub_re=None) ->
     A short accompanying document can have too few numbered paragraphs for looks_like_ifrs(); it is still recognised
     by its numbering (IE, IG, BC..., DO in the IFRS margin font), but never read as a Standard.
     stub_re: the wiki schema's stub forms (what a deleted or left-out paragraph says), each read as its own paragraph.
+    footnote_form: the schema's citation form for a footnote, which keeps footnotes (see parse).
     """
-    chunks = parse(doc, max_words, stub_re=stub_re) if looks_like_ifrs(doc) else []
+    chunks = parse(doc, max_words, stub_re=stub_re, footnote_form=footnote_form) if looks_like_ifrs(doc) else []
     if any(c.source_type == "standard" for c in chunks):
         return chunks, "standard"
-    acc = parse(doc, max_words, accompanying=True, stub_re=stub_re)
+    acc = parse(doc, max_words, accompanying=True, stub_re=stub_re, footnote_form=footnote_form)
     if any(c.source_type in ACCOMPANYING_TYPES for c in acc):
         return acc, "accompanying"
     return chunks, ""
 
 
-def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = False, stub_re=None) -> list[Chunk]:
-    """accompanying=False reads a Standard (Part A); True reads a document published with one (Parts B and C)."""
+def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = False, stub_re=None,
+          footnote_form: str | None = None) -> list[Chunk]:
+    """accompanying=False reads a Standard (Part A); True reads a document published with one (Parts B and C).
+    footnote_form: how the wiki's schema cites a footnote ("ED:<clause>"): each footnote is kept, labelled in that form
+    with the paragraph it is printed under; without it footnotes are left out."""
     section = "intro"
     heading: str | None = None
     heading_buf: list[str] = []
@@ -211,11 +216,11 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
     cur = _Para(None, section, 1, None)
     last_label: tuple = ()  # (page, y) of last margin label, to join multi-line defined terms
     label_size = _label_size(doc)
-    footnote: tuple = ()  # (page, size) while reading a footnote: its lines are editorial notes, not paragraph text
+    footnote: tuple = ()  # (page, size) while reading a footnote: its lines are the footnote's, not paragraph text
 
     def flush():
         nonlocal cur
-        if cur.body or cur.notes:
+        if cur.body or cur.notes or cur.footnotes:
             paras.append(cur)
 
     for pno, page in enumerate(doc, start=1):
@@ -229,10 +234,10 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
                     continue  # superscript E-footnote markers
                 if _is_footnote_mark(text, font, size, x, label_size):
                     footnote = (pno, round(size, 1))
-                    cur.notes.append(f"[Footnote {text}]")
+                    cur.footnotes.append([])
                     continue
                 if footnote and footnote[0] == pno and round(size, 1) <= footnote[1]:
-                    cur.notes.append(text)  # the footnote runs on to the end of its page, in its own small type
+                    cur.footnotes[-1].append(text)  # the footnote runs on to the end of its page, in its own small type
                     continue
                 footnote = ()
                 if _is_heading(font, size):
@@ -325,6 +330,9 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
         for r, text in _split_stubs(ref, body, stub_re):
             for i, part in enumerate(split_long(text, max_words)):
                 chunks.append(Chunk(r, p.section, p.page, p.heading, part, i, p.path))
+        for lines in p.footnotes:  # under its paragraph, in the schema's form for text without a paragraph label
+            if footnote_form and ref and (text := clean(_join(lines))):
+                chunks.append(Chunk(footnote_form.replace("<clause>", ref), "footnote", p.page, p.heading, text, 0, p.path))
         notes = _join(p.notes)
         if notes and len(notes.split()) > 5:
             for i, part in enumerate(split_long(notes, max_words)):

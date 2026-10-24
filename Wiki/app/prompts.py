@@ -328,6 +328,31 @@ def select_prompt(question: str, index: str, max_pages: int) -> str:
     )
 
 
+BROWSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "read": {"type": "array", "items": {"type": "string"}},
+        "enough": {"type": "boolean"},
+        "why": {"type": "string"},
+    },
+    "required": ["read", "enough", "why"],
+}
+
+
+def browse_prompt(question: str, page_list: str, read_md: str, left: int) -> str:
+    return (
+        "You are finding the wiki pages needed to answer a question, the way a reader uses a wiki. The page list gives "
+        "every page's slug, type, title and one-line summary. The pages you have read so far are given in full.\n"
+        "Choose the next pages to read: from the page list, or by following a [[link]] on a page you have read (a "
+        "section page that is an index links to its subtopic pages; pages link to related pages). Choose only pages "
+        "that bear on the question, and do not choose a page you have read.\n"
+        "When the pages read are enough to answer the question, or nothing in the wiki would help, set enough to true "
+        f"and choose none. You can read at most {left} more pages. Return slugs exactly as given; say briefly why.\n\n"
+        f"<page_list>\nslug | type | title | summary\n{page_list}\n</page_list>\n\n"
+        f"<pages_read>\n{read_md or '(none yet)'}\n</pages_read>\n\nQuestion: {question}"
+    )
+
+
 QUERY_SYSTEM = """You answer questions using ONLY the wiki pages provided.
 - Cite pages inline with [[slug]] after the statements they support.
 - If pages disagree, say so and cite both.

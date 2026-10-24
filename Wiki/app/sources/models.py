@@ -8,7 +8,7 @@ STANDARD_TYPES = ("standard", "appendix_a", "appendix_b")
 # Not part of the Standard, but searched by default: each passage is labelled with its kind.
 ACCOMPANYING_TYPES = ("example", "implementation_guidance", "basis_for_conclusions", "dissenting_opinion")
 # Editorial / non-binding text (excluded unless explicitly requested)
-NON_BINDING_TYPES = ("note", "intro", "appendix_c", "back_matter")
+NON_BINDING_TYPES = ("note", "footnote", "intro", "appendix_c", "back_matter")
 ALL_TYPES = BINDING_TYPES + ACCOMPANYING_TYPES + NON_BINDING_TYPES
 
 
