@@ -20,6 +20,7 @@ class Checks:
     kinds: dict[str, str] = field(default_factory=dict)  # reader's paragraph kind -> the schema's name for it
     openers: dict[str, list[str]] = field(default_factory=dict)  # schema's kind name -> its openers
     linking: list[str] = field(default_factory=list)
+    lead_in_words: int | None = None  # any lead-in of up to this many words ending in a comma may come before an opener
     part_forms: list[str] = field(default_factory=list)
     conditions: list[str] = field(default_factory=list)
     authority: list[str] = field(default_factory=list)
@@ -49,6 +50,9 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "subtopic_minimum": "subtopic page minimum", "slug_words": "subtopic slug", "no_claim_pages": "pages that hold no claims",
     "stub_forms": "stub forms",
 }
+
+
+NUMBER_WORDS = {w: n for n, w in enumerate("one two three four five six seven eight nine ten".split(), start=1)}
 
 
 def _mapping(value: str) -> dict[str, str]:
@@ -88,6 +92,10 @@ def load(schema_md: str) -> Checks | None:
             c.split = {int(k): v for k, v in _mapping(value).items() if k.strip().isdigit()}
         elif attr == "routed_kinds":
             c.routed_kinds = [x.strip().strip('"').casefold() for x in value.split(",") if x.strip()]
+        elif attr == "linking":
+            c.linking = QUOTED.findall(value)
+            if m := re.search(r"\bup to (\w+) words?\b", value):
+                c.lead_in_words = int(m.group(1)) if m.group(1).isdigit() else NUMBER_WORDS.get(m.group(1).casefold())
         elif attr == "stub_forms":  # "a · b · c. What is done with them.": the forms, up to the sentence after them
             forms = [x.strip() for x in value.split("\u00b7")]
             forms[-1] = re.split(r"\.\s+(?=[A-Z])", forms[-1], maxsplit=1)[0]
@@ -116,7 +124,9 @@ def _template(text: str, wild: str) -> str:
 
 def _opener_res(c: Checks) -> dict[str, re.Pattern]:
     link = "|".join(map(re.escape, c.linking))
-    lead = rf"(?:(?:{link})\s+)?" if link else ""
+    leads = ([rf"(?:{link})\s+"] if link else []) + (  # the listed words, or any lead-in of up to n words and a comma
+        [rf"(?:[^\s,.;:\[\]]+\s+){{0,{c.lead_in_words - 1}}}[^\s,.;:\[\]]+,\s+"] if c.lead_in_words else [])
+    lead = f"(?:{'|'.join(leads)})?" if leads else ""
     return {kind: re.compile(rf"^{lead}(?:" + "|".join(_template(o, r"[^,.\]\n]{1,150}?") for o in ops) + r")", re.I)
             for kind, ops in c.openers.items() if ops}
 

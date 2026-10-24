@@ -8,6 +8,7 @@ Layout facts it relies on:
 - Running header/footer use HelveticaLTPro-Roman 9pt.
 """
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 
 import pymupdf
@@ -47,6 +48,19 @@ NUMBERED_HEADING = re.compile(r"^(?:[A-Z][a-z]+\s+)?(\d+(?:\.\d+)*)\s+[A-Z]")
 
 def _style(font: str, size: float) -> tuple:
     return (round(size, 1), "Bold" in font and "Obliq" not in font)
+
+
+def _label_size(doc: pymupdf.Document) -> float:
+    """The size paragraph labels are set in: the most common size of numbers in the margin, in the IFRS margin font."""
+    sizes = Counter(round(s["size"], 1) for page in doc for row in _lines(page) for s in row
+                    if s["bbox"][0] < MARGIN_MAX_X and s["font"].startswith("Swift")
+                    and (PARA_RE.match(t := s["text"].strip().rstrip("".join(RANGE_DASH))) or ACCOMPANYING_RE.match(t)))
+    return sizes.most_common(1)[0][0] if sizes else 0.0
+
+
+def _is_footnote_mark(text: str, font: str, size: float, x: float, label_size: float) -> bool:
+    """A number in the margin set smaller than the paragraph labels: a footnote, not a paragraph."""
+    return bool(label_size) and x < MARGIN_MAX_X and font.startswith("Swift") and text.isdigit() and round(size, 1) < label_size - 0.4
 
 
 def _heading_styles(doc: pymupdf.Document) -> dict[tuple, int]:
@@ -196,6 +210,8 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
     paras: list[_Para] = []
     cur = _Para(None, section, 1, None)
     last_label: tuple = ()  # (page, y) of last margin label, to join multi-line defined terms
+    label_size = _label_size(doc)
+    footnote: tuple = ()  # (page, size) while reading a footnote: its lines are editorial notes, not paragraph text
 
     def flush():
         nonlocal cur
@@ -211,6 +227,14 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
                     continue  # running header/footer
                 if size < 6:
                     continue  # superscript E-footnote markers
+                if _is_footnote_mark(text, font, size, x, label_size):
+                    footnote = (pno, round(size, 1))
+                    cur.notes.append(f"[Footnote {text}]")
+                    continue
+                if footnote and footnote[0] == pno and round(size, 1) <= footnote[1]:
+                    cur.notes.append(text)  # the footnote runs on to the end of its page, in its own small type
+                    continue
+                footnote = ()
                 if _is_heading(font, size):
                     prev = heading_key
                     heading_key = (pno, y, font, size)
