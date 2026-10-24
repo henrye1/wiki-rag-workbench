@@ -204,7 +204,8 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
           footnote_form: str | None = None) -> list[Chunk]:
     """accompanying=False reads a Standard (Part A); True reads a document published with one (Parts B and C).
     footnote_form: how the wiki's schema cites a footnote ("ED:<clause>"): each footnote is kept, labelled in that form
-    with the paragraph it is printed under; without it footnotes are left out."""
+    with the paragraph whose text carries its marker (or, with no marker found, the one it is printed under); without it
+    footnotes are left out."""
     section = "intro"
     heading: str | None = None
     heading_buf: list[str] = []
@@ -217,6 +218,8 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
     last_label: tuple = ()  # (page, y) of last margin label, to join multi-line defined terms
     label_size = _label_size(doc)
     footnote: tuple = ()  # (page, size) while reading a footnote: its lines are the footnote's, not paragraph text
+    marked: dict[str, _Para] = {}  # footnote number -> the paragraph whose text carries its marker
+    note_to: _Para | None = None  # the paragraph the footnote being read belongs to
 
     def flush():
         nonlocal cur
@@ -231,13 +234,16 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
                 if "Roman" in font and size >= 8.9 and (y < HEADER_Y or y > FOOTER_Y):
                     continue  # running header/footer
                 if size < 6:
-                    continue  # superscript E-footnote markers
+                    if text.isdigit() and x >= MARGIN_MAX_X:
+                        marked[text] = cur  # a footnote marker in the text: the footnote belongs to this paragraph
+                    continue  # superscript footnote and E-footnote markers
                 if _is_footnote_mark(text, font, size, x, label_size):
                     footnote = (pno, round(size, 1))
-                    cur.footnotes.append([])
+                    note_to = marked.pop(text, None) or cur  # no marker found: the paragraph it is printed under
+                    note_to.footnotes.append([])
                     continue
                 if footnote and footnote[0] == pno and round(size, 1) <= footnote[1]:
-                    cur.footnotes[-1].append(text)  # the footnote runs on to the end of its page, in its own small type
+                    note_to.footnotes[-1].append(text)  # the footnote runs on to the end of its page, in its own small type
                     continue
                 footnote = ()
                 if _is_heading(font, size):
