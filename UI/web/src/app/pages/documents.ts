@@ -92,12 +92,12 @@ type Editing = 'new' | 'rename' | 'delete' | null;
                     }
                   </td>
                 </tr>
-              } @empty { <tr><td colspan="5" class="muted">No documents in this collection yet.</td></tr> }
+              } @empty { <tr><td colspan="5" class="muted empty">No documents in this collection yet.</td></tr> }
             </tbody>
           </table>
         </div>
       } @else {
-        <p class="muted">No collections yet: create one to start ingesting documents.</p>
+        <p class="muted empty">No collections yet: create one to start ingesting documents.</p>
       }
       @if (error()) { <p class="error">{{ error() }}</p> }
     </div>

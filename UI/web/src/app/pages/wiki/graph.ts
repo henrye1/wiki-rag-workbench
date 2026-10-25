@@ -6,7 +6,7 @@ import cytoscape from 'cytoscape';
 import { Api, enc } from '../../core/api';
 
 const COLORS: Record<string, string> = {
-  overview: '#1565c0', topic: '#6a1b9a', concept: '#2e7d32', entity: '#ef6c00', comparison: '#00838f',
+  overview: '#1565c0', topic: '#6a1b9a', subtopic: '#9c4dcc', concept: '#2e7d32', entity: '#ef6c00', comparison: '#00838f',
   synthesis: '#ad1457', source: '#5d4037', missing: '#9e9e9e',
 };
 

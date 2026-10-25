@@ -27,9 +27,18 @@ import { FileDrop } from '../../shared/file-drop';
       <mat-tab-group [(selectedIndex)]="tab" animationDuration="0">
         <mat-tab label="File">
           <div class="pad row">
-            <app-file-drop class="grow" accept=".pdf,.docx,.md,.txt" label="PDF, DOCX, MD or TXT" (picked)="file.set($event)" />
-            <button mat-flat-button (click)="submitFile()" [disabled]="!file() || busy()">Ingest</button>
+            <app-file-drop class="grow" accept=".pdf,.docx,.md,.txt" label="PDF, DOCX, MD or TXT" (picked)="pick($event)" />
+            <button mat-flat-button (click)="submitFile()" [disabled]="!file() || busy() || describing()">Ingest</button>
           </div>
+          @if (file()) {
+            <div class="row doc">
+              <mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>Issuer</mat-label><input matInput [(ngModel)]="issuer" /></mat-form-field>
+              <mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>Edition</mat-label><input matInput [(ngModel)]="edition" /></mat-form-field>
+              <mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>Part</mat-label><input matInput [(ngModel)]="part" /></mat-form-field>
+              <mat-icon class="muted" title="Read from the file's opening pages where they state it. Check each field before ingesting; leave a field blank if the document does not state it. The source page is checked against these values.">info</mat-icon>
+            </div>
+            @if (describing()) { <p class="muted">Reading the title page…</p> }
+          }
         </mat-tab>
         <mat-tab label="URL">
           <div class="pad row">
@@ -58,7 +67,8 @@ import { FileDrop } from '../../shared/file-drop';
       <tbody>
         @for (s of sources(); track s.id) {
           <tr>
-            <td><a [routerLink]="['..', 'pages', s.slug]">{{ s.title }}</a><div class="muted mono">{{ s.uri }}</div></td>
+            <td><a [routerLink]="['..', 'pages', s.slug]">{{ s.title }}</a><div class="muted mono">{{ s.uri }}</div>
+              @if (s.meta?.document; as d) { <div class="muted">{{ docLine(d) }}</div> }</td>
             <td>{{ s.kind }}</td><td>{{ s.chars | number }} chars</td><td>{{ s.created_at | date: 'medium' }}</td>
             <td class="actions">
               @if (s.file) { <button mat-icon-button (click)="view(s.slug)" title="View the original file"><mat-icon>open_in_new</mat-icon></button> }
@@ -67,11 +77,11 @@ import { FileDrop } from '../../shared/file-drop';
               } @else { <button mat-icon-button (click)="confirming.set(s.slug)" title="Delete raw source (pages are kept)"><mat-icon>delete</mat-icon></button> }
             </td>
           </tr>
-        } @empty { <tr><td colspan="5" class="muted">No sources yet.</td></tr> }
+        } @empty { <tr><td colspan="5" class="muted empty">No sources yet.</td></tr> }
       </tbody>
     </table>
   `,
-  styles: `.pad { padding: 12px 0; } .actions { white-space: nowrap; }`,
+  styles: `.pad { padding: 12px 0; } .actions { white-space: nowrap; } .doc { gap: 12px; align-items: center; padding-bottom: 8px; }`,
 })
 export class WikiSources {
   private api = inject(Api);
@@ -83,11 +93,15 @@ export class WikiSources {
   readonly started = signal<any>(null);
   readonly error = signal('');
   readonly confirming = signal<string | null>(null);
+  readonly describing = signal(false);
   mode: 'auto' | 'review' = 'review';
   tab = 0;
   url = '';
   title = '';
   text = '';
+  issuer = '';
+  edition = '';
+  part = '';
 
   constructor() { effect(() => { void this.load(this.w()); }); }
 
@@ -106,10 +120,28 @@ export class WikiSources {
       this.busy.set(false);
     }
   }
+  docLine(d: any) { return [d.issuer, d.edition, d.part].filter((x: string) => !!x).join(' · '); }
+  /** A file was picked: suggest its issuer, edition and part from its opening pages, for the user to confirm. */
+  async pick(f: File | null) {
+    this.file.set(f);
+    this.issuer = this.edition = this.part = '';
+    if (!f) return;
+    this.describing.set(true);
+    try {
+      const d = await this.api.upload(`/api/wiki/wikis/${enc(this.w())}/sources/describe`, f);
+      if (this.file() === f) ({ issuer: this.issuer, edition: this.edition, part: this.part } = d);
+    } catch {
+      // no suggestion: the fields stay empty for the user to fill in
+    } finally {
+      this.describing.set(false);
+    }
+  }
   submitFile() {
     return this.submit(async () => {
-      const r = await this.api.upload(`/api/wiki/wikis/${enc(this.w())}/sources`, this.file()!, { mode: this.mode });
+      const r = await this.api.upload(`/api/wiki/wikis/${enc(this.w())}/sources`, this.file()!, { mode: this.mode },
+        { issuer: this.issuer, edition: this.edition, part: this.part });
       this.file.set(null);
+      this.issuer = this.edition = this.part = '';
       this.drop()?.reset();
       return r;
     });

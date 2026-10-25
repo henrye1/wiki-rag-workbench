@@ -54,11 +54,6 @@ def notes_prompt(source_title: str, idx: int, total: int, section: str) -> str:
 
 # ---------- ingest: plan ----------
 
-ONE_TOP_PAGE = (
-    "- `overview` is the wiki's only top-level page. Never create or link a second top-level or index page "
-    "(for example one named after the standard, such as `ifrs-9`), even where the schema describes one; link to [[overview]] instead."
-)
-
 PLAN_SCHEMA = {
     "type": "object",
     "properties": {
@@ -90,7 +85,6 @@ def plan_prompt(source_title: str, source_slug: str, notes: str, index: str, can
         "- Create pages for important entities/concepts/topics that the source covers substantively.\n"
         "- Always include the `overview` page (create it if missing, otherwise update it).\n"
         "- If the schema defines a fixed list of sections, include one page for every section.\n"
-        f"{ONE_TOP_PAGE}\n"
         "- Do not include the source page itself.\n"
         "- Do not create a page whose content would come only from open questions; those belong on the source page.\n\n"
         f"<current_index>\nslug | type | title | summary\n{index}\n</current_index>\n\n"
@@ -169,7 +163,7 @@ def write_page_prompt(
             "This page is already written, but it does not yet cover the paragraphs in <source_paragraphs>. Write only "
             "those paragraphs, to be added to the end of the page: no introduction, no summary, and nothing about any "
             "other paragraph. Use one of the page's headings below or a new one.\n"
-            f"Write ONLY about paragraph(s) {refs}: a few sentences each, and every sentence must cite one of them. "
+            f"Write ONLY about paragraph(s) {refs}, and every sentence must cite one of them. "
             "Do not rewrite the page or write about any other paragraph.\n"
             f"<page_headings>\n{earlier_parts or '(none)'}\n</page_headings>\n"
         )
@@ -200,12 +194,42 @@ def write_page_prompt(
     return (
         f"Write the wiki page `{slug}` (type: {ptype}, title: \"{title}\").\n"
         f"Focus: {focus}\n{cite}{scope}{gaps}"
-        "Link other pages with [[slug]] using ONLY slugs listed in <linkable_pages>.\n"
-        f"{ONE_TOP_PAGE}\n\n"
+        "Link other pages with [[slug]] using ONLY slugs listed in <linkable_pages>.\n\n"
         f"{current}\n"
         f"<linkable_pages>\n{linkable}\n</linkable_pages>\n\n"
         f"{paragraphs}{background}"
         f"<material>\n{material}\n</material>"
+    )
+
+
+DESCRIBE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "issuer": {"type": "string", "description": "Who issued the document, as printed; empty if not stated"},
+        "edition": {"type": "string", "description": "The edition or version, as printed; empty if not stated"},
+        "part": {"type": "string", "description": "The part of a larger publication it is, as printed; empty if not stated"},
+    },
+    "required": ["issuer", "edition", "part"],
+}
+
+
+def describe_prompt(name: str, opening: str) -> str:
+    return (
+        f"These are the opening pages of the uploaded file \"{name}\". Give the document's issuer, edition and part "
+        "exactly as these pages print them. Leave a field empty if the pages do not state it; never guess.\n\n"
+        f"<opening_pages>\n{opening}\n</opening_pages>"
+    )
+
+
+def fix_page_prompt(*, slug: str, title: str, content_md: str, failures: list[str], source_paragraphs: str, linkable: str) -> str:
+    return (
+        f"The wiki page `{slug}` (\"{title}\") below does not follow the wiki schema in the places listed in <failures>. "
+        "Return the full page with those places fixed as the schema requires. Change nothing else: keep every other "
+        "sentence, heading, link and citation as it is.\n\n"
+        f"<failures>\n" + "\n".join(f"- {f}" for f in failures) + "\n</failures>\n\n"
+        f"<linkable_pages>\n{linkable}\n</linkable_pages>\n\n"
+        f"<source_paragraphs>\n{source_paragraphs}\n</source_paragraphs>\n\n"
+        f"<page>\n{content_md}\n</page>"
     )
 
 
@@ -239,9 +263,8 @@ ALSO_SCHEMA = {
 def also_prompt(brief: str, lines: str) -> str:
     return (
         "The section below is an \"also record here\" section: a paragraph stays on its own section's page and is ALSO "
-        "recorded here. From the paragraphs below, return the ids of those that contain a presumption, an election, a "
-        "policy choice, a judgement or an estimate that the Standard leaves to the entity, as the section brief describes. "
-        "Leave out paragraphs that contain none.\n\n"
+        "recorded here. From the paragraphs below, return the ids of those the section brief says are recorded here. "
+        "Leave out the others.\n\n"
         f"<section_brief>\n{brief}\n</section_brief>\n\n<paragraphs>\nid | text\n{lines}\n</paragraphs>"
     )
 
@@ -261,12 +284,28 @@ def also_record_prompt(*, slug: str, title: str, items: str, linkable: str, sour
     )
 
 
+def group_prompt(brief: str, grouped_by: str, groups: str, lines: str) -> str:
+    return (
+        "The section below is split into subtopic pages. Assign each of its paragraphs to ONE group, by what the "
+        f"section's subtopic pages are grouped by: {grouped_by}. Choose only from <groups>; return every id exactly "
+        "once, with its group number.\n\n"
+        f"<section_brief>\n{brief}\n</section_brief>\n\n<groups>\n{groups}\n</groups>\n\n"
+        f"<paragraphs>\nid | heading | text (first words)\n{lines}\n</paragraphs>"
+    )
+
+
+def index_prompt_focus(name: str) -> str:
+    """Focus for a split section's own page: the index of its subtopic pages, as the wiki schema sets out."""
+    return (f"{name}. This section is split: write its page as the index of its subtopic pages, as the wiki schema "
+            "sets out, from <material>, which lists each subtopic page with its headings and the clauses each cites. "
+            "Keep the index lines already on the current page for subtopic pages not in <material>.")
+
+
 def route_prompt(briefs: str, lines: str, outline: str = "", note: str = "") -> str:
     return (
         "Assign each source paragraph to the ONE section whose brief says it belongs there (follow the briefs' hand-off "
         "rules). That section's page is the only one that writes it up. Return every id exactly once, with its section number. "
-        "Keep a topic together: paragraphs under the same heading, and application guidance (B paragraphs) with the "
-        "chapter its number points to (B6.x goes with chapter 6), go to the same section unless a brief hands one off.\n"
+        "Keep a topic together: paragraphs under the same heading go to the same section unless a brief hands one off.\n"
         f"{note}\n"
         + (f"<source_outline>\nNumbered headings of the source:\n{outline}\n</source_outline>\n\n" if outline else "")
         + f"<section_briefs>\n{briefs}\n</section_briefs>\n\n<paragraphs>\nid | heading | text (first words)\n{lines}\n</paragraphs>"
@@ -286,6 +325,31 @@ def select_prompt(question: str, index: str, max_pages: int) -> str:
     return (
         f"Pick up to {max_pages} wiki pages most useful for answering the question. Return their slugs.\n\n"
         f"<index>\nslug | type | title | summary\n{index}\n</index>\n\nQuestion: {question}"
+    )
+
+
+BROWSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "read": {"type": "array", "items": {"type": "string"}},
+        "enough": {"type": "boolean"},
+        "why": {"type": "string"},
+    },
+    "required": ["read", "enough", "why"],
+}
+
+
+def browse_prompt(question: str, page_list: str, read_md: str, left: int) -> str:
+    return (
+        "You are finding the wiki pages needed to answer a question, the way a reader uses a wiki. The page list gives "
+        "every page's slug, type, title and one-line summary. The pages you have read so far are given in full.\n"
+        "Choose the next pages to read: from the page list, or by following a [[link]] on a page you have read (a "
+        "section page that is an index links to its subtopic pages; pages link to related pages). Choose only pages "
+        "that bear on the question, and do not choose a page you have read.\n"
+        "When the pages read are enough to answer the question, or nothing in the wiki would help, set enough to true "
+        f"and choose none. You can read at most {left} more pages. Return slugs exactly as given; say briefly why.\n\n"
+        f"<page_list>\nslug | type | title | summary\n{page_list}\n</page_list>\n\n"
+        f"<pages_read>\n{read_md or '(none yet)'}\n</pages_read>\n\nQuestion: {question}"
     )
 
 

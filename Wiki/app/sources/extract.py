@@ -69,24 +69,43 @@ UNRECOGNISED_IFRS = ("This PDF looks like an IFRS publication, but its paragraph
 NOT_IFRS = "This PDF does not have the IFRS layout: the text was kept page by page, without paragraph numbers."
 
 
-def from_pdf(name: str, data: bytes, max_words: int) -> Extracted:
+def _example_heads(chunks, example_re) -> list[str]:
+    """Each chunk's example heading: its own heading when that carries one of the wiki schema's example labels
+    ("Example 1—<title>"). A chunk under some other heading gets none: the reader cannot tell a sub-heading of the same
+    example ("Fact pattern") from the start of something new, and a wrong name is worse than none."""
+    return [h if example_re and c.source_type != "footnote" and (h := (c.heading or "").strip()) and example_re.search(h)
+            else "" for c in chunks]  # a footnote is not part of the example it is printed in
+
+
+def _with_head(content: str, head: str) -> str:
+    return f"{head}: {content}" if head and not content.startswith(head) else content
+
+
+def from_pdf(name: str, data: bytes, max_words: int, example_re=None, stub_re=None, footnote_form=None) -> Extracted:
     doc = pymupdf.open(stream=data, filetype="pdf")
     meta = {"pages": doc.page_count, **{k: v for k, v in (doc.metadata or {}).items() if v}}
-    chunks, layout = pdf_ifrs.parse_document(doc)
+    chunks, layout = pdf_ifrs.parse_document(doc, stub_re=stub_re, footnote_form=footnote_form)
     if layout == "standard":
         # Binding text only, labelled by paragraph number so notes can cite it
-        chunks = [c for c in chunks if c.source_type in ("standard", "appendix_a", "appendix_b")]
-        blocks = [f"[{c.para_ref or 'p' + str(c.page)}] {c.content}" for c in chunks]
+        chunks = [c for c in chunks if c.source_type in ("standard", "appendix_a", "appendix_b", "footnote")]
+        heads = _example_heads(chunks, example_re)
+        blocks = [f"[{c.para_ref or 'p' + str(c.page)}] {_with_head(c.content, h)}" for c, h in zip(chunks, heads)]
         meta["parser"] = "ifrs"
         meta["headings"] = [(c.heading or "").strip() for c in chunks]  # one per block, for routing to schema sections
         meta["outline"] = _outline(chunks)
+        meta["para_kinds"] = {c.para_ref: c.source_type for c in chunks if c.para_ref}
+        meta["heading_paths"] = [[list(x) for x in c.heading_path] for c in chunks]  # one per block, top heading first
     elif layout == "accompanying":
         # Parts B and C: numbered paragraphs, each marked with its kind (never presented as a requirement)
-        chunks = [c for c in chunks if c.source_type in KIND_LABELS]
-        blocks = [f"[{c.para_ref}] ({KIND_LABELS[c.source_type]}) {c.content}" for c in chunks]
+        chunks = [c for c in chunks if c.source_type in KIND_LABELS or c.source_type == "footnote"]
+        heads = _example_heads(chunks, example_re)
+        blocks = [f"[{c.para_ref}] " + (f"({KIND_LABELS[c.source_type]}) " if c.source_type in KIND_LABELS else "")
+                  + _with_head(c.content, h) for c, h in zip(chunks, heads)]
         meta["parser"] = "ifrs_accompanying"
         meta["headings"] = [(c.heading or "").strip() for c in chunks]
         meta["kinds"] = [c.source_type for c in chunks]
+        meta["para_kinds"] = {c.para_ref: c.source_type for c in chunks if c.para_ref}
+        meta["heading_paths"] = [[list(x) for x in c.heading_path] for c in chunks]
         meta["outline"] = _outline(chunks)
     else:
         blocks = [f"[page {i}]\n{p.get_text()}" for i, p in enumerate(doc, start=1) if p.get_text().strip()]
@@ -141,10 +160,24 @@ async def from_url(url: str, max_words: int) -> Extracted:
     return Extracted(title, "url", text, _pack(_blocks(text), max_words), {"url": url, "content_type": ctype})
 
 
-def from_upload(name: str, data: bytes, max_words: int) -> Extracted:
+def opening_text(name: str, data: bytes, pages: int = 3, chars: int = 6000) -> str:
+    """The first pages of an upload as plain text (with a PDF's own title, author and subject), so the document's
+    issuer, edition and part can be read from its title page."""
+    if name.lower().endswith(".pdf"):
+        doc = pymupdf.open(stream=data, filetype="pdf")
+        info = "\n".join(f"{k}: {v}" for k, v in (doc.metadata or {}).items() if k in ("title", "author", "subject") and v)
+        text = "\n\n".join(doc[i].get_text() for i in range(min(pages, doc.page_count)))
+        return (f"[PDF properties]\n{info}\n\n" if info else "") + text[:chars]
+    return from_upload(name, data, 3000).text[:chars]
+
+
+def from_upload(name: str, data: bytes, max_words: int, example_re=None, stub_re=None, footnote_form=None) -> Extracted:
+    """example_re: the wiki schema's example labels, so the issuer's example headings are kept with their paragraphs.
+    stub_re: its stub forms, so a stub inside the text is read as its own paragraph.
+    footnote_form: its citation form for a footnote, so footnotes are kept under their paragraph."""
     low = name.lower()
     if low.endswith(".pdf"):
-        return from_pdf(name, data, max_words)
+        return from_pdf(name, data, max_words, example_re, stub_re, footnote_form)
     if low.endswith(".docx"):
         return from_docx(name, data, max_words)
     if low.endswith(TEXT_EXT):

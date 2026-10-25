@@ -31,8 +31,11 @@ class Settings(BaseSettings):
     route_batch: int = 120  # paragraphs per call when assigning paragraphs to schema sections
     llm_concurrency: int = 4  # parallel LLM calls inside one job
     job_workers: int = 2  # jobs running at once
-    query_top_k: int = 8
-    query_max_pages: int = 8
+    query_top_k: int = 8  # answer_method search_pick: pages from the search, of which the top 5 are read
+    query_max_pages: int = 8  # answer_method search_pick: pages the model picks from the index
+    browse_max_rounds: int = 6  # answer_method browse: safety nets only; the model stops when it has enough
+    browse_max_pages: int = 30
+    browse_max_words: int = 150000  # words of page text read for one question
     lint_batch_pages: int = 12
     max_upload_mb: int = 50
 

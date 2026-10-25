@@ -9,7 +9,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from .. import jobs
 from ..db import get_pool
-from ..ops import lint, query, synthesis
+from ..ops import lint, query, recheck, synthesis
 from ..wiki import store
 from .deps import Mode, wiki_dep
 
@@ -103,9 +103,7 @@ async def ask_stream(body: QueryIn, wiki: dict = Depends(wiki_dep)):
         async for t in tokens:
             parts.append(t)
             yield {"event": "token", "data": json.dumps(t)}
-        linked = store.extract_links("".join(parts))
-        yield {"event": "pages", "data": json.dumps([{"slug": p["slug"], "title": p["title"], "cited": p["slug"] in linked,
-                                                      "saved": bool(p.get("saved"))} for p in pages])}
+        yield {"event": "pages", "data": json.dumps(query.listed(wiki, "".join(parts), pages))}
         yield {"event": "done", "data": ""}
 
     return EventSourceResponse(events())
@@ -116,6 +114,17 @@ async def run_lint(body: LintIn, wiki: dict = Depends(wiki_dep)):
     if not body.llm and not body.fix:
         return {"structural": await lint.structural(wiki["id"])}  # fast path, synchronous
     job_id = await jobs.submit(wiki["id"], "lint", body.model_dump(), lambda ctx: lint.run(ctx, wiki, body.llm, body.fix, body.mode))
+    return {"job_id": str(job_id)}
+
+
+class RecheckIn(BaseModel):
+    mode: Mode = "auto"
+
+
+@router.post("/wikis/{w}/recheck", status_code=202)
+async def run_recheck(body: RecheckIn, wiki: dict = Depends(wiki_dep)):
+    """Run the after-writing page checks (and their fix rounds) on every page the wiki has, without re-ingesting."""
+    job_id = await jobs.submit(wiki["id"], "recheck", body.model_dump(), lambda ctx: recheck.run(ctx, wiki, body.mode))
     return {"job_id": str(job_id)}
 
 

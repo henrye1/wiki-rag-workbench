@@ -75,7 +75,7 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
               <button mat-icon-button (click)="deleting.set(c.id)" title="Delete"><mat-icon>delete</mat-icon></button>
             }
           </div>
-        } @empty { <p class="muted small">No chats yet.</p> }
+        } @empty { <p class="muted small empty">No chats yet.</p> }
       </aside>
 
       <section class="main">

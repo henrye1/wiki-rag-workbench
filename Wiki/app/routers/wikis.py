@@ -1,6 +1,7 @@
 import io
 import pathlib
 import zipfile
+from typing import Literal
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,11 +18,21 @@ router = APIRouter(tags=["wikis"])
 DEFAULT_SCHEMA = (pathlib.Path(__file__).resolve().parent.parent / "schema_default.md").read_text(encoding="utf-8")
 
 
+AnswerMethod = Literal["search_pick", "browse"]
+
+
 class WikiIn(BaseModel):
     slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")
     name: str
     description: str = ""
     schema_md: str | None = Field(None, description="Conventions doc; defaults to the built-in generic schema")
+    answer_method: AnswerMethod | None = Field(None, description="How answers choose pages; defaults to browse")
+
+
+class SettingsIn(BaseModel):
+    answer_method: AnswerMethod = Field(description="search_pick: a search's top pages plus the model's picks from the "
+                                                    "index, read at once; browse: the model reads the page list, chooses "
+                                                    "pages and follows their links until it has enough")
 
 
 class SchemaIn(BaseModel):
@@ -34,8 +45,9 @@ async def create_wiki(body: WikiIn):
         async with get_pool().connection() as conn:
             row = await (
                 await conn.execute(
-                    "insert into wiki.wikis (slug, name, description, schema_md) values (%s,%s,%s,%s) returning *",
-                    (body.slug, body.name, body.description, body.schema_md or DEFAULT_SCHEMA),
+                    "insert into wiki.wikis (slug, name, description, schema_md, answer_method) "
+                    "values (%s,%s,%s,%s,coalesce(%s, 'browse')) returning *",
+                    (body.slug, body.name, body.description, body.schema_md or DEFAULT_SCHEMA, body.answer_method),
                 )
             ).fetchone()
     except UniqueViolation:
@@ -94,6 +106,14 @@ async def put_schema(body: SchemaIn, wiki: dict = Depends(wiki_dep)):
         await conn.execute("update wiki.wikis set schema_md = %s where id = %s", (body.schema_md, wiki["id"]))
     await store.add_log(wiki["id"], "edit", "Schema updated")
     return {"ok": True}
+
+
+@router.put("/wikis/{w}/settings")
+async def put_settings(body: SettingsIn, wiki: dict = Depends(wiki_dep)):
+    async with get_pool().connection() as conn:
+        await conn.execute("update wiki.wikis set answer_method = %s where id = %s", (body.answer_method, wiki["id"]))
+    await store.add_log(wiki["id"], "edit", f"Answer method: {body.answer_method}")
+    return {"ok": True, "answer_method": body.answer_method}
 
 
 @router.get("/wikis/{w}/graph")

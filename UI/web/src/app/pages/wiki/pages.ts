@@ -7,7 +7,7 @@ import { MatInputModule } from '@angular/material/input';
 import { RouterLink } from '@angular/router';
 import { Api } from '../../core/api';
 
-const TYPES = ['overview', 'topic', 'concept', 'entity', 'comparison', 'synthesis', 'source'];
+const TYPES = ['overview', 'topic', 'subtopic', 'concept', 'entity', 'comparison', 'synthesis', 'source'];
 
 @Component({
   selector: 'app-wiki-pages',
@@ -35,7 +35,7 @@ const TYPES = ['overview', 'topic', 'concept', 'entity', 'comparison', 'synthesi
           }
         </tbody>
       </table>
-    } @empty { <p class="muted">No pages. Add a source under “Sources & ingest”.</p> }
+    } @empty { <p class="muted empty">No pages. Add a source under “Sources & ingest”.</p> }
   `,
   styles: `.t { width: 30%; } .nowrap { white-space: nowrap; } h3 { text-transform: capitalize; margin-top: 20px; }`,
 })

@@ -1,0 +1,115 @@
+"""The check-and-fix pass shared by ingest and re-check: check a page, send it back with the list of failures (at most
+twice), keep a rewrite only when it is better. The words the checks look for come from the schema (wiki/checks.py)."""
+import logging
+import re
+from uuid import UUID
+
+from .. import llm, prompts
+from ..db import get_pool
+from ..wiki import checks, citecheck
+
+log = logging.getLogger(__name__)
+LABEL_RE = re.compile(r"^\[([^\]\n]+)\]", re.M)
+
+
+async def cite_context(wiki_id: UUID, section_names: list[str]) -> dict:
+    """What the citation checks compare against: each source's paragraph labels, and the wiki's own source and section
+    names (a citation naming one of those cites no clause)."""
+    async with get_pool().connection() as conn:
+        rows = await (await conn.execute("select slug, title, text, meta from wiki.sources where wiki_id = %s", (wiki_id,))).fetchall()
+    names = set(section_names)
+    for r in rows:
+        names.add(r["title"])
+        names.update(v for v in ((r["meta"] or {}).get("document") or {}).values() if v)
+    texts = {r["slug"]: {} for r in rows}
+    for r in rows:
+        for b in re.split(r"\n\s*\n", r["text"] or ""):
+            if m := LABEL_RE.match(b.strip()):
+                texts[r["slug"]].setdefault(m.group(1), []).append(b.strip())
+    return {"matchers": {r["slug"]: m for r in rows if (m := citecheck._matcher(r["text"]))},
+            "labels": {r["slug"]: set(LABEL_RE.findall(r["text"] or "")) for r in rows},
+            "texts": {sl: {k: "\n\n".join(v) for k, v in t.items()} for sl, t in texts.items()},
+            "names": names}
+
+
+def earlier_cites(before: str, ctx: dict) -> set[str]:
+    """The source paragraphs a page cited before it is rewritten (slug|clause): citations of a paragraph a source
+    holds, not of a source's name."""
+    return {c for c in checks.cites(before) if c.split("|", 1)[1] not in ctx["names"]
+            and c.split("|", 1)[1] in ctx["labels"].get(c.split("|", 1)[0], set())}
+
+
+def kept_failures(text: str, earlier: set[str]) -> list[str]:
+    """The paragraphs a page cited before a rewrite that it no longer cites."""
+    return [f"Before this rewrite the page cited paragraph {c.split('|', 1)[1]} of [[{c.split('|', 1)[0]}]]; it no "
+            "longer does. Keep what the page said about it, with its citation." for c in sorted(earlier - checks.cites(text))]
+
+
+def cite_failures(text: str, ctx: dict, chk: checks.Checks | None) -> list[str]:
+    """Citations the citation check would flag, and citations that cite something other than a clause."""
+    _, _, flagged = citecheck.check(text, ctx["matchers"])
+    out = [f'The citation [[{src}|{label}]] does not match a paragraph of that source ({reason}); cite the paragraph '
+           "it states, by its own label." for (src, label, reason) in flagged]
+    return out + checks.citation_failures(text, ctx["labels"], ctx["names"], chk)
+
+
+def move_claims(slug: str, text: str, home, holds, record: list, names: set[str] = frozenset()) -> tuple[str, dict[str, list[str]]]:
+    """A page the schema says holds no claims: each sentence on it that cites a source paragraph moves, word for word,
+    to the page that holds that paragraph (home: slug|clause -> page slug, or None); where that page already cites it
+    (holds: page slug -> its citations) the sentence is dropped. A sentence with no page to go to stays. Returns the
+    page's text and, per page, the sentences to add to it."""
+    clauses = lambda x: {c for c in checks.cites(x) if c.split("|", 1)[1] not in names}
+    target = lambda x: next((t for t in map(home, sorted(clauses(x))) if t), None)
+    found = checks.take_claims(text, names=names)[1]
+    rest, taken = checks.take_claims(text, lambda x: target(x) is not None, names)
+    moves: dict[str, list[str]] = {}
+    for x in taken:
+        if not clauses(x) <= holds(target(x)):
+            moves.setdefault(target(x), []).append(x)
+    stayed = [x for x in found if x not in taken]
+    if found:
+        record.append({"page": slug, "kind": "no claims", "found": len(found), "still": len(stayed),
+                       "moved": {t: len(xs) for t, xs in moves.items()},
+                       "dropped_already_there": len(taken) - sum(map(len, moves.values())),
+                       "stayed": [" ".join(x.split()[:20]) for x in stayed]})
+        log.info("page %s holds no claims: %s found, %s moved, %s already on their page, %s stayed", slug, len(found),
+                 sum(map(len, moves.values())), len(taken) - sum(map(len, moves.values())), len(stayed))
+    return rest, moves
+
+
+async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, sources_text: str, linkable: str, parse,
+                     kind: str, record: list, out_schema=prompts.PAGE_SCHEMA, ok=lambda old, new: True,
+                     may_shrink: bool = False) -> str:
+    """Check the page; if anything fails, send it back with the list, at most twice. A rewrite is kept only if it has
+    fewer failures, loses no citation, stays about the same length (a fix changes what was listed, not the whole page;
+    may_shrink when a failure asks for something to be taken out) and passes ok."""
+    rounds = []
+    for rnd in (1, 2):
+        failures = check(text)
+        if not failures:
+            break
+        rec = {"round": rnd, "failures": failures}
+        try:
+            out = await llm.generate_json(prompts.MAINTAINER_SYSTEM, prompts.with_schema(schema, prompts.fix_page_prompt(
+                slug=slug, title=title, content_md=text or "(nothing yet)", failures=failures, linkable=linkable,
+                source_paragraphs=sources_text or "(none)")), out_schema)
+            new = parse(out["content_md"])
+            after = check(new)
+            lost = [] if may_shrink else sorted(checks.cites(text) - checks.cites(new))
+            n_old, n_new = len(text.split()), len(new.split())
+            keep = (bool(new.strip()) and len(after) < len(failures) and not lost and ok(text, new)
+                    and n_new <= 1.5 * n_old + 200 and (may_shrink or n_new >= 0.8 * n_old))
+            rec |= {"kept": keep, "fixed": len(failures) - len(after) if keep else 0, "still": after, "words": [n_old, n_new],
+                    **({"lost_citations": lost} if lost else {})}
+            if keep:
+                text = new
+            log.info("page %s %s check, round %s: %s failures, %s fixed, rewrite %s", slug, kind, rnd,
+                     len(failures), len(failures) - len(after), "kept" if keep else "discarded")
+        except Exception as e:
+            log.warning("page %s %s check, round %s failed: %s", slug, kind, rnd, e)
+            rec["error"] = f"{type(e).__name__}: {e}"
+        rounds.append(rec)
+    if rounds:
+        record.append({"page": slug, "kind": kind, "found": len(rounds[0]["failures"]), "still": len(check(text)),
+                       "rounds": rounds})
+    return text

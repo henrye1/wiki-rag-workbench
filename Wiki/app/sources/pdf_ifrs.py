@@ -8,6 +8,7 @@ Layout facts it relies on:
 - Running header/footer use HelveticaLTPro-Roman 9pt.
 """
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 
 import pymupdf
@@ -24,8 +25,7 @@ ACCOMPANYING_KINDS = {"IE": "example", "IG": "implementation_guidance", "DO": "d
 IG_HEADING_RE = re.compile(r"^([A-G])\.(\d+)\s+\S")
 IG_TITLE_RE = re.compile(r"^Guidance on implementing\b", re.I)  # its title; the note under it says the guidance is not part of the Standard
 IG_INTRO = "IG introduction"
-PLACEHOLDER = "not included in this edition"
-RANGE_DASH = ("\u2013", "-")  # "BC2.17A–" continued by "BC2.17H" on the next line: a range of deleted paragraphs
+RANGE_DASH = ("\u2013", "\u2014", "-")  # "BC2.17A–" continued by "BC2.17H" on the next line: a range of deleted paragraphs
 EDITORIAL_BRACKETS = re.compile(r"\[(?:Refer|Note|Link|now)\b[^\]]*\]", re.I)
 MARGIN_MAX_X = 150
 HEADER_Y, FOOTER_Y = 110, 720
@@ -39,6 +39,50 @@ class _Para:
     heading: str | None
     body: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    path: tuple = ()
+    footnotes: list[list[str]] = field(default_factory=list)  # footnotes printed under this paragraph, each its lines
+
+
+# A numbered heading ("6.4 Qualifying criteria ...", "Chapter 6 Hedge accounting"): its level is its number's depth
+NUMBERED_HEADING = re.compile(r"^(?:[A-Z][a-z]+\s+)?(\d+(?:\.\d+)*)\s+[A-Z]")
+
+
+def _style(font: str, size: float) -> tuple:
+    return (round(size, 1), "Bold" in font and "Obliq" not in font)
+
+
+def _label_size(doc: pymupdf.Document) -> float:
+    """The size paragraph labels are set in: the most common size of numbers in the margin, in the IFRS margin font."""
+    sizes = Counter(round(s["size"], 1) for page in doc for row in _lines(page) for s in row
+                    if s["bbox"][0] < MARGIN_MAX_X and s["font"].startswith("Swift")
+                    and (PARA_RE.match(t := s["text"].strip().rstrip("".join(RANGE_DASH))) or ACCOMPANYING_RE.match(t)))
+    return sizes.most_common(1)[0][0] if sizes else 0.0
+
+
+def _is_footnote_mark(text: str, font: str, size: float, x: float, label_size: float) -> bool:
+    """A number in the margin set smaller than the paragraph labels: a footnote, not a paragraph."""
+    return bool(label_size) and x < MARGIN_MAX_X and font.startswith("Swift") and text.isdigit() and round(size, 1) < label_size - 0.4
+
+
+def _heading_styles(doc: pymupdf.Document) -> dict[tuple, int]:
+    """Rank of each heading style in the document: larger first, then bold before italic (1 = top)."""
+    styles = set()
+    for page in doc:
+        for b in page.get_text("dict")["blocks"]:
+            for l in b.get("lines", []):
+                for s in l["spans"]:
+                    if s["text"].strip() and _is_heading(s["font"], s["size"]):
+                        styles.add(_style(s["font"], s["size"]))
+    return {st: i + 1 for i, st in enumerate(sorted(styles, key=lambda st: (-st[0], not st[1])))}
+
+
+def _level(text: str, style_rank: int, path: list) -> int:
+    """A numbered heading sits at its number's depth; an unnumbered one under the last numbered heading above it,
+    at its style's rank."""
+    if m := NUMBERED_HEADING.match(text):
+        return len(m.group(1).split("."))
+    base = max((lvl for lvl, _, numbered in path if numbered), default=0)
+    return base + style_rank
 
 
 def _is_editorial(font: str, size: float = 8.5, x: float = 999) -> bool:
@@ -108,42 +152,78 @@ def _join(parts: list[str]) -> str:
     return clean(out)
 
 
+LABEL_IN_TEXT = PARA_RE.pattern.strip("^$")
+
+
+def _split_stubs(ref: str | None, body: str, stub_re) -> list[tuple[str | None, str]]:
+    """A paragraph's text with each stub printed inside it under its own label ("... 12–12A [Deleted]") taken out
+    as its own paragraph; text after a stub stays with the paragraph."""
+    if not body or not stub_re:
+        return [(ref, body)] if body else []
+    dash = "".join(RANGE_DASH)
+    rx = re.compile(rf"(?:(?<=\s)|^)({LABEL_IN_TEXT}(?:[{dash}]{LABEL_IN_TEXT})?)\s+(?=(?:{stub_re.pattern}))", stub_re.flags)
+    own, out, at = [], [], 0
+    for m in rx.finditer(body):
+        stub = stub_re.match(body, m.end())
+        if not stub or m.start() < at:
+            continue
+        own.append(body[at:m.start()])
+        out.append((m.group(1).replace("\u2014", "\u2013").replace("-", "\u2013"), stub.group(0)))
+        at = stub.end()
+    own.append(body[at:])
+    text = " ".join(x.strip() for x in own if x.strip())
+    return ([(ref, text)] if text else []) + out
+
+
 def accompanying_kind(ref: str) -> str:
     m = ACCOMPANYING_RE.match(ref.rstrip("".join(RANGE_DASH)))
     prefix = m.group(1) if m else ""
     return ACCOMPANYING_KINDS.get(prefix, "basis_for_conclusions" if prefix.startswith("BC") else "intro")
 
 
-def parse_document(doc: pymupdf.Document, max_words: int = 500) -> tuple[list[Chunk], str]:
+def parse_document(doc: pymupdf.Document, max_words: int = 500, stub_re=None, footnote_form=None) -> tuple[list[Chunk], str]:
     """Read an IFRS PDF. A Standard (Part A) is read exactly as parse() always has; a document published with it
     (illustrative examples, implementation guidance, Basis for Conclusions: Parts B and C) by its own paragraph numbers.
 
     Returns (chunks, layout): layout is "standard", "accompanying", or "" when no numbered paragraphs were recognised.
     A short accompanying document can have too few numbered paragraphs for looks_like_ifrs(); it is still recognised
     by its numbering (IE, IG, BC..., DO in the IFRS margin font), but never read as a Standard.
+    stub_re: the wiki schema's stub forms (what a deleted or left-out paragraph says), each read as its own paragraph.
+    footnote_form: the schema's citation form for a footnote, which keeps footnotes (see parse).
     """
-    chunks = parse(doc, max_words) if looks_like_ifrs(doc) else []
+    chunks = parse(doc, max_words, stub_re=stub_re, footnote_form=footnote_form) if looks_like_ifrs(doc) else []
     if any(c.source_type == "standard" for c in chunks):
         return chunks, "standard"
-    acc = parse(doc, max_words, accompanying=True)
+    acc = parse(doc, max_words, accompanying=True, stub_re=stub_re, footnote_form=footnote_form)
     if any(c.source_type in ACCOMPANYING_TYPES for c in acc):
         return acc, "accompanying"
     return chunks, ""
 
 
-def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = False) -> list[Chunk]:
-    """accompanying=False reads a Standard (Part A); True reads a document published with one (Parts B and C)."""
+def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = False, stub_re=None,
+          footnote_form: str | None = None) -> list[Chunk]:
+    """accompanying=False reads a Standard (Part A); True reads a document published with one (Parts B and C).
+    footnote_form: how the wiki's schema cites a footnote ("ED:<clause>"): each footnote is kept, labelled in that form
+    with the paragraph whose text carries its marker (or, with no marker found, the one it is printed under); without it
+    footnotes are left out."""
     section = "intro"
     heading: str | None = None
     heading_buf: list[str] = []
     heading_key: tuple = ()
+    ranks = _heading_styles(doc)
+    path: list = []  # [(level, heading, numbered)], top down: the headings the current text sits under
+    title_size = 0.0  # while set: headings this large are the document's title, not a heading of its text
     paras: list[_Para] = []
     cur = _Para(None, section, 1, None)
     last_label: tuple = ()  # (page, y) of last margin label, to join multi-line defined terms
+    label_size = _label_size(doc)
+    footnote: tuple = ()  # (page, size) while reading a footnote: its lines are the footnote's, not paragraph text
+    marked: dict[str, _Para] = {}  # footnote number -> the paragraph whose text carries its marker
+    note_to: _Para | None = None  # the paragraph the footnote being read belongs to
 
     def flush():
         nonlocal cur
-        if cur.body or cur.notes:
+        if cur.body or cur.notes or cur.footnotes:
             paras.append(cur)
 
     for pno, page in enumerate(doc, start=1):
@@ -154,37 +234,63 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
                 if "Roman" in font and size >= 8.9 and (y < HEADER_Y or y > FOOTER_Y):
                     continue  # running header/footer
                 if size < 6:
-                    continue  # superscript E-footnote markers
+                    if text.isdigit() and x >= MARGIN_MAX_X:
+                        marked[text] = cur  # a footnote marker in the text: the footnote belongs to this paragraph
+                    continue  # superscript footnote and E-footnote markers
+                if _is_footnote_mark(text, font, size, x, label_size):
+                    footnote = (pno, round(size, 1))
+                    note_to = marked.pop(text, None) or cur  # no marker found: the paragraph it is printed under
+                    note_to.footnotes.append([])
+                    continue
+                if footnote and footnote[0] == pno and round(size, 1) <= footnote[1]:
+                    note_to.footnotes[-1].append(text)  # the footnote runs on to the end of its page, in its own small type
+                    continue
+                footnote = ()
                 if _is_heading(font, size):
                     prev = heading_key
                     heading_key = (pno, y, font, size)
-                    if prev and prev[0] == pno and prev[2:] == (font, size) and 0 <= y - prev[1] < 14:
-                        heading_buf.append(text)
-                    else:
-                        heading_buf = [text]
+                    continued = bool(prev and prev[0] == pno and prev[2:] == (font, size) and 0 <= y - prev[1] < 14)
+                    heading_buf = heading_buf + [text] if continued else [text]
                     new_section = section if accompanying else _section_for_heading(text, section)
-                    if new_section != section:
+                    is_title = not accompanying and not continued and _section_for_heading(text, "") == "standard"
+                    part_starts = new_section != section
+                    if part_starts:
                         flush()
                         section = new_section
                         cur = _Para(None, section, pno, None)
+                    if is_title:  # the Standard's own title (wherever it is printed) is no heading of its text
+                        path, title_size = [], round(size, 1)
+                    elif part_starts:  # an appendix starts its own headings, under its own heading
+                        path, title_size = [(1, " ".join(heading_buf), False)], 0.0
+                    elif title_size and round(size, 1) >= title_size:
+                        pass  # more of the title (its subtitle lines)
+                    elif continued:
+                        if path:  # the heading runs over two lines
+                            path[-1] = (path[-1][0], " ".join(heading_buf), path[-1][2])
+                    else:
+                        title_size = 0.0
+                        lvl = _level(text, ranks.get(_style(font, size), len(ranks) + 1), path)
+                        path = [p for p in path if p[0] < lvl] + [(lvl, text, bool(NUMBERED_HEADING.match(text)))]
                     heading = " ".join(heading_buf)
                     if accompanying:
                         m = IG_HEADING_RE.match(text) if len(heading_buf) == 1 else None
                         if m:  # a guidance question starts here: label it IG A.1, IG B.2, ...
                             flush()
-                            cur = _Para(f"IG {m.group(1)}.{m.group(2)}", "implementation_guidance", pno, heading)
+                            cur = _Para(f"IG {m.group(1)}.{m.group(2)}", "implementation_guidance", pno, heading, path=tuple((l, h) for l, h, _ in path))
                         elif IG_TITLE_RE.match(text) and len(heading_buf) == 1:
                             # the guidance's title: the note under it (that the guidance accompanies, but is not part of, the
                             # Standard) is kept as its own block; a contents list under an earlier copy of the title is dropped
                             if cur.ref != IG_INTRO:
                                 flush()
-                            cur = _Para(IG_INTRO, "implementation_guidance", pno, heading)
+                            cur = _Para(IG_INTRO, "implementation_guidance", pno, heading, path=tuple((l, h) for l, h, _ in path))
                         elif cur.ref and cur.ref.startswith("IG ") and len(heading_buf) > 1 and cur.heading == " ".join(heading_buf[:-1]):
                             cur.heading = heading  # the heading runs over two lines
-                        elif PLACEHOLDER in " ".join(cur.body):
-                            flush()  # a placeholder holds only its own note: text after the next heading is not part of it
-                            cur = _Para(None, section, pno, heading)
+                            cur.path = tuple((l, h) for l, h, _ in path)
+                        elif stub_re and stub_re.search(" ".join(cur.body)):
+                            flush()  # a stub holds only its own note: text after the next heading is not part of it
+                            cur = _Para(None, section, pno, heading, path=tuple((l, h) for l, h, _ in path))
                     continue
+                title_size = 0.0  # text after the title: later headings are headings of the text
                 if accompanying:
                     margin_label = x < MARGIN_MAX_X and font.startswith("Swift") and ACCOMPANYING_RE.match(text.rstrip("".join(RANGE_DASH)))
                     if margin_label and cur.ref and cur.ref.endswith(RANGE_DASH) and last_label and last_label[0] == pno and 0 < y - last_label[1] < 14:
@@ -193,7 +299,7 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
                         continue
                     if margin_label:
                         flush()
-                        cur = _Para(text, accompanying_kind(text), pno, heading)
+                        cur = _Para(text, accompanying_kind(text), pno, heading, path=tuple((l, h) for l, h, _ in path))
                         last_label = (pno, y)
                         continue
                     is_label = False
@@ -202,14 +308,16 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
                         section in ("standard", "appendix_a", "appendix_b", "appendix_c")
                         and x < MARGIN_MAX_X
                         and font.startswith("Swift")
-                        and (PARA_RE.match(text) or (section == "appendix_a" and "Bold" in font))
+                        and (PARA_RE.match(text.rstrip("".join(RANGE_DASH))) or (section == "appendix_a" and "Bold" in font))
                     )
                 if is_label:
                     if section == "appendix_a" and last_label and last_label[0] == pno and 0 < y - last_label[1] < 13:
                         cur.ref = f"{cur.ref} {text}"
+                    elif cur.ref and cur.ref.endswith(RANGE_DASH) and last_label and last_label[0] == pno and 0 < y - last_label[1] < 14:
+                        cur.ref = f"{cur.ref.rstrip(''.join(RANGE_DASH))}\u2013{text}"  # second half of a range label: 44LL–44MM
                     else:
                         flush()
-                        cur = _Para(text, section, pno, heading)
+                        cur = _Para(text, section, pno, heading, path=tuple((l, h) for l, h, _ in path))
                     last_label = (pno, y)
                     continue
                 if _is_editorial(font, size, x):
@@ -225,11 +333,14 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
             ref = f"Appendix A: {ref}"
         body = EDITORIAL_BRACKETS.sub("", _join(p.body))
         body = clean(body)
-        if body:
-            for i, part in enumerate(split_long(body, max_words)):
-                chunks.append(Chunk(ref, p.section, p.page, p.heading, part, i))
+        for r, text in _split_stubs(ref, body, stub_re):
+            for i, part in enumerate(split_long(text, max_words)):
+                chunks.append(Chunk(r, p.section, p.page, p.heading, part, i, p.path))
+        for lines in p.footnotes:  # under its paragraph, in the schema's form for text without a paragraph label
+            if footnote_form and ref and (text := clean(_join(lines))):
+                chunks.append(Chunk(footnote_form.replace("<clause>", ref), "footnote", p.page, p.heading, text, 0, p.path))
         notes = _join(p.notes)
         if notes and len(notes.split()) > 5:
             for i, part in enumerate(split_long(notes, max_words)):
-                chunks.append(Chunk(ref, "note", p.page, p.heading, part, i))
+                chunks.append(Chunk(ref, "note", p.page, p.heading, part, i, p.path))
     return chunks

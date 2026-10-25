@@ -35,7 +35,7 @@ import { Api, errMsg } from '../core/api';
             @if (s.benchmark.latest?.summary?.by_system; as b) {
               <div class="stat">{{ b.rag.similarity.mean }} <span class="muted small">vs</span> {{ b.wiki.similarity.mean }}</div>
               <div class="muted">RAG vs Wiki similarity /10 (latest of {{ s.benchmark.runs }} runs)</div>
-            } @else { <div class="muted">No completed runs yet.</div> }
+            } @else { <div class="muted empty">No completed runs yet.</div> }
             <div class="row actions"><a mat-button routerLink="/benchmark">Open</a></div>
           </div>
           <div class="card">

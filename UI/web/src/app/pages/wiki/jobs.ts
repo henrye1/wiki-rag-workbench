@@ -57,7 +57,7 @@ import { poller } from '../../shared/poll';
               <details><summary class="muted">Raw result</summary><pre class="mono">{{ d.result | json }}</pre></details>
             </td></tr>
           }
-        } @empty { <tr><td colspan="5" class="muted">No jobs yet.</td></tr> }
+        } @empty { <tr><td colspan="5" class="muted empty">No jobs yet.</td></tr> }
       </tbody>
     </table>
   `,
