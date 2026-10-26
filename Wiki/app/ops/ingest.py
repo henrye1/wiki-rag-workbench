@@ -385,8 +385,12 @@ def _sub_slug(sec_slug: str, names: list[str], slug_words: int | None) -> str:
     """A subtopic slug: the heading's own number where it has one (6.3 -> <section>-6-3), else its first words."""
     head = names[-1].split(HEADS_SEP)[0] if names else ""  # a joined group: its first heading
     if m := NUMBERED.match(head):
-        return f"{sec_slug}-{m.group(1).replace('.', '-')}"
-    return f"{sec_slug}-{slugify(' '.join(head.split()[:slug_words]) if slug_words else head)}"
+        return slugify(f"{sec_slug}-{m.group(1).replace('.', '-')}")
+    words = head.split()[:slug_words] if slug_words else head.split()
+    # no longer than slugify allows, like every slug (links to it are read that way): whole words off the end
+    while len(words) > 1 and len(slugify(f"{sec_slug}-{' '.join(words)}")) < len(f"{sec_slug}-" + slugify(' '.join(words))):
+        words = words[:-1]
+    return slugify(f"{sec_slug}-{' '.join(words)}")
 
 
 def _add_blocks(md: str, text: str) -> str:
