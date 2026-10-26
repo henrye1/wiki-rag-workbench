@@ -118,12 +118,26 @@ NUMBER = r"(?:\d+[A-Z]?|[A-Z])"  # the schema's <n>: a number or a letter
 LIST_LABEL = re.compile(r"^[^*:\n\[]{1,80}\*\*\s*[:\u2013\u2014-]\s*")  # a bold list label before the sentence itself
 
 
-def _template(text: str, wild: str) -> str:
-    """A schema phrase as a pattern: <n> matches a number or a letter; other "<...>" placeholders and "..." match any
-    short run of words."""
+def _template(text: str, wild: str, named: dict[str, str] | None = None) -> str:
+    """A schema phrase as a pattern: <n> matches a number or a letter; a placeholder naming one of the Checks lists
+    (<example label>: any of the Example labels) matches any item of that list; other "<...>" placeholders and "..."
+    match any short run of words."""
     out = re.escape(text)
-    out = re.sub(r"<([^>]*)>", lambda m: f"({NUMBER if m.group(1) == 'n' else wild})", out.replace(r"\<", "<").replace(r"\>", ">"))
+    pick = lambda name: NUMBER if name == "n" else (named or {}).get(name.replace("\\ ", " ").casefold(), wild)
+    out = re.sub(r"<([^>]*)>", lambda m: f"({pick(m.group(1))})", out.replace(r"\<", "<").replace(r"\>", ">"))
     return out.replace(re.escape("..."), r".+?")
+
+
+def _named(c: Checks) -> dict[str, str]:
+    """The Checks lists of phrases a placeholder can name, by the singular of the list's name ("example labels" ->
+    "example label"), each as one pattern of its items."""
+    out = {}
+    for attr, label in LISTS.items():
+        items = getattr(c, attr, None)
+        if label.endswith("s") and isinstance(items, list) and items and all(isinstance(x, str) for x in items):
+            pats = (_template(x, r"[^,.\]\n]{1,60}?").replace(r"\ ", r"\s+") for x in items)
+            out[label[:-1]] = "(?:" + "|".join(re.sub(r"\((?!\?)", "(?:", x) for x in pats) + ")"  # one group: the whole item
+    return out
 
 
 def _opener_res(c: Checks) -> dict[str, re.Pattern]:
@@ -131,7 +145,8 @@ def _opener_res(c: Checks) -> dict[str, re.Pattern]:
     leads = ([rf"(?:{link})\s+"] if link else []) + (  # the listed words, or any lead-in of up to n words and a comma
         [rf"(?:[^\s,.;:\[\]]+\s+){{0,{c.lead_in_words - 1}}}[^\s,.;:\[\]]+,\s+"] if c.lead_in_words else [])
     lead = f"(?:{'|'.join(leads)})?" if leads else ""
-    return {kind: re.compile(rf"^{lead}(?:" + "|".join(_template(o, r"[^,.\]\n]{1,150}?") for o in ops) + r")", re.I)
+    named = _named(c)
+    return {kind: re.compile(rf"^{lead}(?:" + "|".join(_template(o, r"[^,.\]\n]{1,150}?", named) for o in ops) + r")", re.I)
             for kind, ops in c.openers.items() if ops}
 
 
@@ -284,9 +299,10 @@ def _stub_parts(body: str, part_re: re.Pattern, c: Checks) -> set[str]:
 
 
 def section_failures(content: str, given: list[str], kinds: dict[str, str], source_slug: str, c: Checks, covers,
-                     labels: set[str] = frozenset()) -> list[str]:
-    """Where a written page breaks the schema's checks for its own paragraphs: a lettered part or a condition phrase of
-    a paragraph missing near its citation, and a sentence citing a non-Standard paragraph without the schema's opener."""
+                     labels: set[str] = frozenset(), holds=lambda ref: True) -> list[str]:
+    """Where a written page breaks the schema's checks for its own paragraphs: a lettered part of a paragraph whose
+    write-up the page holds (holds: a page citing it as a cross-reference is not checked for its parts) missing near its
+    citation, a condition phrase missing there, and a sentence citing a non-Standard paragraph without its opener."""
     failures = []
     blocks = [b for b in re.split(r"\n\s*\n", content) if b.strip()]
     part_re = _part_re(c)
@@ -297,7 +313,7 @@ def section_failures(content: str, given: list[str], kinds: dict[str, str], sour
             m.group(1) == source_slug and m.group(2) and covers(m.group(2), ref) for m in store.LINK_RE.finditer(b)))
         if not near:
             continue  # not written up at all: the coverage passes deal with that
-        if part_re and len(parts := list(dict.fromkeys(part_re.findall(body)))) >= 2:
+        if part_re and holds(ref) and len(parts := list(dict.fromkeys(part_re.findall(body)))) >= 2:
             stubs = _stub_parts(body, part_re, c)  # a part that is only a stub ("(c) [deleted]") is not written up
             if lost := [x for x in parts if x not in near and x not in stubs]:
                 failures.append(f"Paragraph {ref} has lettered or numbered parts {', '.join(parts)}; "

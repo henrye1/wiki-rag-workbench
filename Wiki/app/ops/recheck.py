@@ -42,6 +42,14 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
     section_pages = {p["slug"] for p in pages if p["type"] == "topic" and _section_for(sections, p["title"], p["slug"])}
     index_pages = {sl for sl in section_pages if any(s.startswith(sl + "-") for s in subtopics)}
     linkable = await store.compact_index(wiki_id, exclude_types=("synthesis",))
+    # the page that holds a paragraph's write-up: the one citing it most (a cross-reference cites it in passing)
+    times: dict[str, dict[str, int]] = {}
+    for x in pages:
+        if x["type"] in ("topic", "subtopic") and x["slug"] not in index_pages:
+            for slug, label in CITE.findall(_split_also(x["content_md"])[0]):
+                times.setdefault(f"{slug}|{BASE(label)}", {}).setdefault(x["slug"], 0)
+                times[f"{slug}|{BASE(label)}"][x["slug"]] += 1
+    home = {k: {sl for sl, n in v.items() if n == max(v.values())} for k, v in times.items()}
     await ctx.progress(stage="check", pages=len(pages))
     record: list[dict] = []
 
@@ -87,7 +95,8 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
             def check(x: str) -> list[str]:
                 out = []
                 for slug, paras in given.items():
-                    out += checks.section_failures(x, paras, src[slug]["kinds"], slug, chk, _covers, cite_ctx["labels"].get(slug, set()))
+                    out += checks.section_failures(x, paras, src[slug]["kinds"], slug, chk, _covers, cite_ctx["labels"].get(slug, set()),
+                                                   holds=lambda ref, slug=slug: p["slug"] in home.get(f"{slug}|{ref}", {p["slug"]}))
                 return out + cite_check(x)
             kind, sources_text = "section", "\n\n".join(b for paras in given.values() for b in paras)
         elif checks.holds_no_claims(chk, p["slug"]):  # a claim already on the page that holds its paragraph is dropped here
