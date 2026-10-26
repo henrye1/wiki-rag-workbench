@@ -1,5 +1,6 @@
 """Ingest: source -> notes -> plan -> page writes -> changeset."""
 import asyncio
+import collections
 import hashlib
 import json
 import logging
@@ -374,6 +375,26 @@ def _join_small(parts: list, words: list[int], minimum: int, limit: int | None =
 HEADS_SEP = " · "  # between the headings of a group joined from several
 
 
+def _drop_title(paths: list[list[str]]) -> list[list[str]]:
+    """A heading on top of every paragraph's path is the document's title heading, not a heading group: left off."""
+    tops = {p[0] for p in paths if p}
+    if len(tops) != 1 or sum(1 for p in paths if p) < 2:
+        return paths
+    title = tops.pop()
+    return [p[1:] if p and p[0] == title else p for p in paths]
+
+
+def _footnote_of(paras: list[str], form: str | None) -> dict[int, int]:
+    """Each footnote (labelled in the schema's form for it, e.g. "ED:<clause>") -> the paragraph it belongs to."""
+    if not form or "<clause>" not in form:
+        return {}
+    rx = re.compile(re.escape(form).replace(re.escape("<clause>"), "(.+)") + "$")
+    at: dict[str, int] = {}
+    for k, p in enumerate(paras):
+        at.setdefault(_ref(p), k)
+    return {i: at[m.group(1)] for i, p in enumerate(paras) if (m := rx.match(_ref(p))) and m.group(1) in at}
+
+
 def _sub_names(title: str, split: bool = True) -> list[str]:
     """A subtopic page's group names, read back from its title ("<section>: <name> – <name>"); split: each heading of a
     joined group on its own."""
@@ -460,7 +481,7 @@ async def _move_old_write_ups(wiki_id, index_of: dict, sub_of: dict, existing: d
         for r in rows:
             sp = [b.strip() for b in re.split(r"\n\s*\n", r["text"] or "") if b.strip()]
             hp = (r["meta"] or {}).get("heading_paths") or []
-            paths = _anchored_paths(sp, hp if len(hp) == len(sp) else [[] for _ in sp], (r["meta"] or {}).get("para_kinds"))
+            paths = _drop_title(_anchored_paths(sp, hp if len(hp) == len(sp) else [[] for _ in sp], (r["meta"] or {}).get("para_kinds")))
             path_of, last = {}, []
             for p, pa in zip(sp, paths):  # a paragraph with no heading of its own is under the one before it
                 last = pa or last
@@ -590,6 +611,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     paras = [b.strip() for b in re.split(r"\n\s*\n", ex.text) if b.strip()]
     # stubs (the schema's stub forms: a deleted or left-out paragraph) go to no page: not written up, not checked
     stubs = {i for i, p in enumerate(paras) if checks.is_stub(p, chk)}
+    foot = _footnote_of(paras, checks.footnote_form(chk))  # a footnote goes wherever its paragraph goes
     para_vecs = np.asarray(await llm.embed(paras)) if paras else None
     sections = _sections(schema)
     owner: dict[int, int] = {}
@@ -648,6 +670,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                 owner[i], by = targets[int(np.argmax(brief_vecs @ para_vecs[i]))]["num"], "closest section brief"
             unassigned.append({"paragraph": _ref(paras[i]) or f"paragraph {i + 1}", "placed_in": name[owner[i]], "by": by})
         _same_label_together(paras, owner)  # the chunks of one long paragraph go to one page
+        owner.update({i: owner[j] for i, j in foot.items() if j in owner})
         if unassigned:
             await ctx.progress(unassigned=unassigned)
 
@@ -704,6 +727,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         group_of.update(got)
         log.info("ingest: section %s split into %s groups (%s of %s paragraphs grouped)", num, len(set(got.values())),
                  len(got), len(mine))
+
+    group_of.update({i: group_of[j] for i, j in foot.items() if j in group_of})
 
     # 3. Plan
     await ctx.progress(stage="plan")
@@ -782,7 +807,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     sub_fixed: dict[int, str] = {}  # paragraph -> an existing subtopic page of its (already split) section
     if limit and owner:
         hp = ex.meta.get("heading_paths") or []
-        paths = _anchored_paths(paras, hp if len(hp) == len(paras) else [[] for _ in paras], ex.meta.get("para_kinds"))
+        paths = _drop_title(_anchored_paths(paras, hp if len(hp) == len(paras) else [[] for _ in paras], ex.meta.get("para_kinds")))
         words = [len(p.split()) for p in paras]
         split_basis.update(paths=paths, words=words)
         additive = {x["num"] for x in sections if re.search(r"\bADDITIVE\b", x["brief"])}  # its also-recorded lines stay together
@@ -806,28 +831,33 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                             group_name[i] = list(key) + names
                     log.info("ingest: section %s%s is over %s words: split by headings into %s pages", num,
                              f" ({' / '.join(key)})" if key else "", limit, len(parts))
-        # a section an earlier upload split stays an index: each new paragraph goes to a subtopic page, the one whose
-        # heading is on its heading path, else one for its top heading (split by size and joined like any other)
+        # a section an earlier upload split stays an index: each new paragraph goes to a subtopic page: the one holding
+        # the paragraph its heading or text refers to, else the one whose heading is on its path, else one for its
+        # nearest heading (small ones joined like any other)
         for num, sl in slug_of.items():
             olds = {x: _sub_names(existing[x]["title"]) for x in existing
                     if x.startswith(sl + "-") and existing[x]["type"] == "subtopic"}
-            todo = [i for i, n in sorted(owner.items()) if n == num and not group_name.get(i)]
+            todo = [i for i, n in sorted(owner.items()) if n == num and not group_name.get(i) and i not in foot]
             if not olds or not todo or num in additive:
                 continue
+            holds = {x: {c.split("|", 1)[1] for c in checks.cites(existing[x]["content_md"])} for x in olds}
             last: list[str] = []
             free = []
             for i in todo:
                 path = last = paths[i] or last  # a paragraph with no heading of its own is under the one before it
+                refs = [r.rstrip(".") for r in REFERS.findall(" ".join(path) + " " + paras[i])]
+                by_ref = collections.Counter(x for r in refs for x in olds if r in holds[x])
                 match = [x for x, heads in olds.items() if any(h in path for h in heads)]
-                if match:
+                if by_ref:
+                    sub_fixed[i] = by_ref.most_common(1)[0][0]
+                elif match:
                     sub_fixed[i] = max(match, key=lambda x: max(path.index(h) for h in olds[x] if h in path))
                 else:
-                    free.append(i)
-            tops: dict[tuple, list[int]] = {}
-            for i in free:
-                tops.setdefault(tuple((paths[i] or [""])[:1]), []).append(i)
-            parts = [([*top, *names] if top != ("",) else names, part)
-                     for top, idx in tops.items() for names, part in _size_split(idx, paths, words, limit, depth=1)]
+                    free.append((i, path))
+            near: dict[tuple, list[int]] = {}
+            for i, path in free:
+                near.setdefault(tuple(path), []).append(i)
+            parts = [(list(path), idx) for path, idx in near.items()]
             if len(parts) > 1 and chk.subtopic_minimum:
                 parts, joined = _join_small(parts, words, chk.subtopic_minimum, limit)
                 joins.extend({"section": num, "joined": a, "into": b} for a, b in joined)
@@ -839,6 +869,13 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                         sub_fixed[i] = next(iter(olds))
             log.info("ingest: section %s already split: %s new paragraphs to its subtopic pages, %s to new ones", num,
                      len(todo) - len(free), len(free))
+    for i, j in foot.items():  # a footnote goes to the subtopic page of the paragraph it belongs to
+        group_name.pop(i, None)
+        sub_fixed.pop(i, None)
+        if j in sub_fixed:
+            sub_fixed[i] = sub_fixed[j]
+        elif group_name.get(j):
+            group_name[i] = group_name[j]
     sub_of: dict[str, dict] = {}  # subtopic page -> its section, its group names and its paragraphs
     for i, sl in sorted(sub_fixed.items()):  # to a subtopic page an earlier upload made
         sub_of.setdefault(sl, {"sec": by_num[owner[i]], "names": _sub_names(existing[sl]["title"], split=False),
