@@ -68,7 +68,7 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
                       tags=p["tags"] or [], base_version=p["version"], change_note="Re-check: index rebuilt from its subtopic pages")
         body, also_lines = _split_also(p["content_md"]) if p["slug"] in section_pages else (p["content_md"], [])
         cite_check = lambda x: fixpass.cite_failures(x, cite_ctx, chk)
-        kind, given, may_shrink = "citations", {}, False
+        kind, given, may_shrink, may_grow = "citations", {}, False, False
         if p["type"] == "source" and p["slug"] in src:
             s = src[p["slug"]]
             # the sections this source informs: section pages (or their subtopic pages) that cite it
@@ -94,12 +94,12 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
             home = lambda c: next((sl for sl, cs in holders.items() if c in cs), None)
             body = fixpass.move_claims(p["slug"], body, home, lambda sl: holders.get(sl, set()), record, cite_ctx["names"])[0]
             check = lambda x: checks.no_claim_failures(x, section_pages, chk, cite_ctx["names"]) + cite_check(x)
-            kind, sources_text = "no claims", ""
+            kind, sources_text, may_grow = "no claims", "", True
         else:  # a split section's index, composed pages: their citations only
             check, sources_text = cite_check, ""
         new = await fixpass.fix_rounds(
             schema=schema, slug=p["slug"], title=p["title"], text=body, check=check, sources_text=sources_text,
-            linkable=linkable, kind=kind, record=record, may_shrink=may_shrink, clause=lambda c: fixpass.is_clause(c, cite_ctx),
+            linkable=linkable, kind=kind, record=record, may_shrink=may_shrink, may_grow=may_grow, clause=lambda c: fixpass.is_clause(c, cite_ctx),
             parse=(lambda r: checks.detail_lines(_fix_breaks(r).strip(), chk)) if kind == "source page" else (lambda r: _fix_breaks(r).strip()))
         content = _with_also(new, also_lines) if also_lines else new
         if content.strip() == p["content_md"].strip():

@@ -204,11 +204,15 @@ def _is_claim(sentence: str, names: set[str] = frozenset()) -> bool:
 
 def take_claims(text: str, movable=lambda sentence: True, names: set[str] = frozenset()) -> tuple[str, list[str]]:
     """A page's text without the sentences that cite a source paragraph (those movable allows), and those sentences.
+    A sentence that also links a wiki page (a section listed with what it covers) stays, without its source citations.
     A line left with no words is dropped, and so is a heading left with nothing under it. names: the wiki's source and
     section names, which a link may show in place of a clause."""
     lines, taken = [], []
     is_claim = lambda x: _is_claim(x, names)
     take = lambda x: is_claim(x) and movable(x.strip())
+    navigates = lambda x: any(not m.group(1).startswith("source-") for m in store.LINK_RE.finditer(x))
+    uncited = lambda x: re.sub(r"\s+([.,;:])", r"\1", store.LINK_RE.sub(
+        lambda m: "" if m.group(1).startswith("source-") and m.group(2) and m.group(2).strip() not in names else m.group(0), x)).strip()
     for line in text.split("\n"):
         if re.match(r"^#{1,6} ", line) or not is_claim(line):
             lines.append(line)
@@ -216,7 +220,7 @@ def take_claims(text: str, movable=lambda sentence: True, names: set[str] = froz
         lead = (BULLET.match(line) or [""])[0]
         parts = SENTENCE_END.split(line[len(lead):])
         taken += [x.strip() for x in parts if take(x)]
-        rest = " ".join(x for x in parts if not take(x)).strip()
+        rest = " ".join(uncited(x) if take(x) and navigates(x) else x for x in parts if not take(x) or navigates(x)).strip()
         if re.search(r"[A-Za-z]", store.LINK_RE.sub("x", rest)):
             lines.append(lead + rest)
     blocks = [b for b in re.split(r"\n\s*\n", "\n".join(lines)) if b.strip()]

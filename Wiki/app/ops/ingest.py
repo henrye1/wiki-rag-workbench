@@ -1245,7 +1245,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         top.content_md = await fixpass.fix_rounds(
             schema=schema, slug=top.slug, title=top.title, text=top.content_md, sources_text="", linkable=linkable,
             check=lambda x: checks.no_claim_failures(x, set(sec_of), chk, cite_ctx["names"]) + cite_failures(x),
-            clause=lambda c: fixpass.is_clause(c, cite_ctx),
+            clause=lambda c: fixpass.is_clause(c, cite_ctx), may_grow=True,
             parse=lambda r: _fix_breaks(r).strip(), kind="no claims", record=check_fixes,
             ok=lambda old, new: not checks.cites(new) - checks.cites(old))  # a fix adds no claim
     if not ops:

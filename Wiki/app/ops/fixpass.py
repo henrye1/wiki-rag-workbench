@@ -86,11 +86,12 @@ def move_claims(slug: str, text: str, home, holds, record: list, names: set[str]
 
 async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, sources_text: str, linkable: str, parse,
                      kind: str, record: list, out_schema=prompts.PAGE_SCHEMA, ok=lambda old, new: True,
-                     may_shrink: bool = False, clause=lambda cite: True) -> str:
+                     may_shrink: bool = False, may_grow: bool = False, clause=lambda cite: True) -> str:
     """Check the page; if anything fails, send it back with the list, at most twice. A rewrite is kept only if it has
     fewer failures, loses no citation of a source paragraph (clause tells one from a broken link, which a fix may
     repair), stays about the same length (a fix changes what was listed, not the whole page; may_shrink when a failure
-    asks for something to be taken out) and passes ok."""
+    asks for something to be taken out; may_grow when it asks for something to be added that may be long, such as the
+    list of pages an index or the overview must link) and passes ok."""
     rounds = []
     for rnd in (1, 2):
         failures = check(text)
@@ -106,7 +107,7 @@ async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, so
             lost = [] if may_shrink else sorted(c for c in checks.cites(text) - checks.cites(new) if clause(c))
             n_old, n_new = len(text.split()), len(new.split())
             keep = (bool(new.strip()) and len(after) < len(failures) and not lost and ok(text, new)
-                    and n_new <= 1.5 * n_old + 200 and (may_shrink or n_new >= 0.8 * n_old))
+                    and (may_grow or n_new <= 1.5 * n_old + 200) and (may_shrink or n_new >= 0.8 * n_old))
             rec |= {"kept": keep, "fixed": len(failures) - len(after) if keep else 0, "still": after, "words": [n_old, n_new],
                     **({"lost_citations": lost} if lost else {})}
             if keep:
