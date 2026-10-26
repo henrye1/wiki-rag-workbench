@@ -250,7 +250,8 @@ The engine reads these lists to route the issuer's labelled examples, to split s
 - Examples section: 14
 - Kinds routed to the examples section: example
 - Example labels (an issuer's own example, routed to the examples section; <n> is a number or a letter, as in Instrument A): "Example <n>", "Instrument <n>", "Scenario <n>", "Illustration <n>"
-- Split sections (section number = what each subtopic page is grouped by): 14 = the section of the fifteen that owns the requirement each example illustrates
+- Split sections (section number = what each subtopic page is grouped by): 14 = the section of the fifteen that owns the requirement each example illustrates; 11 = the section each line points to. An item matching Example labels is never split across pages; a group over the size limit splits between items only.
+- Document names (a name, never a clause, where it stands in a citation): "IFRS <n>", "IAS <n>", "IFRIC <n>", "SIC <n>"
 - Defined-term citation form: "Appendix A: <term>"
 - Citation forms for text without a paragraph label: editorial note = "ED:<clause>"; front matter = "<page label>"
 - Page size limit: 6000 words. A section page whose write-up would be over this is split by source headings: the highest heading level at which its paragraphs fall under more than one heading. A subtopic page over the limit is split again at the next heading level. After writing, a sub-page over the limit is split again one level down. A document's title heading is not a heading group for splitting. When a section page that already holds write-ups is split, each write-up moves word for word to the sub-page whose heading is on the heading path of the paragraph it cites; where no sub-page has such a heading, it goes to a sub-page named after that paragraph's nearest heading (e.g. 6.6 Presentation), never after the document's title.

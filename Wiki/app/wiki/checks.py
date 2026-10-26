@@ -38,6 +38,7 @@ class Checks:
     no_claim_pages: list[str] = field(default_factory=list)  # pages that hold no claims: slugs, or a kind of page
     no_claim_index: bool = False  # the list names a split section's index page among them
     stub_forms: list[str] = field(default_factory=list)  # what a deleted or left-out paragraph says instead of its text
+    document_names: list[str] = field(default_factory=list)  # forms of a document's name, never a clause in a citation
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
 
 
@@ -49,7 +50,7 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "defined_term_form": "defined-term citation form",
     "unlabelled_forms": "citation forms for text without a paragraph label", "page_size_limit": "page size limit",
     "subtopic_minimum": "subtopic page minimum", "slug_words": "subtopic slug", "no_claim_pages": "pages that hold no claims",
-    "stub_forms": "stub forms",
+    "stub_forms": "stub forms", "document_names": "document names",
 }
 
 
@@ -90,7 +91,8 @@ def load(schema_md: str) -> Checks | None:
         elif attr == "defined_term_form":
             c.defined_term_form = (QUOTED.findall(value) or [""])[0]
         elif attr == "split":
-            c.split = {int(k): v for k, v in _mapping(value).items() if k.strip().isdigit()}
+            c.split = {int(k): re.split(r"\.\s+(?=[A-Z])", v, maxsplit=1)[0] for k, v in _mapping(value).items()
+                       if k.strip().isdigit()}  # each up to the sentence after the list
         elif attr == "routed_kinds":
             c.routed_kinds = [x.strip().strip('"').casefold() for x in value.split(",") if x.strip()]
         elif attr == "linking":
@@ -165,6 +167,26 @@ def is_stub(text: str, c: Checks | None) -> bool:
     if not rx or not rx.search(body):
         return False
     return not re.search(r"[A-Za-z]{3,}", LABEL_TOKEN.sub(" ", rx.sub(" ", body)))
+
+
+def document_name_re(c: Checks | None) -> re.Pattern | None:
+    """The schema's document names ("IFRS <n>") as one pattern: a name, not a clause, inside a citation label."""
+    if not c or not c.document_names:
+        return None
+    return re.compile(r"\b(?:" + "|".join(_template(x, NUMBER).replace(r"\ ", r"\s*") for x in c.document_names) + r")\b")
+
+
+def example_item(path: list[str], text: str, c: Checks | None) -> str | None:
+    """The labelled example a paragraph belongs to: the nearest heading on its path that carries one of the schema's
+    example labels, else the first label in its own text."""
+    rx = example_label_re(c) if c else None
+    if not rx:
+        return None
+    for h in reversed(path):
+        if m := rx.search(h):
+            return m.group(0)
+    m = rx.search(re.sub(r"^\[[^\]]+\]\s*", "", text))
+    return m.group(0) if m else None
 
 
 def footnote_form(c: Checks | None) -> str | None:

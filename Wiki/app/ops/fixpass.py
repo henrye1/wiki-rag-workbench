@@ -26,7 +26,8 @@ async def cite_context(wiki_id: UUID, section_names: list[str]) -> dict:
         for b in re.split(r"\n\s*\n", r["text"] or ""):
             if m := LABEL_RE.match(b.strip()):
                 texts[r["slug"]].setdefault(m.group(1), []).append(b.strip())
-    return {"matchers": {r["slug"]: m for r in rows if (m := citecheck._matcher(r["text"]))},
+    doc_names = await citecheck.document_names(wiki_id)
+    return {"matchers": {r["slug"]: m for r in rows if (m := citecheck._matcher(r["text"], doc_names))}, "doc_names": doc_names,
             "labels": {r["slug"]: set(LABEL_RE.findall(r["text"] or "")) for r in rows},
             "texts": {sl: {k: "\n\n".join(v) for k, v in t.items()} for sl, t in texts.items()},
             "titles": {r["slug"]: ((r["meta"] or {}).get("document") or {}).get("part") or r["title"] for r in rows},
@@ -54,7 +55,7 @@ def kept_failures(text: str, earlier: set[str]) -> list[str]:
 
 def cite_failures(text: str, ctx: dict, chk: checks.Checks | None) -> list[str]:
     """Citations the citation check would flag, and citations that cite something other than a clause."""
-    _, _, flagged = citecheck.check(text, ctx["matchers"])
+    _, _, flagged = citecheck.check(text, ctx["matchers"], ctx.get("doc_names"))
     out = [f'The citation [[{src}|{label}]] does not match a paragraph of that source ({reason}); cite the paragraph '
            "it states, by its own label." for (src, label, reason) in flagged]
     return out + checks.citation_failures(text, ctx["labels"], ctx["names"], chk)
