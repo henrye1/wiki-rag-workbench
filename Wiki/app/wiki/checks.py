@@ -35,7 +35,8 @@ class Checks:
     subtopic_minimum: int | None = None  # words: a smaller group is joined to its neighbour under the same parent
     slug_words: int | None = None  # words of an unnumbered heading used in a subtopic slug
     unlabelled_forms: dict[str, str] = field(default_factory=dict)  # kind of text without a paragraph label -> its citation form
-    no_claim_pages: list[str] = field(default_factory=list)  # slugs of pages that link every section and hold no claims
+    no_claim_pages: list[str] = field(default_factory=list)  # pages that hold no claims: slugs, or a kind of page
+    no_claim_index: bool = False  # the list names a split section's index page among them
     stub_forms: list[str] = field(default_factory=list)  # what a deleted or left-out paragraph says instead of its text
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
 
@@ -100,8 +101,9 @@ def load(schema_md: str) -> Checks | None:
             forms = [x.strip() for x in value.split("\u00b7")]
             forms[-1] = re.split(r"\.\s+(?=[A-Z])", forms[-1], maxsplit=1)[0]
             c.stub_forms = [x for x in forms if x]
-        elif attr == "no_claim_pages":  # the slugs, up to the first full stop
+        elif attr == "no_claim_pages":  # up to the first full stop: page slugs, and kinds of page such as index pages
             c.no_claim_pages = [x.strip() for x in value.split(".")[0].split(",") if x.strip()]
+            c.no_claim_index = any(re.search(r"\bindex\b", x, re.I) for x in c.no_claim_pages)
         elif attr in ("max_takeaways", "examples_section", "page_size_limit", "subtopic_minimum", "slug_words"):
             n = re.search(r"\d+", value)
             setattr(c, attr, int(n.group(0)) if n else None)
@@ -223,14 +225,19 @@ def take_claims(text: str, movable=lambda sentence: True, names: set[str] = froz
     return "\n\n".join(blocks), taken
 
 
-def no_claim_failures(content: str, slug: str, section_slugs: set[str], c: Checks | None,
-                      names: set[str] = frozenset()) -> list[str]:
-    """Where a page the schema says holds no claims breaks that: a section page it does not link, a sentence on it that
-    cites a source paragraph."""
-    if not c or slug not in c.no_claim_pages:
+def holds_no_claims(c: Checks | None, slug: str, is_index: bool = False) -> bool:
+    """Whether the schema says this page holds no claims: it is named, or it is a split section's index page and the
+    schema names those."""
+    return bool(c) and (slug in c.no_claim_pages or (is_index and c.no_claim_index))
+
+
+def no_claim_failures(content: str, must_link: set[str], c: Checks | None, names: set[str] = frozenset()) -> list[str]:
+    """Where a page that holds no claims breaks that: a page it must link (the overview: every section page; an index
+    page: every subtopic page of its section) that it does not, and a sentence on it that cites a source paragraph."""
+    if not c:
         return []
     linked = {m.group(1) for m in store.LINK_RE.finditer(content)}
-    out = [f"The page does not list the section page [[{s}]]; it lists every section page." for s in sorted(section_slugs - linked)]
+    out = [f"The page does not list [[{s}]]; it lists every page it is the index of." for s in sorted(must_link - linked)]
     return out + [f'The sentence "{" ".join(x.split()[:15])} ..." cites a source paragraph, but this page holds no claims: '
                   "the claim belongs on the page that holds that paragraph." for x in take_claims(content, names=names)[1]]
 

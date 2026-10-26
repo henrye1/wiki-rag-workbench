@@ -89,7 +89,7 @@ def from_pdf(name: str, data: bytes, max_words: int, example_re=None, stub_re=No
         # Binding text only, labelled by paragraph number so notes can cite it
         chunks = [c for c in chunks if c.source_type in ("standard", "appendix_a", "appendix_b", "footnote")]
         heads = _example_heads(chunks, example_re)
-        blocks = [f"[{c.para_ref or 'p' + str(c.page)}] {_with_head(c.content, h)}" for c, h in zip(chunks, heads)]
+        blocks = [f"[{c.para_ref or 'p' + str(c.page)}] {_with_head(c.content, h if not (stub_re and stub_re.match(c.content)) else "")}" for c, h in zip(chunks, heads)]
         meta["parser"] = "ifrs"
         meta["headings"] = [(c.heading or "").strip() for c in chunks]  # one per block, for routing to schema sections
         meta["outline"] = _outline(chunks)
@@ -100,7 +100,7 @@ def from_pdf(name: str, data: bytes, max_words: int, example_re=None, stub_re=No
         chunks = [c for c in chunks if c.source_type in KIND_LABELS or c.source_type == "footnote"]
         heads = _example_heads(chunks, example_re)
         blocks = [f"[{c.para_ref}] " + (f"({KIND_LABELS[c.source_type]}) " if c.source_type in KIND_LABELS else "")
-                  + _with_head(c.content, h) for c, h in zip(chunks, heads)]
+                  + _with_head(c.content, h if not (stub_re and stub_re.match(c.content)) else "") for c, h in zip(chunks, heads)]
         meta["parser"] = "ifrs_accompanying"
         meta["headings"] = [(c.heading or "").strip() for c in chunks]
         meta["kinds"] = [c.source_type for c in chunks]

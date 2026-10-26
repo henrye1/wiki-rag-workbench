@@ -11,7 +11,7 @@ from ..jobs import JobContext
 from ..wiki import checks, store
 from ..wiki.store import Op
 from . import fixpass
-from .ingest import _covers, _fix_breaks, _section_for, _sections, _split_also, _with_also
+from .ingest import _covers, _fix_breaks, _index_md, _section_for, _sections, _split_also, _with_also
 
 log = logging.getLogger(__name__)
 CITE = re.compile(r"\[\[(source-[^\]|#]+)(?:#[^\]|]*)?\|([^\]]+)\]\]")
@@ -56,6 +56,16 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
         return out
 
     async def one(p: dict) -> Op | None:
+        if p["slug"] in index_pages and checks.holds_no_claims(chk, p["slug"], True):
+            # a split section's index holds no claims: rebuilt from its subtopic pages, in the order it listed them
+            subs = sorted((x for x in pages if x["type"] == "subtopic" and x["slug"].startswith(p["slug"] + "-")),
+                          key=lambda x: p["content_md"].find(f"[[{x['slug']}") % (len(p["content_md"]) + 1))
+            sec = _section_for(sections, p["title"], p["slug"])
+            content, summary = _index_md(sec["name"] if sec else p["title"], subs, cite_ctx["titles"])
+            if content.strip() == p["content_md"].strip():
+                return None
+            return Op(op="update", slug=p["slug"], title=p["title"], type=p["type"], summary=summary, content_md=content,
+                      tags=p["tags"] or [], base_version=p["version"], change_note="Re-check: index rebuilt from its subtopic pages")
         body, also_lines = _split_also(p["content_md"]) if p["slug"] in section_pages else (p["content_md"], [])
         cite_check = lambda x: fixpass.cite_failures(x, cite_ctx, chk)
         kind, given, may_shrink = "citations", {}, False
@@ -78,18 +88,18 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
                     out += checks.section_failures(x, paras, src[slug]["kinds"], slug, chk, _covers, cite_ctx["labels"].get(slug, set()))
                 return out + cite_check(x)
             kind, sources_text = "section", "\n\n".join(b for paras in given.values() for b in paras)
-        elif p["slug"] in chk.no_claim_pages:  # a claim already on the page that holds its paragraph is dropped here
+        elif checks.holds_no_claims(chk, p["slug"]):  # a claim already on the page that holds its paragraph is dropped here
             holders = {x["slug"]: checks.cites(x["content_md"]) for x in pages if x["type"] in ("topic", "subtopic")
                        and x["slug"] not in index_pages and x["slug"] not in chk.no_claim_pages}
             home = lambda c: next((sl for sl, cs in holders.items() if c in cs), None)
             body = fixpass.move_claims(p["slug"], body, home, lambda sl: holders.get(sl, set()), record, cite_ctx["names"])[0]
-            check = lambda x: checks.no_claim_failures(x, p["slug"], section_pages, chk, cite_ctx["names"]) + cite_check(x)
+            check = lambda x: checks.no_claim_failures(x, section_pages, chk, cite_ctx["names"]) + cite_check(x)
             kind, sources_text = "no claims", ""
         else:  # a split section's index, composed pages: their citations only
             check, sources_text = cite_check, ""
         new = await fixpass.fix_rounds(
             schema=schema, slug=p["slug"], title=p["title"], text=body, check=check, sources_text=sources_text,
-            linkable=linkable, kind=kind, record=record, may_shrink=may_shrink,
+            linkable=linkable, kind=kind, record=record, may_shrink=may_shrink, clause=lambda c: fixpass.is_clause(c, cite_ctx),
             parse=(lambda r: checks.detail_lines(_fix_breaks(r).strip(), chk)) if kind == "source page" else (lambda r: _fix_breaks(r).strip()))
         content = _with_also(new, also_lines) if also_lines else new
         if content.strip() == p["content_md"].strip():

@@ -29,7 +29,14 @@ async def cite_context(wiki_id: UUID, section_names: list[str]) -> dict:
     return {"matchers": {r["slug"]: m for r in rows if (m := citecheck._matcher(r["text"]))},
             "labels": {r["slug"]: set(LABEL_RE.findall(r["text"] or "")) for r in rows},
             "texts": {sl: {k: "\n\n".join(v) for k, v in t.items()} for sl, t in texts.items()},
+            "titles": {r["slug"]: ((r["meta"] or {}).get("document") or {}).get("part") or r["title"] for r in rows},
             "names": names}
+
+
+def is_clause(cite: str, ctx: dict) -> bool:
+    """A citation (slug|clause) of a paragraph its source holds, not of a page, a name or a label the source lacks."""
+    slug, _, label = cite.partition("|")
+    return label in ctx["labels"].get(slug, set())
 
 
 def earlier_cites(before: str, ctx: dict) -> set[str]:
@@ -79,10 +86,11 @@ def move_claims(slug: str, text: str, home, holds, record: list, names: set[str]
 
 async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, sources_text: str, linkable: str, parse,
                      kind: str, record: list, out_schema=prompts.PAGE_SCHEMA, ok=lambda old, new: True,
-                     may_shrink: bool = False) -> str:
+                     may_shrink: bool = False, clause=lambda cite: True) -> str:
     """Check the page; if anything fails, send it back with the list, at most twice. A rewrite is kept only if it has
-    fewer failures, loses no citation, stays about the same length (a fix changes what was listed, not the whole page;
-    may_shrink when a failure asks for something to be taken out) and passes ok."""
+    fewer failures, loses no citation of a source paragraph (clause tells one from a broken link, which a fix may
+    repair), stays about the same length (a fix changes what was listed, not the whole page; may_shrink when a failure
+    asks for something to be taken out) and passes ok."""
     rounds = []
     for rnd in (1, 2):
         failures = check(text)
@@ -95,7 +103,7 @@ async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, so
                 source_paragraphs=sources_text or "(none)")), out_schema)
             new = parse(out["content_md"])
             after = check(new)
-            lost = [] if may_shrink else sorted(checks.cites(text) - checks.cites(new))
+            lost = [] if may_shrink else sorted(c for c in checks.cites(text) - checks.cites(new) if clause(c))
             n_old, n_new = len(text.split()), len(new.split())
             keep = (bool(new.strip()) and len(after) < len(failures) and not lost and ok(text, new)
                     and n_new <= 1.5 * n_old + 200 and (may_shrink or n_new >= 0.8 * n_old))

@@ -374,6 +374,13 @@ def _join_small(parts: list, words: list[int], minimum: int, limit: int | None =
 HEADS_SEP = " · "  # between the headings of a group joined from several
 
 
+def _sub_names(title: str, split: bool = True) -> list[str]:
+    """A subtopic page's group names, read back from its title ("<section>: <name> – <name>"); split: each heading of a
+    joined group on its own."""
+    names = title.split(": ", 1)[-1].split(" \u2013 ")
+    return [h for n in names for h in n.split(HEADS_SEP)] if split else names
+
+
 def _sub_slug(sec_slug: str, names: list[str], slug_words: int | None) -> str:
     """A subtopic slug: the heading's own number where it has one (6.3 -> <section>-6-3), else its first words."""
     head = names[-1].split(HEADS_SEP)[0] if names else ""  # a joined group: its first heading
@@ -388,6 +395,30 @@ def _add_blocks(md: str, text: str) -> str:
     body, also_lines = _split_also(md)
     head, sep, tail = body.partition("\n\nNot yet covered")
     return _with_also(f"{head}\n\n{text}{sep}{tail}", also_lines)
+
+
+def _index_md(sec_name: str, subs: list[dict], titles: dict[str, str]) -> tuple[str, str]:
+    """A split section's index page, built from its subtopic pages: each page's link and title, and under it each of
+    its headings with the clauses cited there, named with their own source. It links every subtopic page and holds no
+    claims: the clauses are listed, not cited, and nothing a subtopic page states (its summary included) is copied.
+    Returns (content, one-line summary)."""
+    blocks = []
+    for p in subs:
+        lines = [f"## [[{p['slug']}|{p['title']}]]"]
+        for block in re.split(r"(?m)^(?=#{2,4} )", p["content_md"]):
+            head = re.match(r"#{2,4} (.*)", block)
+            by_src: dict[str, list[str]] = {}
+            for m in store.LINK_RE.finditer(block):
+                if m.group(1).startswith("source-") and m.group(2) and m.group(2) not in by_src.get(m.group(1), []):
+                    by_src.setdefault(m.group(1), []).append(m.group(2).strip())
+            if by_src:  # under its heading, or (a page without sub-headings) its opening words
+                name = store.LINK_RE.sub(lambda m: m.group(2) or m.group(1), head.group(1)).strip() if head else \
+                    " ".join(store.LINK_RE.sub("", block).split()[:25]) + " ..."
+                lines.append(f"- {name}: cites " + "; ".join(f"{titles.get(src, src)} {', '.join(labs[:40])}"
+                                                             for src, labs in by_src.items()))
+        blocks.append("\n".join(x for x in lines if x))
+    summary = f"{sec_name}: index of its subtopic pages: " + "; ".join(p["title"].split(": ", 1)[-1] for p in subs)
+    return "\n\n".join(blocks), summary[:500]
 
 
 def _blocks(md: str) -> list[str]:
@@ -744,6 +775,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     joins: list[dict] = []  # small groups joined to a neighbour (the schema's subtopic minimum)
     split_basis: dict = {}  # the heading paths and word counts the split used
     limit = chk.page_size_limit if chk else None
+    sub_fixed: dict[int, str] = {}  # paragraph -> an existing subtopic page of its (already split) section
     if limit and owner:
         hp = ex.meta.get("heading_paths") or []
         paths = _anchored_paths(paras, hp if len(hp) == len(paras) else [[] for _ in paras], ex.meta.get("para_kinds"))
@@ -770,8 +802,46 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                             group_name[i] = list(key) + names
                     log.info("ingest: section %s%s is over %s words: split by headings into %s pages", num,
                              f" ({' / '.join(key)})" if key else "", limit, len(parts))
+        # a section an earlier upload split stays an index: each new paragraph goes to a subtopic page, the one whose
+        # heading is on its heading path, else one for its top heading (split by size and joined like any other)
+        for num, sl in slug_of.items():
+            olds = {x: _sub_names(existing[x]["title"]) for x in existing
+                    if x.startswith(sl + "-") and existing[x]["type"] == "subtopic"}
+            todo = [i for i, n in sorted(owner.items()) if n == num and not group_name.get(i)]
+            if not olds or not todo or num in additive:
+                continue
+            last: list[str] = []
+            free = []
+            for i in todo:
+                path = last = paths[i] or last  # a paragraph with no heading of its own is under the one before it
+                match = [x for x, heads in olds.items() if any(h in path for h in heads)]
+                if match:
+                    sub_fixed[i] = max(match, key=lambda x: max(path.index(h) for h in olds[x] if h in path))
+                else:
+                    free.append(i)
+            tops: dict[tuple, list[int]] = {}
+            for i in free:
+                tops.setdefault(tuple((paths[i] or [""])[:1]), []).append(i)
+            parts = [([*top, *names] if top != ("",) else names, part)
+                     for top, idx in tops.items() for names, part in _size_split(idx, paths, words, limit, depth=1)]
+            if len(parts) > 1 and chk.subtopic_minimum:
+                parts, joined = _join_small(parts, words, chk.subtopic_minimum, limit)
+                joins.extend({"section": num, "joined": a, "into": b} for a, b in joined)
+            for names, part in parts:
+                for i in part:
+                    if names:
+                        group_name[i] = names
+                    else:  # no heading anywhere: the section's first subtopic page
+                        sub_fixed[i] = next(iter(olds))
+            log.info("ingest: section %s already split: %s new paragraphs to its subtopic pages, %s to new ones", num,
+                     len(todo) - len(free), len(free))
     sub_of: dict[str, dict] = {}  # subtopic page -> its section, its group names and its paragraphs
+    for i, sl in sorted(sub_fixed.items()):  # to a subtopic page an earlier upload made
+        sub_of.setdefault(sl, {"sec": by_num[owner[i]], "names": _sub_names(existing[sl]["title"], split=False),
+                               "paras": []})["paras"].append(i)
     for i, names in sorted(group_name.items()):
+        if i in sub_fixed:
+            continue
         if owner.get(i) in slug_of and names:
             sl = _sub_slug(slug_of[owner[i]], names, chk.slug_words if chk else None)
             if sl in sub_of and sub_of[sl]["names"] != names:  # two groups with the same short name: add the parent's
@@ -808,6 +878,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     cite_failures = lambda text: fixpass.cite_failures(text, cite_ctx, chk)
     fill_passes: list[dict] = []  # what each extra writing pass was asked for and returned
     missed: list[dict] = []  # paragraphs still not written up (or not also recorded) after the extra passes
+    restored: list[dict] = []  # earlier write-ups a rewrite dropped and its fix rounds did not bring back: put back as they were
 
     own: dict[int, list[int]] = {}
     for i, n in sorted(owner.items()):
@@ -825,7 +896,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                                 ok=lambda old, new: True, may_shrink: bool = False) -> str:
             return await fixpass.fix_rounds(schema=schema, slug=slug, title=title, text=text, check=check,
                                             sources_text=sources_text, linkable=linkable, parse=parse, kind=kind,
-                                            record=check_fixes, out_schema=out_schema, ok=ok, may_shrink=may_shrink)
+                                            record=check_fixes, out_schema=out_schema, ok=ok, may_shrink=may_shrink,
+                                            clause=lambda c: fixpass.is_clause(c, cite_ctx))
 
         cur = existing.get(slug)
         sec = sec_of.get(slug) if owner else None
@@ -958,8 +1030,13 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                     sources_text=f"{texts}\n\nWhat the page said about them before:\n\n{old}",
                     parse=(lambda r: checks.detail_lines(_fix_breaks(r).strip(), chk)) if ptype == "source" and chk
                     else (lambda r: _fix_breaks(r).strip()))
-                if still := sorted(earlier - checks.cites(content)):
-                    missed.append({"page": slug, "paragraphs": still, "reason": "cited before this upload, dropped on rewrite"})
+                if still := earlier - checks.cites(content):  # what the page said about them before, word for word
+                    back = [b for b in _blocks(cur_body) if checks.cites(b) & still]
+                    content = _add_blocks(content, "\n\n".join(back))
+                    restored.append({"page": slug, "paragraphs": sorted(still), "blocks": len(back),
+                                     "still_missing": sorted(earlier - checks.cites(content))})
+                    if gone := sorted(earlier - checks.cites(content)):
+                        missed.append({"page": slug, "paragraphs": gone, "reason": "cited before this upload, dropped on rewrite"})
 
         if extra:  # one short line per also-recorded paragraph, linking to its main page
             main_page = {x["num"]: sl for sl, x in sec_of.items()}
@@ -1034,39 +1111,20 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     source_focus = f"Source page. One-line summary: {plan['source_summary']}" + (
         "\nRecorded for this source: " + "; ".join(f"{k}: {v}" for k, v in fields.items()) if fields else "")
 
-    async def write_index(slug: str, title: str, outline: str, fresh: bool = False) -> Op | None:
-        """A split section's own page: the index of its subtopic pages, from what those pages say and cite."""
-        cur = existing.get(slug)
-        out = await llm.generate_json(system, prompts.with_schema(schema, prompts.write_page_prompt(
-            slug=slug, title=title, ptype="topic", focus=prompts.index_prompt_focus(title),
-            existing_md=cur["content_md"] if cur and not fresh else None, material=outline, linkable=linkable,
-            source_slug=source["slug"],
-        )), prompts.PAGE_SCHEMA)
-        content = _fix_breaks(out["content_md"]).strip()
-        if not content:
-            raise RuntimeError(f"index page {slug} came back empty")
-        return Op(op="update" if cur else "create", slug=slug, title=out["title"] or title, type="topic",
-                  summary=out["summary"], content_md=content, tags=out["tags"], base_version=cur["version"] if cur else None,
-                  change_note=out["change_note"])
-
-    def outline(sec_slug: str, written: dict) -> str:
-        """Each subtopic page with its headings and the clauses cited under each: the material for the index."""
-        lines = []
-        for sl in index_of.get(sec_slug, []):
-            if not (o := written.get(sl)):
-                continue
-            lines.append(f"[[{sl}]] {o.title}")
-            n = len(lines)
-            for block in re.split(r"(?m)^(?=#{2,4} )", o.content_md):
-                head = re.match(r"#{2,4} (.*)", block)
-                labs = list(dict.fromkeys(m.group(2) for m in store.LINK_RE.finditer(block)
-                                          if m.group(1).startswith("source-") and m.group(2)))
-                if labs:  # under its heading, or (a page without sub-headings) its opening words
-                    name = head.group(1).strip() if head else " ".join(store.LINK_RE.sub("", block).split()[:25]) + " ..."
-                    lines.append(f"- {name}: cites {', '.join(labs[:40])}")
-            if len(lines) == n:
-                lines.append("- (no citations on this page)")
-        return "\n".join(lines)
+    def index_page(sec_slug: str, written: dict) -> Op:
+        """A split section's own page: the index of all its subtopic pages, those an earlier upload made included."""
+        cur = existing.get(sec_slug)
+        page = lambda x: ({"slug": x, "title": written[x].title, "summary": written[x].summary,
+                           "content_md": written[x].content_md} if x in written else existing[x])
+        subs = list(dict.fromkeys(index_of.get(sec_slug, []) + [
+            x for x in existing if x.startswith(sec_slug + "-") and existing[x]["type"] == "subtopic"]))
+        if cur:  # in the order the page listed them before; new ones after
+            subs.sort(key=lambda x: (cur["content_md"].find(f"[[{x}") % (len(cur["content_md"]) + 1)
+                                     if f"[[{x}" in cur["content_md"] else len(cur["content_md"]) + 1))
+        content, summary = _index_md(sec_of[sec_slug]["name"], [page(x) for x in subs], cite_ctx["titles"])
+        return Op(op="update" if cur else "create", slug=sec_slug, title=cur["title"] if cur else sec_of[sec_slug]["name"],
+                  type="topic", summary=summary, content_md=content, tags=cur["tags"] if cur else [],
+                  base_version=cur["version"] if cur else None, change_note=f"Index of {len(subs)} subtopic pages")
 
     async def write_safe(slug, *args):
         try:
@@ -1147,15 +1205,14 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                 rec["pages"] += [{"slug": sl, "paragraphs": 0, "source_words": 0, "moved_only": True}
                                  for sl in m["new_pages"]]
 
-        async def index_safe(i):
-            try:
-                return await write_index(i["slug"], i["title"], outline(i["slug"], written), fresh=i["slug"] in moved)
-            except Exception as e:
-                log.warning("ingest: index page %s failed: %s", i["slug"], e)
-                failed_pages.append({"slug": i["slug"], "error": f"{type(e).__name__}: {e}"})
-                return None
-
-        ops += [o for o in await llm.gather_limited([index_safe(i) for i in items if i["slug"] in index_of]) if o]
+        indexes = [index_page(i["slug"], written) for i in items if i["slug"] in index_of]
+        ops += indexes
+        for o in indexes:  # built to hold no claims and link every subtopic page: checked all the same
+            subs = {x.slug for x in ops if x.type == "subtopic" and x.slug.startswith(o.slug + "-")} | {
+                x for x in existing if x.startswith(o.slug + "-") and existing[x]["type"] == "subtopic"}
+            if checks.holds_no_claims(chk, o.slug, True) and (
+                    bad := checks.no_claim_failures(o.content_md, subs, chk, cite_ctx["names"])):
+                check_fixes.append({"page": o.slug, "kind": "no claims", "found": len(bad), "still": len(bad), "failures": bad})
     for top in [o for o in ops if chk and o.slug in chk.no_claim_pages]:
         # a page that holds no claims (the schema's Checks): each claim on it moves to the page that holds the paragraph
         # it cites (this upload's paragraphs: the page they were written up on; earlier ones: a page that cites them)
@@ -1183,7 +1240,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             on[sl].content_md = _add_blocks(on[sl].content_md, "\n\n".join(xs))
         top.content_md = await fixpass.fix_rounds(
             schema=schema, slug=top.slug, title=top.title, text=top.content_md, sources_text="", linkable=linkable,
-            check=lambda x, sl=top.slug: checks.no_claim_failures(x, sl, set(sec_of), chk, cite_ctx["names"]) + cite_failures(x),
+            check=lambda x: checks.no_claim_failures(x, set(sec_of), chk, cite_ctx["names"]) + cite_failures(x),
+            clause=lambda c: fixpass.is_clause(c, cite_ctx),
             parse=lambda r: _fix_breaks(r).strip(), kind="no claims", record=check_fixes,
             ok=lambda old, new: not checks.cites(new) - checks.cites(old))  # a fix adds no claim
     if not ops:
@@ -1231,7 +1289,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     subtopics = {sl: [label(i) for i in sub["paras"]] for sl, sub in sub_of.items()}
     also_recorded = {f"{x['num']:02d} {x['name']}": [label(i) for i in also[x["num"]]] for x in sections if x["num"] in also}
     return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "empty_retries": empty_retries, "check_fixes": check_fixes, "routing": routing, "subtopics": subtopics, "splits": splits, "unassigned": unassigned, "stubs": [_ref(paras[i]) for i in sorted(stubs)],
-            "also_recorded": also_recorded, "missed_paragraphs": missed, "citations": citations, "fill_passes": fill_passes, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
+            "also_recorded": also_recorded, "missed_paragraphs": missed, "restored": restored, "citations": citations, "fill_passes": fill_passes, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
 
 
 async def run_safe(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: str) -> dict:

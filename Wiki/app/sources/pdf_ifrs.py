@@ -157,9 +157,12 @@ LABEL_IN_TEXT = PARA_RE.pattern.strip("^$")
 
 def _split_stubs(ref: str | None, body: str, stub_re) -> list[tuple[str | None, str]]:
     """A paragraph's text with each stub printed inside it under its own label ("... 12–12A [Deleted]") taken out
-    as its own paragraph; text after a stub stays with the paragraph."""
+    as its own paragraph; text after a stub stays with the paragraph. A paragraph that opens with a stub is only the
+    stub: text after it (a heading or contents line run on) is unlabelled text of its own."""
     if not body or not stub_re:
         return [(ref, body)] if body else []
+    if ref and (lead := stub_re.match(body)) and body[lead.end():].strip():
+        return [(ref, lead.group(0))] + _split_stubs(None, body[lead.end():].strip(), stub_re)
     dash = "".join(RANGE_DASH)
     rx = re.compile(rf"(?:(?<=\s)|^)({LABEL_IN_TEXT}(?:[{dash}]{LABEL_IN_TEXT})?)\s+(?=(?:{stub_re.pattern}))", stub_re.flags)
     own, out, at = [], [], 0
@@ -334,8 +337,9 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
         body = EDITORIAL_BRACKETS.sub("", _join(p.body))
         body = clean(body)
         for r, text in _split_stubs(ref, body, stub_re):
+            kind = p.section if r or not accompanying else "intro"  # unlabelled text in a document published with one
             for i, part in enumerate(split_long(text, max_words)):
-                chunks.append(Chunk(r, p.section, p.page, p.heading, part, i, p.path))
+                chunks.append(Chunk(r, kind, p.page, p.heading, part, i, p.path))
         for lines in p.footnotes:  # under its paragraph, in the schema's form for text without a paragraph label
             if footnote_form and ref and (text := clean(_join(lines))):
                 chunks.append(Chunk(footnote_form.replace("<clause>", ref), "footnote", p.page, p.heading, text, 0, p.path))
