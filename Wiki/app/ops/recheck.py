@@ -66,7 +66,9 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
                 return None
             return Op(op="update", slug=p["slug"], title=p["title"], type=p["type"], summary=summary, content_md=content,
                       tags=p["tags"] or [], base_version=p["version"], change_note="Re-check: index rebuilt from its subtopic pages")
-        body, also_lines = _split_also(p["content_md"]) if p["slug"] in section_pages else (p["content_md"], [])
+        # the "Also recorded here" lines (on a section page, or on a subtopic page of a split section) are kept as they
+        # are: each points to its paragraph's own page, where that paragraph is checked
+        body, also_lines = _split_also(p["content_md"]) if p["type"] in ("topic", "subtopic") else (p["content_md"], [])
         cite_check = lambda x: fixpass.cite_failures(x, cite_ctx, chk)
         kind, given, may_shrink, may_grow = "citations", {}, False, False
         if p["type"] == "source" and p["slug"] in src:
