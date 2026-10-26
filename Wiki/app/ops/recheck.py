@@ -49,7 +49,7 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
             for slug, label in CITE.findall(_split_also(x["content_md"])[0]):
                 times.setdefault(f"{slug}|{BASE(label)}", {}).setdefault(x["slug"], 0)
                 times[f"{slug}|{BASE(label)}"][x["slug"]] += 1
-    home = {k: {sl for sl, n in v.items() if n == max(v.values())} for k, v in times.items()}
+    write_up = {k: {sl for sl, n in v.items() if n == max(v.values())} for k, v in times.items()}
     await ctx.progress(stage="check", pages=len(pages))
     record: list[dict] = []
 
@@ -96,7 +96,7 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
                 out = []
                 for slug, paras in given.items():
                     out += checks.section_failures(x, paras, src[slug]["kinds"], slug, chk, _covers, cite_ctx["labels"].get(slug, set()),
-                                                   holds=lambda ref, slug=slug: p["slug"] in home.get(f"{slug}|{ref}", {p["slug"]}))
+                                                   holds=lambda ref, slug=slug: p["slug"] in write_up.get(f"{slug}|{ref}", {p["slug"]}))
                 return out + cite_check(x)
             kind, sources_text = "section", "\n\n".join(b for paras in given.values() for b in paras)
         elif checks.holds_no_claims(chk, p["slug"]):  # a claim already on the page that holds its paragraph is dropped here
