@@ -177,11 +177,12 @@ def write_page_prompt(
                f"<earlier_parts>.\n<earlier_parts>\n{earlier_parts}\n</earlier_parts>\n")
             + ("" if auto_gaps else "Do not write a 'Not yet covered' list; it is added after all parts are written.\n")
         )
-        if existing_md:
+        if existing_md:  # the first part only: it integrates the current page, all of it, once
             current += (
                 f"<current_page version=\"existing\">\n{existing_md}\n</current_page>\n"
-                "Keep the current page's correct content that relates to this part's source paragraphs, with its citations; "
-                "flag contradictions with the schema's contradiction callout rather than silently replacing claims.\n"
+                "Write this first part as the full current page with this part's material integrated: keep all of the "
+                "current page's correct content and its citations, once each; flag contradictions with the schema's "
+                "contradiction callout rather than silently replacing claims.\n"
             )
     elif existing_md:
         current = (

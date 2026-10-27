@@ -58,7 +58,8 @@ def cite_failures(text: str, ctx: dict, chk: checks.Checks | None) -> list[str]:
     _, _, flagged = citecheck.check(text, ctx["matchers"], ctx.get("doc_names"))
     out = [f'The citation [[{src}|{label}]] does not match a paragraph of that source ({reason}); cite the paragraph '
            "it states, by its own label." for (src, label, reason) in flagged]
-    return out + checks.citation_failures(text, ctx["labels"], ctx["names"], chk)
+    return list(dict.fromkeys(out + checks.citation_failures(text, ctx["labels"], ctx["names"], chk)
+                              + checks.label_failures(text, ctx["labels"], chk)))
 
 
 def move_claims(slug: str, text: str, home, holds, record: list, names: set[str] = frozenset()) -> tuple[str, dict[str, list[str]]]:
@@ -94,6 +95,11 @@ async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, so
     asks for something to be taken out; may_grow when it asks for something to be added that may be long, such as the
     list of pages an index or the overview must link) and passes ok."""
     rounds = []
+    initial = check(text)
+    if any(f.startswith(checks.REPEAT) for f in initial):  # the same text twice: its later copies go, word for word
+        text, n = checks.drop_repeats(text)
+        rounds.append({"round": "repeats", "failures": [f for f in check(text) if f.startswith(checks.REPEAT)] or ["repeats"],
+                       "kept": True, "fixed": n, "still": [f for f in check(text) if f.startswith(checks.REPEAT)]})
     for rnd in (1, 2):
         failures = check(text)
         if not failures:
@@ -123,7 +129,7 @@ async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, so
         text = await _fix_blocks(schema=schema, slug=slug, title=title, text=text, failures=left, check=check,
                                  sources_text=sources_text, linkable=linkable, parse=parse, clause=clause, rounds=rounds)
     if rounds:
-        record.append({"page": slug, "kind": kind, "found": len(rounds[0]["failures"]), "still": len(check(text)),
+        record.append({"page": slug, "kind": kind, "found": len(initial), "still": len(check(text)),
                        "rounds": rounds})
     return text
 

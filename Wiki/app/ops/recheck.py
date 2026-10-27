@@ -11,7 +11,7 @@ from ..jobs import JobContext
 from ..wiki import checks, store
 from ..wiki.store import Op
 from . import fixpass
-from .ingest import _covers, _fix_breaks, _index_md, _section_for, _sections, _split_also, _with_also
+from .ingest import _covers, _fix_breaks, _index_md, _section_for, _sections, _split_also, _with_also, split_written
 
 log = logging.getLogger(__name__)
 CITE = re.compile(r"\[\[(source-[^\]|#]+)(?:#[^\]|]*)?\|([^\]]+)\]\]")
@@ -97,7 +97,7 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
                 for slug, paras in given.items():
                     out += checks.section_failures(x, paras, src[slug]["kinds"], slug, chk, _covers, cite_ctx["labels"].get(slug, set()),
                                                    holds=lambda ref, slug=slug: p["slug"] in write_up.get(f"{slug}|{ref}", {p["slug"]}))
-                return out + cite_check(x)
+                return out + checks.repeat_failures(x) + cite_check(x)
             kind, sources_text = "section", "\n\n".join(b for paras in given.values() for b in paras)
         elif checks.holds_no_claims(chk, p["slug"]):  # a claim already on the page that holds its paragraph is dropped here
             holders = {x["slug"]: checks.cites(x["content_md"]) for x in pages if x["type"] in ("topic", "subtopic")
@@ -121,9 +121,15 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
                   tags=p["tags"] or [], base_version=p["version"], change_note=note)
 
     ops = [o for o in await llm.gather_limited([one(p) for p in pages]) if o]
+    # the schema's rule after writing: a page over the size limit by more than its margin is split again
+    now = {p["slug"]: dict(p) for p in pages} | {o.slug: {**next(p for p in pages if p["slug"] == o.slug), "content_md": o.content_md,
+                                                         "summary": o.summary} for o in ops}
+    more, resplit = await split_written(wiki_id, chk, sections, now, {sl for sl, p in now.items() if p["type"] in ("topic", "subtopic")})
+    for x in more:
+        ops = [o for o in ops if o.slug != x.slug] + [x]
     await ctx.progress(stage="commit")
     result = await store.commit(wiki_id, "check", "Re-check: page checks", ops, mode, job_id=ctx.id)
     await store.add_log(wiki_id, "check", "Re-check of every page",
                         "\n".join(f"- [[{o.slug}]]: {o.change_note}" for o in ops) or "No page needed a change.")
-    return {"mode": mode, "pages_checked": len(pages), "pages_changed": [o.slug for o in ops], "check_fixes": record,
+    return {"mode": mode, "pages_checked": len(pages), "pages_changed": [o.slug for o in ops], "check_fixes": record, "resplit": resplit,
             **{k: v for k, v in result.items() if k != "ops"}}

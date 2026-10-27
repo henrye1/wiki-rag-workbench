@@ -32,6 +32,7 @@ class Checks:
     split: dict[int, str] = field(default_factory=dict)  # section number -> what its subtopic pages are grouped by
     defined_term_form: str = ""  # how a defined term is cited, e.g. a prefix followed by <term>
     page_size_limit: int | None = None  # words: a section page over this is split by the source's headings
+    resplit_margin: float = 0.0  # after writing, a page is split again only if this share (0.1 = 10%) over the limit
     subtopic_minimum: int | None = None  # words: a smaller group is joined to its neighbour under the same parent
     slug_words: int | None = None  # words of an unnumbered heading used in a subtopic slug
     unlabelled_forms: dict[str, str] = field(default_factory=dict)  # kind of text without a paragraph label -> its citation form
@@ -109,6 +110,8 @@ def load(schema_md: str) -> Checks | None:
         elif attr in ("max_takeaways", "examples_section", "page_size_limit", "subtopic_minimum", "slug_words"):
             n = re.search(r"\d+", value)
             setattr(c, attr, int(n.group(0)) if n else None)
+            if attr == "page_size_limit" and (m := re.search(r"(\d+(?:\.\d+)?)\s*%\s+over", value)):
+                c.resplit_margin = float(m.group(1)) / 100
         else:
             setattr(c, attr, QUOTED.findall(value))
     return c
@@ -270,6 +273,84 @@ def holds_no_claims(c: Checks | None, slug: str, is_index: bool = False) -> bool
     """Whether the schema says this page holds no claims: it is named, or it is a split section's index page and the
     schema names those."""
     return bool(c) and (slug in c.no_claim_pages or (is_index and c.no_claim_index))
+
+
+REPEAT = "The page holds the same text twice"
+
+
+def _cited_sentences(content: str) -> list[str]:
+    """The page's sentences that cite a source paragraph, in order (headings aside)."""
+    out = []
+    for line in content.split("\n"):
+        if re.match(r"^#{1,6} ", line):
+            continue
+        out += [x.strip() for x in SENTENCE_END.split(BULLET.sub("", line)) if _is_claim(x)]
+    return out
+
+
+def _same(x: str) -> str:
+    return " ".join(re.sub(r"[^\w\[\]|.]+", " ", x.casefold()).split())
+
+
+def repeat_failures(content: str) -> list[str]:
+    """A cited sentence the page holds more than once."""
+    seen, out = set(), []
+    for x in _cited_sentences(content):
+        if (k := _same(x)) in seen:
+            out.append(f'{REPEAT}: "{" ".join(x.split()[:15])} ..." appears more than once; keep it once.')
+        seen.add(k)
+    return list(dict.fromkeys(out))
+
+
+def drop_repeats(content: str) -> tuple[str, int]:
+    """The page without the later copies of a cited sentence it already holds, word for word the same; a line left
+    with no words goes too, and so does a heading left with nothing under it. Returns (text, how many went)."""
+    seen: set[str] = set()
+    lines, dropped = [], 0
+    for line in content.split("\n"):
+        if re.match(r"^#{1,6} ", line) or not _is_claim(line):
+            lines.append(line)
+            continue
+        lead = (BULLET.match(line) or [""])[0]
+        kept = []
+        for x in SENTENCE_END.split(line[len(lead):]):
+            if _is_claim(x) and _same(x) in seen:
+                dropped += 1
+                continue
+            if _is_claim(x):
+                seen.add(_same(x))
+            kept.append(x)
+        rest = " ".join(kept).strip()
+        if re.search(r"[A-Za-z]", store.LINK_RE.sub("x", rest)):
+            lines.append(lead + rest)
+    blocks = [b for b in re.split(r"\n\s*\n", "\n".join(lines)) if b.strip()]
+    blocks = [b for n, b in enumerate(blocks) if not (re.fullmatch(r"#{1,6} [^\n]*", b.strip()) and (
+        n + 1 == len(blocks) or re.match(r"#{1,%d} " % len(b.strip().split(" ")[0]), blocks[n + 1].strip())))]
+    return ("\n\n".join(blocks), dropped) if dropped else (content, 0)
+
+
+def label_failures(content: str, labels: dict[str, set[str]], c: Checks | None) -> list[str]:
+    """A citation whose label is not made of paragraph labels of the source it names: a document, chapter or section
+    number is not a paragraph. Ranges ("B4.1.1–B4.1.26"), lists and sub-paragraph letters ("5.5.17(a)", "(i)-(ii)")
+    are read part by part; the schema's forms for defined terms and unlabelled text are labels of the source too."""
+    out = []
+    term = c.defined_term_form.split("<", 1)[0].strip() if c and "<" in c.defined_term_form else ""
+    for m in store.LINK_RE.finditer(content):
+        slug, lab = m.group(1), (m.group(2) or "").strip()
+        if slug not in labels or not lab or lab in labels[slug]:
+            continue
+        flat = re.sub(r"\s*:\s*", ": ", lab)
+        if flat in {re.sub(r"\s*:\s*", ": ", x) for x in labels[slug]}:
+            continue
+        if term and flat.casefold().startswith(term.casefold()):
+            continue  # a defined term: its own check reads the form
+        bare = re.sub(r"(?:\s*\([^)]*\)(?:\s*[\u2013-]\s*\([^)]*\))?)+", "", lab)  # sub-paragraph letters and their ranges
+        pieces = [x.strip() for x in re.split(r",|;|\band\b|\s*[\u2013\u2014-]\s*", bare) if x.strip()]
+        if pieces and all(x in labels[slug] for x in pieces):
+            continue
+        out.append(f"The citation [[{slug}|{lab}]] does not name a paragraph of that source (a document, chapter or "
+                   "section is not a paragraph): cite the paragraph's own label.")
+    return list(dict.fromkeys(out))
 
 
 def no_claim_failures(content: str, must_link: set[str], c: Checks | None, names: set[str] = frozenset()) -> list[str]:

@@ -476,6 +476,113 @@ def _index_md(sec_name: str, subs: list[dict], titles: dict[str, str]) -> tuple[
     return "\n\n".join(blocks), summary[:500]
 
 
+async def _source_paths(wiki_id) -> dict[str, dict]:
+    """Each source's paragraph labels with their heading path (title heading left off) and, for a labelled example,
+    the example it belongs to."""
+    async with get_pool().connection() as conn:
+        rows = await (await conn.execute("select slug, title, text, meta from wiki.sources where wiki_id = %s", (wiki_id,))).fetchall()
+    out = {}
+    for r in rows:
+        sp = [b.strip() for b in re.split(r"\n\s*\n", r["text"] or "") if b.strip()]
+        hp = (r["meta"] or {}).get("heading_paths") or []
+        paths = _drop_title(_anchored_paths(sp, hp if len(hp) == len(sp) else [[] for _ in sp], (r["meta"] or {}).get("para_kinds")))
+        out[r["slug"]] = {"path": {}, "para": {}, "title": ((r["meta"] or {}).get("document") or {}).get("part") or r["title"]}
+        for p, pa in zip(sp, paths):
+            if _ref(p):
+                out[r["slug"]]["path"].setdefault(_ref(p), pa)
+                out[r["slug"]]["para"].setdefault(_ref(p), p)
+    return out
+
+
+async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dict], targets: set[str]) -> tuple[list, list]:
+    """The schema's rule after writing, wherever a page is written: a section or subtopic page whose write-up is over
+    the page size limit by more than the schema's margin is split again. Its blocks move word for word, grouped by
+    the source heading of the paragraph each cites (at the highest level where they differ, small groups joined as
+    usual); a page of labelled examples splits between examples only. A section page becomes the index of its
+    subtopic pages; a subtopic page keeps its slug for its first piece. pages: slug -> the page as it now stands
+    (slug, type, title, summary, content_md, tags, version). Returns (ops, what was split)."""
+    limit = chk.page_size_limit if chk else None
+    if not limit:
+        return [], []
+    cap = limit * (1 + chk.resplit_margin)
+    section_slug = {sl: sec for sl, p in pages.items() if p["type"] == "topic" and (sec := _section_for(sections, p["title"], sl))}
+    subs_of = lambda sec_slug: [x for x in pages if x.startswith(sec_slug + "-") and pages[x]["type"] == "subtopic"]
+    todo = [sl for sl in targets if sl in pages and pages[sl]["type"] in ("topic", "subtopic")
+            and not (sl in section_slug and subs_of(sl)) and not checks.holds_no_claims(chk, sl)
+            and len(_split_also(pages[sl]["content_md"])[0].split()) > cap]
+    if not todo:
+        return [], []
+    src = await _source_paths(wiki_id)
+    ops: dict[str, Op] = {}
+    report = []
+    for sl in todo:
+        p = pages[sl]
+        home = sl if sl in section_slug else max((x for x in section_slug if sl.startswith(x + "-")), key=len, default=None)
+        if not home:
+            continue
+        sec = section_slug[home]
+        body, lines = _split_also(p["content_md"])
+        body = "\n".join(x for x in body.split("\n") if not x.startswith("Not yet covered"))
+        blocks = _blocks(body)
+        paths, items, last = [], [], []
+        for b in blocks:  # the heading path of the paragraph the block cites; a block citing none goes with the one before
+            m = next((m for m in store.LINK_RE.finditer(b) if m.group(1) in src and m.group(2)), None)
+            lab = re.sub(r"(?:\s*\([^)]*\))+$", "", m.group(2).strip()) if m else ""
+            path = src[m.group(1)]["path"].get(lab) if m else None
+            last = path if path is not None else last
+            paths.append(last)
+            items.append(checks.example_item(last, src[m.group(1)]["para"].get(lab, ""), chk) if m else None)
+        words = [len(b.split()) for b in blocks]
+        idx = list(range(len(blocks)))
+        base = _sub_names(p["title"], split=False) if p["type"] == "subtopic" else []
+        if any(items):  # labelled examples: whole examples onto pages up to the limit
+            item_of = {k: x for k, x in enumerate(items) if x}
+            packed = _pack_items(idx, item_of, words, limit)
+            group = (base[-1] if base else sec["name"]).rsplit(" (", 1)[0]
+            taken = [int(m.group(1)) for x in subs_of(home) if (m := re.search(rf"{re.escape(group)} \((\d+)\)", pages[x]["title"]))]
+            # this page keeps its own name; a new piece takes the next number of its group
+            parts = [([base[-1]] if base and k == 0 else [f"{group} ({max(taken, default=0) + k + (0 if base else 1)})"], part)
+                     for k, (n, part) in enumerate(packed)]
+        else:
+            parts = _size_split(idx, paths, words, limit)
+            if len(parts) > 1 and chk.subtopic_minimum:
+                parts = _join_small(parts, words, chk.subtopic_minimum, limit)[0]
+        if len(parts) < 2:
+            report.append({"page": sl, "words": sum(words), "split": False, "why": "no heading or example to split by"})
+            continue
+        pieces = []
+        for k, (names, part) in enumerate(parts):
+            if base:  # a subtopic page's pieces: its own groups, then the heading (or numbered examples) each holds
+                names = base[:-1] + names if any(items) else (base if k == 0 else base + names[-1:])
+            if p["type"] == "subtopic" and k == 0:
+                psl = sl
+            else:
+                psl = _sub_slug(home, names, chk.slug_words)
+                if psl in pages or psl in ops or psl in (x[0] for x in pieces):
+                    psl = _sub_slug(sl, names[-1:], chk.slug_words)
+            text = "\n\n".join(blocks[i] for i in part)
+            if k == 0 and lines:
+                text = _with_also(text, lines)
+            title = f"{sec['name']}: {' – '.join(names)}"
+            cur = pages.get(psl)
+            ops[psl] = Op(op="update" if cur else "create", slug=psl, type="subtopic", title=title, summary=title,
+                          content_md=text, tags=(cur or p).get("tags") or [], base_version=cur.get("version") if cur else None,
+                          change_note=f"Split from {sl}: over the page size limit once written")
+            pieces.append((psl, title, text))
+        report.append({"page": sl, "words": sum(words), "split": True, "into": [x[0] for x in pieces]})
+        log.info("page %s is %s words once written, over %s: split into %s", sl, sum(words), int(cap), ", ".join(x[0] for x in pieces))
+        # the section's index: every subtopic page, those just made included
+        now = {x: {"slug": x, "title": ops[x].title if x in ops else pages[x]["title"],
+                   "content_md": ops[x].content_md if x in ops else pages[x]["content_md"]}
+               for x in dict.fromkeys(subs_of(home) + [x for x in ops if x.startswith(home + "-")])}
+        hp = pages[home]
+        order = lambda x: hp["content_md"].find(f"[[{x}") % (len(hp["content_md"]) + 1) if f"[[{x}" in hp["content_md"] else len(hp["content_md"]) + 1
+        content, summary = _index_md(sec["name"], [now[x] for x in sorted(now, key=order)], {k: v["title"] for k, v in src.items()})
+        ops[home] = Op(op="update", slug=home, type="topic", title=hp["title"], summary=summary, content_md=content,
+                       tags=hp.get("tags") or [], base_version=hp.get("version"), change_note=f"Index of {len(now)} subtopic pages")
+    return list(ops.values()), report
+
+
 def _blocks(md: str) -> list[str]:
     """A page's text as blocks (a heading stays with the block under it)."""
     out, held = [], []
@@ -599,15 +706,48 @@ def _same_label_together(paras: list[str], placed: dict[int, int]) -> None:
 
 
 def _join_parts(texts: list[str]) -> str:
-    """Join a page's parts, dropping any block (paragraph, heading, list) that repeats one from an earlier part."""
+    """Join a page's parts, dropping any block that repeats one already kept: from an earlier part, or from the same
+    reply (a long reply can write a run of its blocks twice). A bare heading may recur ("Fact pattern" under each
+    example); a block that cites a source may not."""
     seen: set[str] = set()
     out = []
     for t in map(_fix_breaks, texts):
-        blocks = [b for b in re.split(r"\n\s*\n", t.strip()) if b.strip()]
-        keys = [_norm(b) for b in blocks]
-        out += [b for b, k in zip(blocks, keys) if not k or k not in seen]
-        seen.update(k for k in keys if k)
+        for b in (b for b in re.split(r"\n\s*\n", t.strip()) if b.strip()):
+            k = _norm(b)
+            if k and k in seen and (re.search(r"\[\[source-", b) or not re.fullmatch(r"#{1,6} [^\n]*", b.strip())):
+                continue
+            seen.add(k)
+            out.append(b)
     return "\n\n".join(out)
+
+
+def _under_headings(md: str, add: str) -> str:
+    """Text added to a page: what sits under a heading the page already has goes at the end of that heading's part of
+    the page, not at the end of the page (where the heading would appear a second time); the rest goes at the end."""
+    same = lambda h: " ".join(re.sub(r"[^\w]+", " ", h.casefold()).split())
+    for sec in (x for x in re.split(r"(?m)^(?=#{1,4} )", add.strip()) if x.strip()):
+        m = re.match(r"(#{1,4}) ([^\n]+)\n?", sec)
+        at = next((h for h in re.finditer(r"(?m)^(#{1,4}) ([^\n]+)$", md) if m and same(h.group(2)) == same(m.group(2))), None)
+        body = sec[m.end():].strip() if m else ""
+        if not at or not body:
+            md = _join_parts([md, sec.strip()])
+            continue
+        nxt = re.compile(rf"(?m)^#{{1,{len(at.group(1))}}} ").search(md, at.end())
+        end = nxt.start() if nxt else len(md)
+        md = _join_parts([md[:end].rstrip() + "\n\n" + body + ("\n\n" + md[end:].lstrip() if md[end:].strip() else "")])
+    return md
+
+
+def _cited_only(text: str, refs: set[str]) -> str:
+    """The blocks (or bullet lines) of a reply that cite one of refs, so an extra pass cannot rewrite the page."""
+    blocks = [b for b in re.split(r"\n\s*\n|\n(?=\s*[-*] )", text.strip()) if b.strip()]
+    # a bare heading has no citation; a heading run together with its text ("...InstrumentsAn entity shall ...") does
+    bare = lambda b: re.match(r"^#{2,4} ", b) and not store.LINK_RE.search(b)
+    keep = [b for b in blocks if bare(b) or any(
+        _covers(m.group(2), r) for m in store.LINK_RE.finditer(b) if m.group(2) for r in refs)]
+    while keep and bare(keep[-1]):
+        keep.pop()
+    return "\n\n".join(keep)
 
 
 def _unlink(md: str, valid: set[str]) -> str:
@@ -1064,8 +1204,10 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         outs = []
         for n, group in enumerate(groups, start=1):
             part = (n, len(groups)) if len(groups) > 1 else None
+            # the current page goes to the first part only: it is integrated once, and a later part (given the parts written
+            # so far) adds only what its own paragraphs say
             prompt = prompts.with_schema(schema, prompts.write_page_prompt(
-                slug=slug, title=title, ptype=ptype, focus=focus, existing_md=cur_body,
+                slug=slug, title=title, ptype=ptype, focus=focus, existing_md=cur_body if n == 1 else None,
                 material=page_material, linkable=linkable, source_slug=source_slug,
                 source_paragraphs="\n\n".join(group) or None, background_paragraphs="\n\n".join(background) or None,
                 auto_gaps=auto_gaps, part=part,
@@ -1079,6 +1221,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                     empty_retries.append({"page": slug, "part": n if part else None, "empty_again": not out["content_md"].strip()})
                     if not out["content_md"].strip():
                         log.warning("ingest: page %s came back empty again", slug)
+                if n > 1:  # a later part keeps only what cites its own paragraphs: it cannot restate the parts before it
+                    out = {**out, "content_md": _cited_only(_fix_breaks(out["content_md"]), {_ref(p) for p in group})}
                 outs.append(out)
             except Exception as e:
                 if part is None:
@@ -1094,16 +1238,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             if not given and cur:  # only lines to also record: the page itself stays as it is
                 content = cur_body
 
-        def cited_only(text: str, refs: set[str]) -> str:
-            """The blocks (or bullet lines) of a reply that cite one of refs, so an extra pass cannot rewrite the page."""
-            blocks = [b for b in re.split(r"\n\s*\n|\n(?=\s*[-*] )", text.strip()) if b.strip()]
-            # a bare heading has no citation; a heading run together with its text ("...InstrumentsAn entity shall ...") does
-            bare = lambda b: re.match(r"^#{2,4} ", b) and not store.LINK_RE.search(b)
-            keep = [b for b in blocks if bare(b) or any(
-                _covers(m.group(2), r) for m in store.LINK_RE.finditer(b) if m.group(2) for r in refs)]
-            while keep and bare(keep[-1]):
-                keep.pop()
-            return "\n\n".join(keep)
+        cited_only = _cited_only
 
         if auto_gaps:  # own paragraphs the parts left out get an extra pass, and one more try if still missing
             for attempt in (1, 2):
@@ -1124,7 +1259,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                             prompts.FILL_SCHEMA,
                         )
                         kept = cited_only(_fix_breaks(out["content_md"]), refs)
-                        content = _join_parts([content, kept])
+                        content = _under_headings(content, kept)  # under its heading if the page has it
                         rec |= {"returned": out["content_md"], "kept_words": len(kept.split())}
                     except Exception as e:
                         log.warning("ingest: page %s fill pass %s failed: %s", slug, attempt, e)
@@ -1137,7 +1272,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         if given and source_slug:
             content = await check_and_fix(
                 "section", content, lambda x: (checks.section_failures(x, given, para_kinds, source_slug, chk, _covers, src_labels)
-                                               if chk else []) + cite_failures(x),
+                                               if chk else []) + checks.repeat_failures(x) + cite_failures(x),
                 sources_text="\n\n".join(given), parse=lambda r: _fix_breaks(r).strip(),
                 ok=lambda old, new: not ({_ref(p) for p in _uncited(new, given)} - {_ref(p) for p in _uncited(old, given)}))
 
@@ -1284,45 +1419,6 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         [write_safe(source["slug"], ex.title, "source", source_focus, None)]
         + [write_safe(i["slug"], i["title"], i["type"], i["focus"], source["slug"]) for i in items if i["slug"] not in index_of]
     ) if o]
-    resplit = []  # sub-pages over the limit once written, split again one level down
-    if limit and split_basis and index_of:
-        paths, words = split_basis["paths"], split_basis["words"]
-        for o in [o for o in ops if o.slug in sub_of and len(o.content_md.split()) > limit and sub_of[o.slug]["paras"]]:
-            sub = sub_of[o.slug]
-            top = sub["names"][-1].split(HEADS_SEP)[0]
-            depth = 1 + max((paths[i].index(top) for i in sub["paras"] if top in paths[i]), default=-1)
-            parts = _size_split(sub["paras"], paths, words, 0, depth, once=True)
-            if chk.subtopic_minimum and len(parts) > 1:
-                parts, joined = _join_small(parts, words, chk.subtopic_minimum, limit)
-                joins.extend({"section": sub["sec"]["num"], "joined": a, "into": b} for a, b in joined)
-            if len(parts) < 2:
-                continue  # no heading below to split by: the page stays as written
-            sec_slug = slug_of[sub["sec"]["num"]]
-            del sub_of[o.slug]  # replaced by its pieces: its plain slug is free again
-            new = []
-            for names, part in parts:
-                full = sub["names"] + names[-1:]  # the parent heading was only for joining
-                sl = _sub_slug(sec_slug, full, chk.slug_words)
-                if sl in sub_of:
-                    sl = _sub_slug(o.slug, names, chk.slug_words)
-                sub_of[sl] = {"sec": sub["sec"], "names": full, "paras": part}
-                for i in part:
-                    para_sub[i] = sl
-                new.append(sl)
-            log.info("ingest: sub-page %s is %s words once written, over %s: split again into %s", o.slug,
-                     len(o.content_md.split()), limit, ", ".join(new))
-            resplit.append({"page": o.slug, "words": len(o.content_md.split()), "into": new})
-            ops.remove(o)
-            subs = index_of[sec_slug]
-            subs[subs.index(o.slug):subs.index(o.slug) + 1] = new
-            ops += [x for x in await llm.gather_limited([write_safe(
-                sl, f"{sub['sec']['name']}: {' – '.join(sub_of[sl]['names'])}", "subtopic",
-                f"Section {sub['sec']['num']:02d}: {sub['sec']['name']}, subtopic {' – '.join(sub_of[sl]['names'])}",
-                source["slug"]) for sl in new]) if x]
-        for x in splits:
-            x["pages"] = [{"slug": sl, "paragraphs": len(sub_of[sl]["paras"]),
-                           "source_words": sum(len(paras[i].split()) for i in sub_of[sl]["paras"])} for sl in index_of.get(x["page"], [])]
-            x["split_again"] = [r for r in resplit if any(sl in index_of.get(x["page"], []) for sl in r["into"])]
     if index_of:  # split sections: their own pages become the index of the subtopic pages just written
         written = {o.slug: o for o in ops}
         moved = await _move_old_write_ups(wiki_id, index_of, sub_of, existing, written, ops, sec_of, chk)
@@ -1397,6 +1493,13 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     if missed:
         await ctx.progress(missed_paragraphs=missed)
     # Links to pages that will not exist (never planned, or failed) become plain text; the source stays linkable
+    # the schema's rule after writing: a page over the size limit by more than its margin is split again
+    now = {sl: dict(p) for sl, p in existing.items()} | {o.slug: {"slug": o.slug, "type": o.type, "title": o.title,
+           "summary": o.summary, "content_md": o.content_md, "tags": o.tags,
+           "version": existing.get(o.slug, {}).get("version")} for o in ops}
+    more, resplit = await split_written(wiki_id, chk, sections, now, {o.slug for o in ops if o.type in ("topic", "subtopic")})
+    for x in more:  # an op for the same page is replaced by the split's
+        ops = [o for o in ops if o.slug != x.slug] + [x]
     valid = set(existing) | {o.slug for o in ops} | {source["slug"]}
     for o in ops:
         o.content_md = _unlink(o.content_md, valid)
@@ -1435,7 +1538,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     subtopics = {sl: [label(i) for i in sub["paras"]] for sl, sub in sub_of.items()}
     also_recorded = {f"{x['num']:02d} {x['name']}": [label(i) for i in also[x["num"]]] for x in sections if x["num"] in also}
     return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "empty_retries": empty_retries, "check_fixes": check_fixes, "routing": routing, "subtopics": subtopics, "splits": splits, "unassigned": unassigned, "stubs": [_ref(paras[i]) for i in sorted(stubs)],
-            "also_recorded": also_recorded, "missed_paragraphs": missed, "restored": restored, "citations": citations, "fill_passes": fill_passes, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
+            "also_recorded": also_recorded, "missed_paragraphs": missed, "restored": restored, "resplit": resplit, "citations": citations, "fill_passes": fill_passes, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
 
 
 async def run_safe(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: str) -> dict:
