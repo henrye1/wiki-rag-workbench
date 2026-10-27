@@ -7,7 +7,7 @@ import httpx
 import pymupdf
 import trafilatura
 
-from . import pdf_ifrs
+from . import docx_reader, pdf_ifrs
 from .text import clean, split_long
 
 TEXT_EXT = (".txt", ".md", ".markdown")
@@ -116,21 +116,10 @@ def from_pdf(name: str, data: bytes, max_words: int, example_re=None, stub_re=No
 
 
 def from_docx(name: str, data: bytes, max_words: int) -> Extracted:
-    import docx  # python-docx
-
-    d = docx.Document(io.BytesIO(data))
-    blocks = []
-    for p in d.paragraphs:
-        t = p.text.strip()
-        if not t:
-            continue
-        blocks.append(f"## {t}" if p.style.name.lower().startswith("heading") else t)
-    for table in d.tables:
-        rows = [" | ".join(clean(c.text) for c in r.cells) for r in table.rows]
-        blocks.append("\n".join(rows))
-    text = "\n\n".join(blocks)
-    title = d.core_properties.title or _title_from(name)
-    return Extracted(title, "docx", text, _pack(blocks, max_words), {})
+    """A Word paper as labelled passages: each with its location (heading path, "Cover", "Document control") and,
+    for a table, footnote, note or comment, what it is (see docx_reader)."""
+    title, blocks, meta = docx_reader.read(data)
+    return Extracted(title or _title_from(name), "docx", "\n\n".join(blocks), _pack(blocks, max_words), meta)
 
 
 def from_text(name: str, data: bytes, max_words: int, title: str | None = None) -> Extracted:

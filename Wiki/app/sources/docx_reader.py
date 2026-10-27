@@ -1,0 +1,145 @@
+"""Read a Word (.docx) paper into labelled passages, for uploads of Word files only.
+
+Each passage is labelled with its location: the full path of the headings it sits under, joined by " > " (a
+numbered heading, "4.2 Staging", places itself and stands alone). Text before the first heading is "Cover"; a
+document control or revision history table is "Document control"; a table adds its own caption label ("> Table 3").
+A passage that is not the paper's running text says what it is: (table), (footnote), (note), (comment). A footnote
+or comment takes the location of the passage that carries its marker. A table of contents is left out.
+"""
+import io
+import re
+
+from .text import clean
+
+W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+NUMBERED = re.compile(r"^\d+(?:\.\d+)*\.?\s+\S")  # "4.2 Staging", "3. Scope": the heading's number places it
+CAPTION = re.compile(r"^((?:Table|Figure)\s+\d+(?:\.\d+)*)\b")  # a table's or figure's own label
+# a document control or revision history table: its header row names at least two of these
+CONTROL_HEADS = ("version", "revision", "date", "author", "change", "description", "status", "approved", "approver",
+                 "reviewer", "reviewed", "owner", "prepared", "comment", "amendment")
+KIND_TAG = {"table": "Table", "footnote": "Footnote", "note": "Note", "comment": "Comment"}
+
+
+def _heading_level(p) -> int | None:
+    """A paragraph's heading level from its style ("Heading 2" -> 2), or None for body text."""
+    name = (p.style.name if p.style is not None else "") or ""
+    m = re.match(r"(?i)^heading\s*(\d+)$", name.strip())
+    if m:
+        return int(m.group(1))
+    lvl = p._p.find(f"{W}pPr/{W}outlineLvl")  # a custom style that Word treats as a heading
+    if lvl is not None and (v := lvl.get(f"{W}val")) is not None and v.isdigit() and int(v) < 9:
+        return int(v) + 1
+    return None
+
+
+def _style(p) -> str:
+    return ((p.style.name if p.style is not None else "") or "").strip().lower()
+
+
+def _notes(doc, part_name: str, tag: str) -> dict[str, str]:
+    """Footnote or comment text by its id, read from the document's footnotes or comments part."""
+    for rel in doc.part.rels.values():
+        if rel.reltype.endswith("/" + part_name):
+            from lxml import etree
+            root = etree.fromstring(rel.target_part.blob)
+            out = {}
+            for n in root.iter(f"{W}{tag}"):
+                nid = n.get(f"{W}id")
+                text = clean(" ".join("".join(t.text or "" for t in p.iter(f"{W}t")) for p in n.iter(f"{W}p")))
+                if nid and text and not (nid.lstrip("-").isdigit() and int(nid) <= 0):  # ids 0 and -1: separators
+                    out[nid] = text
+            return out
+    return {}
+
+
+def _location(path: list[str]) -> str:
+    """The location of text under these headings: a numbered heading places itself; otherwise the full path."""
+    if not path:
+        return "Cover"
+    return path[-1] if NUMBERED.match(path[-1]) else " > ".join(path)
+
+
+def _is_control(rows: list[list[str]]) -> bool:
+    head = " ".join(rows[0]).casefold() if rows else ""
+    return sum(1 for w in CONTROL_HEADS if re.search(rf"\b{w}\b", head)) >= 2
+
+
+def read(data: bytes) -> tuple[str, list[str], dict]:
+    """The paper as (title, labelled blocks, meta). Each block is "[<location>] <text>", or "[<location>] (<Kind>)
+    <text>" for a table, footnote, note or comment."""
+    import docx  # python-docx
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    doc = docx.Document(io.BytesIO(data))
+    footnotes, comments = _notes(doc, "footnotes", "footnote"), _notes(doc, "comments", "comment")
+    blocks, kinds, paths, headings = [], [], [], []
+    path: list[tuple[int, str]] = []  # (level, heading) from the top down
+    last_caption = ""
+
+    def add(text: str, kind: str = "", label: str | None = None):
+        loc = label or _location([h for _, h in path])
+        tag = f"({KIND_TAG[kind]}) " if kind in KIND_TAG else ""
+        blocks.append(f"[{loc}] {tag}{text}")
+        kinds.append(kind or "text")
+        paths.append([[lvl, h] for lvl, h in path])
+        headings.append(path[-1][1] if path else "")
+
+    for el in doc.element.body.iterchildren():
+        if el.tag == f"{W}p":
+            p = Paragraph(el, doc)
+            text = clean(p.text)
+            if _style(p).startswith("toc") or not text and not el.findall(f".//{W}footnoteReference"):
+                continue  # a table of contents line, or an empty paragraph
+            if (lvl := _heading_level(p)) is not None and text:
+                path = [x for x in path if x[0] < lvl] + [(lvl, text)]
+                last_caption = ""
+                continue
+            if CAPTION.match(text) and ("caption" in _style(p) or len(text.split()) <= 15):
+                last_caption = CAPTION.match(text).group(1)
+            kind = "note" if "note" in _style(p) or re.match(r"(?i)^note\s*\d*\s*[:.–-]", text) else ""
+            if text:
+                add(text, kind)
+            loc = _location([h for _, h in path])
+            for ref in el.iter(f"{W}footnoteReference"):  # a footnote: where its marker is
+                if (t := footnotes.get(ref.get(f"{W}id"))):
+                    add(t, "footnote", loc)
+            for ref in el.iter(f"{W}commentReference"):
+                if (t := comments.get(ref.get(f"{W}id"))):
+                    add(t, "comment", loc)
+        elif el.tag == f"{W}tbl":
+            t = Table(el, doc)
+            rows = []
+            for r in t.rows:
+                cells, tcs = [], []
+                for c in r.cells:  # a merged cell repeats across the row: once
+                    if any(c._tc is x for x in tcs):
+                        continue
+                    tcs.append(c._tc)
+                    cells.append(clean(c.text))
+                if any(cells):
+                    rows.append(cells)
+            if not rows:
+                continue
+            if _is_control(rows):
+                add("\n".join(" | ".join(r) for r in rows), "table", "Document control")
+            else:
+                loc = _location([h for _, h in path])
+                add("\n".join(" | ".join(r) for r in rows), "table", f"{loc} > {last_caption}" if last_caption else None)
+            last_caption = ""
+
+    title = doc.core_properties.title or ""
+    labels = {}
+    for b, k in zip(blocks, kinds):
+        lab = re.match(r"^\[([^\]]+)\]", b).group(1)
+        labels.setdefault(lab, set()).add(k)
+    meta = {
+        "parser": "docx",
+        "kinds": kinds,
+        "heading_paths": paths,
+        "headings": headings,
+        "outline": list(dict.fromkeys(" > ".join(h for _, h in p) for p in paths if p)),
+        # a location whose passages are all of one kind other than running text has that kind
+        "para_kinds": {lab: next(iter(ks)) for lab, ks in labels.items() if len(ks) == 1 and next(iter(ks)) != "text"},
+    }
+    return title, blocks, meta
