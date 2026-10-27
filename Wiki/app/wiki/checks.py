@@ -195,12 +195,12 @@ def document_name_re(c: Checks | None) -> re.Pattern | None:
 
 
 def example_item(path: list[str], text: str, c: Checks | None) -> str | None:
-    """The labelled example a paragraph belongs to: the nearest heading on its path that carries one of the schema's
-    example labels, else the first label in its own text."""
+    """The labelled example a paragraph belongs to: the outermost heading on its path that carries one of the schema's
+    example labels (the example's title, over its scenarios), else the first label in its own text."""
     rx = example_label_re(c) if c else None
     if not rx:
         return None
-    for h in reversed(path):
+    for h in path:
         if m := rx.search(h):
             return m.group(0)
     m = rx.search(re.sub(r"^\[[^\]]+\]\s*", "", text))

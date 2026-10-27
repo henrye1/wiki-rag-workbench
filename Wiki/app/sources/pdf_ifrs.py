@@ -85,6 +85,33 @@ def _level(text: str, style_rank: int, path: list) -> int:
     return base + style_rank
 
 
+def _example_kind(heading: str, example_re) -> str | None:
+    """The label word of an example title ("Example 7—..." -> "example", "Scenario 1" -> "scenario"): the heading
+    starts with one of the wiki schema's example labels. None for any other heading."""
+    m = example_re.match(heading) if example_re else None
+    return m.group(0).split()[0].casefold() if m else None
+
+
+def _next_heading(doc: pymupdf.Document, example_re) -> dict[tuple, str]:
+    """For each heading (page, y of its first line): the next heading in the document. A heading followed by the
+    next title of an example's kind introduces that example (or a group of them); it does not belong to the one before."""
+    if not example_re:
+        return {}
+    heads, prev = [], None
+    for pno, page in enumerate(doc, start=1):
+        for row in _lines(page):
+            s = row[0]
+            if not _is_heading(s["font"], s["size"]):
+                continue
+            y, text = row[0]["bbox"][1], " ".join(x["text"].strip() for x in row)
+            if prev and prev[0] == pno and prev[2:] == (s["font"], s["size"]) and 0 <= y - prev[1] < 14:
+                prev = (pno, y, s["font"], s["size"])  # the heading runs on to a second line
+                continue
+            heads.append(((pno, y), text))
+            prev = (pno, y, s["font"], s["size"])
+    return {k: heads[n + 1][1] for n, (k, _) in enumerate(heads[:-1])}
+
+
 def _is_editorial(font: str, size: float = 8.5, x: float = 999) -> bool:
     # BoldCond = [Refer]/[Note]/IFRIC boxes; small Helvetica Bold left of body = IFRIC box sub-headings
     return "BoldCond" in font or (font == "HelveticaLTPro-Bold" and size < 9 and x < 175)
@@ -184,7 +211,8 @@ def accompanying_kind(ref: str) -> str:
     return ACCOMPANYING_KINDS.get(prefix, "basis_for_conclusions" if prefix.startswith("BC") else "intro")
 
 
-def parse_document(doc: pymupdf.Document, max_words: int = 500, stub_re=None, footnote_form=None) -> tuple[list[Chunk], str]:
+def parse_document(doc: pymupdf.Document, max_words: int = 500, stub_re=None, footnote_form=None,
+                   example_re=None) -> tuple[list[Chunk], str]:
     """Read an IFRS PDF. A Standard (Part A) is read exactly as parse() always has; a document published with it
     (illustrative examples, implementation guidance, Basis for Conclusions: Parts B and C) by its own paragraph numbers.
 
@@ -194,17 +222,17 @@ def parse_document(doc: pymupdf.Document, max_words: int = 500, stub_re=None, fo
     stub_re: the wiki schema's stub forms (what a deleted or left-out paragraph says), each read as its own paragraph.
     footnote_form: the schema's citation form for a footnote, which keeps footnotes (see parse).
     """
-    chunks = parse(doc, max_words, stub_re=stub_re, footnote_form=footnote_form) if looks_like_ifrs(doc) else []
+    chunks = parse(doc, max_words, stub_re=stub_re, footnote_form=footnote_form, example_re=example_re) if looks_like_ifrs(doc) else []
     if any(c.source_type == "standard" for c in chunks):
         return chunks, "standard"
-    acc = parse(doc, max_words, accompanying=True, stub_re=stub_re, footnote_form=footnote_form)
+    acc = parse(doc, max_words, accompanying=True, stub_re=stub_re, footnote_form=footnote_form, example_re=example_re)
     if any(c.source_type in ACCOMPANYING_TYPES for c in acc):
         return acc, "accompanying"
     return chunks, ""
 
 
 def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = False, stub_re=None,
-          footnote_form: str | None = None) -> list[Chunk]:
+          footnote_form: str | None = None, example_re=None) -> list[Chunk]:
     """accompanying=False reads a Standard (Part A); True reads a document published with one (Parts B and C).
     footnote_form: how the wiki's schema cites a footnote ("ED:<clause>"): each footnote is kept, labelled in that form
     with the paragraph whose text carries its marker (or, with no marker found, the one it is printed under); without it
@@ -221,6 +249,8 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
     last_label: tuple = ()  # (page, y) of last margin label, to join multi-line defined terms
     label_size = _label_size(doc)
     footnote: tuple = ()  # (page, size) while reading a footnote: its lines are the footnote's, not paragraph text
+    hold: tuple | None = None  # (level, label word) of an example's title, while the headings of its style sit under it
+    next_heading = _next_heading(doc, example_re)  # (page, y) of a heading -> the heading after it
     marked: dict[str, _Para] = {}  # footnote number -> the paragraph whose text carries its marker
     note_to: _Para | None = None  # the paragraph the footnote being read belongs to
 
@@ -273,6 +303,18 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
                     else:
                         title_size = 0.0
                         lvl = _level(text, ranks.get(_style(font, size), len(ranks) + 1), path)
+                        # an example's title stays on the path over the headings of its style that follow it ("Example 7"
+                        # over its "Scenario 1"), until the next title with the same label word ("Example 8"), a heading
+                        # that introduces the next example (an example title follows it) or a higher heading
+                        kind = _example_kind(text, example_re)
+                        # only a plain heading introduces the next example; a labelled one ("Scenario 2") is its example's
+                        opens = not kind and _example_kind(next_heading.get((pno, y), ""), example_re) == (hold or (0, None))[1]
+                        if hold and (lvl < hold[0] or (lvl == hold[0] and (kind == hold[1] or opens))):
+                            hold = None
+                        if hold and lvl == hold[0]:
+                            lvl += 1
+                        elif kind and not hold:
+                            hold = (lvl, kind)
                         path = [p for p in path if p[0] < lvl] + [(lvl, text, bool(NUMBERED_HEADING.match(text)))]
                     heading = " ".join(heading_buf)
                     if accompanying:

@@ -84,7 +84,7 @@ def _with_head(content: str, head: str) -> str:
 def from_pdf(name: str, data: bytes, max_words: int, example_re=None, stub_re=None, footnote_form=None) -> Extracted:
     doc = pymupdf.open(stream=data, filetype="pdf")
     meta = {"pages": doc.page_count, **{k: v for k, v in (doc.metadata or {}).items() if v}}
-    chunks, layout = pdf_ifrs.parse_document(doc, stub_re=stub_re, footnote_form=footnote_form)
+    chunks, layout = pdf_ifrs.parse_document(doc, stub_re=stub_re, footnote_form=footnote_form, example_re=example_re)
     if layout == "standard":
         # Binding text only, labelled by paragraph number so notes can cite it
         chunks = [c for c in chunks if c.source_type in ("standard", "appendix_a", "appendix_b", "footnote")]
