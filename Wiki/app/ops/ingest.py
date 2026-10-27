@@ -722,19 +722,38 @@ def _join_parts(texts: list[str]) -> str:
 
 
 def _under_headings(md: str, add: str) -> str:
-    """Text added to a page: what sits under a heading the page already has goes at the end of that heading's part of
-    the page, not at the end of the page (where the heading would appear a second time); the rest goes at the end."""
+    """Text added to a page: a section under a heading the page already has goes at the end of that heading's part
+    of the page, its own sub-headings placed the same way inside it, not at the end of the page (where the heading
+    would appear a second time). A heading added with no text of its own adds nothing; the rest goes at the end."""
     same = lambda h: " ".join(re.sub(r"[^\w]+", " ", h.casefold()).split())
-    for sec in (x for x in re.split(r"(?m)^(?=#{1,4} )", add.strip()) if x.strip()):
-        m = re.match(r"(#{1,4}) ([^\n]+)\n?", sec)
-        at = next((h for h in re.finditer(r"(?m)^(#{1,4}) ([^\n]+)$", md) if m and same(h.group(2)) == same(m.group(2))), None)
-        body = sec[m.end():].strip() if m else ""
-        if not at or not body:
-            md = _join_parts([md, sec.strip()])
+    heads = lambda t: list(re.finditer(r"(?m)^(#{1,4}) ([^\n]+)$", t))
+    add = add.strip()
+    hs = heads(add)
+    if not hs:
+        return _join_parts([md, add]) if add else md
+    top = min(len(h.group(1)) for h in hs)
+    if pre := add[:hs[0].start()].strip():
+        md = _join_parts([md, pre])
+    starts = [h for h in hs if len(h.group(1)) == top]
+    for k, h in enumerate(starts):
+        sec = add[h.start(): starts[k + 1].start() if k + 1 < len(starts) else len(add)].strip()
+        body = sec[h.end() - h.start():].strip()
+        at = next((x for x in heads(md) if same(x.group(2)) == same(h.group(2))), None)
+        if not at:
+            md = _join_parts([md, sec])
             continue
+        if not body:
+            continue  # the heading alone: the page has it already
         nxt = re.compile(rf"(?m)^#{{1,{len(at.group(1))}}} ").search(md, at.end())
         end = nxt.start() if nxt else len(md)
-        md = _join_parts([md[:end].rstrip() + "\n\n" + body + ("\n\n" + md[end:].lstrip() if md[end:].strip() else "")])
+        inside = md[at.end():end].strip()
+        if heads(body):
+            merged = _under_headings(inside, body)
+        elif sub := heads(inside):  # text of the heading itself: before its first sub-heading
+            merged = _join_parts([inside[:sub[0].start()].strip(), body]) + "\n\n" + inside[sub[0].start():]
+        else:
+            merged = _join_parts([inside, body])
+        md = md[:at.end()] + "\n" + merged + ("\n\n" + md[end:].lstrip() if md[end:].strip() else "")
     return md
 
 
