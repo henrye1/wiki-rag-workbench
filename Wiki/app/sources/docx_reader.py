@@ -2,9 +2,11 @@
 
 Each passage is labelled with its location: the full path of the headings it sits under, joined by " > " (a
 numbered heading, "4.2 Staging", places itself and stands alone). Text before the first heading is "Cover"; a
-document control or revision history table is "Document control"; a table adds its own caption label ("> Table 3").
-A passage that is not the paper's running text says what it is: (table), (footnote), (note), (comment). A footnote
-or comment takes the location of the passage that carries its marker. A table of contents is left out.
+document control or revision history table (its header row names at least two of the wiki schema's document control
+headers) is "Document control"; a table adds its own caption label ("> Table 3"). The location is only ever the
+location: what kind of passage it is (table, footnote, note, comment) is kept apart from it, in the reader's record of
+each passage, and a footnote or comment says so in its own first word. A footnote or comment takes the location of
+the passage that carries its marker. A table of contents is left out.
 """
 import io
 import re
@@ -14,10 +16,7 @@ from .text import clean
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 NUMBERED = re.compile(r"^\d+(?:\.\d+)*\.?\s+\S")  # "4.2 Staging", "3. Scope": the heading's number places it
 CAPTION = re.compile(r"^((?:Table|Figure)\s+\d+(?:\.\d+)*)\b")  # a table's or figure's own label
-# a document control or revision history table: its header row names at least two of these
-CONTROL_HEADS = ("version", "revision", "date", "author", "change", "description", "status", "approved", "approver",
-                 "reviewer", "reviewed", "owner", "prepared", "comment", "amendment")
-KIND_TAG = {"table": "Table", "footnote": "Footnote", "note": "Note", "comment": "Comment"}
+LEAD = {"footnote": "Footnote", "note": "Note", "comment": "Comment"}  # a passage's own first word, where it lacks one
 
 
 def _heading_level(p) -> int | None:
@@ -59,14 +58,16 @@ def _location(path: list[str]) -> str:
     return path[-1] if NUMBERED.match(path[-1]) else " > ".join(path)
 
 
-def _is_control(rows: list[list[str]]) -> bool:
+def _is_control(rows: list[list[str]], heads: list[str]) -> bool:
+    """A document control table: its header row names at least two of the schema's document control headers."""
     head = " ".join(rows[0]).casefold() if rows else ""
-    return sum(1 for w in CONTROL_HEADS if re.search(rf"\b{w}\b", head)) >= 2
+    return sum(1 for w in heads if re.search(rf"\b{re.escape(w.casefold())}\b", head)) >= 2
 
 
-def read(data: bytes) -> tuple[str, list[str], dict]:
-    """The paper as (title, labelled blocks, meta). Each block is "[<location>] <text>", or "[<location>] (<Kind>)
-    <text>" for a table, footnote, note or comment."""
+def read(data: bytes, control_headers: list[str] | None = None) -> tuple[str, list[str], dict]:
+    """The paper as (title, labelled blocks, meta). Each block is "[<location>] <text>"; meta["kinds"] says, block by
+    block, what kind of passage it is. control_headers: the schema's document control headers (none: no table is
+    read as document control)."""
     import docx  # python-docx
     from docx.table import Table
     from docx.text.paragraph import Paragraph
@@ -79,9 +80,11 @@ def read(data: bytes) -> tuple[str, list[str], dict]:
 
     def add(text: str, kind: str = "", label: str | None = None):
         loc = label or _location([h for _, h in path])
-        tag = f"({KIND_TAG[kind]}) " if kind in KIND_TAG else ""
-        blocks.append(f"[{loc}] {tag}{text}")
-        kinds.append(kind or "text")
+        lead = LEAD.get(kind, "")
+        if lead and not re.match(rf"(?i)^{lead}\b", text):
+            text = f"{lead}: {text}"
+        blocks.append(f"[{loc}] {text}")
+        kinds.append(kind)  # running text has none: its example labels, if any, route it
         paths.append([[lvl, h] for lvl, h in path])
         headings.append(path[-1][1] if path else "")
 
@@ -121,7 +124,7 @@ def read(data: bytes) -> tuple[str, list[str], dict]:
                     rows.append(cells)
             if not rows:
                 continue
-            if _is_control(rows):
+            if _is_control(rows, control_headers or []):
                 add("\n".join(" | ".join(r) for r in rows), "table", "Document control")
             else:
                 loc = _location([h for _, h in path])
@@ -140,6 +143,6 @@ def read(data: bytes) -> tuple[str, list[str], dict]:
         "headings": headings,
         "outline": list(dict.fromkeys(" > ".join(h for _, h in p) for p in paths if p)),
         # a location whose passages are all of one kind other than running text has that kind
-        "para_kinds": {lab: next(iter(ks)) for lab, ks in labels.items() if len(ks) == 1 and next(iter(ks)) != "text"},
+        "para_kinds": {lab: next(iter(ks)) for lab, ks in labels.items() if len(ks) == 1 and next(iter(ks))},
     }
     return title, blocks, meta

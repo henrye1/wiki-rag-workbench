@@ -115,10 +115,10 @@ def from_pdf(name: str, data: bytes, max_words: int, example_re=None, stub_re=No
     return Extracted(_title_from(name), "pdf", text, _pack(blocks, max_words), meta)
 
 
-def from_docx(name: str, data: bytes, max_words: int) -> Extracted:
-    """A Word paper as labelled passages: each with its location (heading path, "Cover", "Document control") and,
-    for a table, footnote, note or comment, what it is (see docx_reader)."""
-    title, blocks, meta = docx_reader.read(data)
+def from_docx(name: str, data: bytes, max_words: int, control_headers: list[str] | None = None) -> Extracted:
+    """A Word paper as labelled passages: each with its location (heading path, "Cover", "Document control"); what
+    kind of passage each is (table, footnote, note, comment) is kept apart, in meta (see docx_reader)."""
+    title, blocks, meta = docx_reader.read(data, control_headers)
     return Extracted(title or _title_from(name), "docx", "\n\n".join(blocks), _pack(blocks, max_words), meta)
 
 
@@ -160,7 +160,8 @@ def opening_text(name: str, data: bytes, pages: int = 3, chars: int = 6000) -> s
     return from_upload(name, data, 3000).text[:chars]
 
 
-def from_upload(name: str, data: bytes, max_words: int, example_re=None, stub_re=None, footnote_form=None) -> Extracted:
+def from_upload(name: str, data: bytes, max_words: int, example_re=None, stub_re=None, footnote_form=None,
+                control_headers: list[str] | None = None) -> Extracted:
     """example_re: the wiki schema's example labels, so the issuer's example headings are kept with their paragraphs.
     stub_re: its stub forms, so a stub inside the text is read as its own paragraph.
     footnote_form: its citation form for a footnote, so footnotes are kept under their paragraph."""
@@ -168,7 +169,7 @@ def from_upload(name: str, data: bytes, max_words: int, example_re=None, stub_re
     if low.endswith(".pdf"):
         return from_pdf(name, data, max_words, example_re, stub_re, footnote_form)
     if low.endswith(".docx"):
-        return from_docx(name, data, max_words)
+        return from_docx(name, data, max_words, control_headers)
     if low.endswith(TEXT_EXT):
         return from_text(name, data, max_words)
     raise ValueError(f"Unsupported file type. Supported: {', '.join(SUPPORTED_EXT)}")

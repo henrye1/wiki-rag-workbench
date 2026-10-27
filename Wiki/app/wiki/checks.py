@@ -40,6 +40,7 @@ class Checks:
     no_claim_index: bool = False  # the list names a split section's index page among them
     stub_forms: list[str] = field(default_factory=list)  # what a deleted or left-out paragraph says instead of its text
     document_names: list[str] = field(default_factory=list)  # forms of a document's name, never a clause in a citation
+    control_headers: list[str] = field(default_factory=list)  # header words that mark a document control table
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
 
 
@@ -51,7 +52,7 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "defined_term_form": "defined-term citation form",
     "unlabelled_forms": "citation forms for text without a paragraph label", "page_size_limit": "page size limit",
     "subtopic_minimum": "subtopic page minimum", "slug_words": "subtopic slug", "no_claim_pages": "pages that hold no claims",
-    "stub_forms": "stub forms", "document_names": "document names",
+    "stub_forms": "stub forms", "document_names": "document names", "control_headers": "document control headers",
 }
 
 
@@ -100,6 +101,8 @@ def load(schema_md: str) -> Checks | None:
             c.linking = QUOTED.findall(value)
             if m := re.search(r"\bup to (\w+) words?\b", value):
                 c.lead_in_words = int(m.group(1)) if m.group(1).isdigit() else NUMBER_WORDS.get(m.group(1).casefold())
+        elif attr == "control_headers":  # "a · b · c" (or quoted words)
+            c.control_headers = QUOTED.findall(value) or [x.strip() for x in value.split("\u00b7") if x.strip()]
         elif attr == "stub_forms":  # "a · b · c. What is done with them.": the forms, up to the sentence after them
             forms = [x.strip() for x in value.split("\u00b7")]
             forms[-1] = re.split(r"\.\s+(?=[A-Z])", forms[-1], maxsplit=1)[0]
@@ -344,7 +347,8 @@ def label_failures(content: str, labels: dict[str, set[str]], c: Checks | None) 
             continue
         if term and flat.casefold().startswith(term.casefold()):
             continue  # a defined term: its own check reads the form
-        bare = re.sub(r"(?:\s*\([^)]*\)(?:\s*[\u2013-]\s*\([^)]*\))?)+", "", lab)  # sub-paragraph letters and their ranges
+        sub = r"\((?:[a-z]{1,3}|[ivxlcdm]{1,6}|\d{1,3}|[A-Z])\)"  # a sub-paragraph letter or number: (a), (iv), (2), (B)
+        bare = re.sub(rf"(?:\s*{sub}(?:\s*[\u2013-]\s*{sub})?)+", "", lab)  # sub-paragraph letters and their ranges
         pieces = [x.strip() for x in re.split(r",|;|\band\b|\s*[\u2013\u2014-]\s*", bare) if x.strip()]
         if pieces and all(x in labels[slug] for x in pieces):
             continue
@@ -471,10 +475,17 @@ def detail_lines(content: str, c: Checks) -> str:
     if not names:
         return content
     pat = re.compile(r"(?:\*\*)?\b(?:" + "|".join(map(re.escape, names)) + r")\b(?:\*\*)?\s*:", re.I)
+    # a line break the reply left out: a sentence's end run straight into the next ("draft for review.Client:"), or a
+    # detail's value run into a sentence ("Owner: Not statedThe stated purpose ...")
+    content = re.sub(r"(?<=[a-z0-9)][.!?])(?=[A-Z][a-z])", "\n", content)
+    # a label run into its text ("Key takeaways:The ..."); a detail and its value ("Status:Draft") stay together
+    content = re.sub(r"(?m)^([^\n:\[\]]{1,40}:)(?=[A-Z])", lambda m: m.group(1) if pat.match(m.group(1).lstrip(" -*\u2022")) else m.group(1) + "\n", content)
+    content = "\n".join(re.sub(r"(?<=[a-z])(?=[A-Z][a-z]+ [a-z])", "\n", ln) if pat.match(ln.lstrip(" -*\u2022")) else ln
+                         for ln in content.split("\n"))
     out = []
     for line in content.split("\n"):
         hits = [m.start() for m in pat.finditer(line)]
-        if len(hits) < 2:
+        if not hits or (len(hits) < 2 and not line[:hits[0]].strip(" -*\u2022")):
             out.append(line)
             continue
         bullet = re.match(r"^\s*([-*\u2022])\s+", line)
