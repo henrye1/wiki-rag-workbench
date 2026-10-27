@@ -119,7 +119,51 @@ async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, so
             log.warning("page %s %s check, round %s failed: %s", slug, kind, rnd, e)
             rec["error"] = f"{type(e).__name__}: {e}"
         rounds.append(rec)
+    if rounds and (left := check(text)):  # still failing: each failing paragraph's write-up alone, as a last try
+        text = await _fix_blocks(schema=schema, slug=slug, title=title, text=text, failures=left, check=check,
+                                 sources_text=sources_text, linkable=linkable, parse=parse, clause=clause, rounds=rounds)
     if rounds:
         record.append({"page": slug, "kind": kind, "found": len(rounds[0]["failures"]), "still": len(check(text)),
                        "rounds": rounds})
+    return text
+
+
+PARA_FAILURE = re.compile(r"^Paragraph (.+?) (?:has lettered or numbered parts|states the condition)")  # checks.section_failures
+
+
+async def _fix_blocks(*, schema, slug, title, text, failures, check, sources_text, linkable, parse, clause, rounds) -> str:
+    """For each paragraph whose write-up still fails (a part or a condition missing), send back only the blocks that
+    cite it, with its source text and its failures, and replace just those blocks. Kept only if its failures go, no
+    citation of those blocks is lost and the page has no new failure; the rest of the page is untouched."""
+    by_para: dict[str, list[str]] = {}
+    for f in failures:
+        if m := PARA_FAILURE.match(f):
+            by_para.setdefault(m.group(1), []).append(f)
+    for ref, fails in by_para.items():
+        blocks = [b for b in re.split(r"\n\s*\n", text) if b.strip()]
+        mine = [k for k, b in enumerate(blocks) if any(c.split("|", 1)[1] == ref for c in checks.cites(b))]
+        source = [b for b in re.split(r"\n\s*\n", sources_text or "") if (m := LABEL_RE.match(b.strip())) and m.group(1) == ref]
+        if not mine or not source:
+            continue
+        old = "\n\n".join(blocks[k] for k in mine)
+        rec = {"round": "block", "paragraph": ref, "failures": fails, "blocks": len(mine)}
+        try:
+            out = await llm.generate_json(prompts.MAINTAINER_SYSTEM, prompts.with_schema(schema, prompts.fix_page_prompt(
+                slug=slug, title=title, content_md=old, failures=fails, linkable=linkable,
+                source_paragraphs="\n\n".join(source))), prompts.PAGE_SCHEMA)
+            new = parse(out["content_md"])
+            lost = sorted(c for c in checks.cites(old) - checks.cites(new) if clause(c))
+            # the new blocks go where the first old one was; the other old ones are taken out
+            page = "\n\n".join(new if k == mine[0] else b for k, b in enumerate(blocks) if k == mine[0] or k not in mine)
+            before, after = check(text), check(page)
+            keep = bool(new.strip()) and not lost and not (set(fails) & set(after)) and not (set(after) - set(before))
+            rec |= {"kept": keep, "fixed": len(before) - len(after) if keep else 0, "still": after,
+                    **({"lost_citations": lost} if lost else {})}
+            if keep:
+                text = page
+            log.info("page %s: write-up of %s sent back alone: %s", slug, ref, "kept" if keep else "discarded")
+        except Exception as e:
+            log.warning("page %s: write-up of %s sent back alone failed: %s", slug, ref, e)
+            rec["error"] = f"{type(e).__name__}: {e}"
+        rounds.append(rec)
     return text
