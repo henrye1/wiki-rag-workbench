@@ -88,7 +88,8 @@ def _sections(schema: str) -> list[dict]:
     for m in re.finditer(r"^###\s*(\d+)\.\s*(.+)$", schema, re.M):
         end = re.search(r"^##", schema[m.end():], re.M)
         stop = m.end() + end.start() if end else len(schema)
-        out.append({"num": int(m.group(1)), "name": m.group(2).strip(), "brief": schema[m.start():stop].strip()})
+        out.append({"num": int(m.group(1)), "name": m.group(2).strip(), "brief": schema[m.start():stop].strip(),
+                    "heading": m.group(0).lstrip("#").strip()})  # as the schema prints it: "08. Impairment and ..."
     return out
 
 
@@ -1063,9 +1064,15 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     for sl, p in sorted(existing.items(), key=lambda kv: len(kv[0])):
         if p["type"] == "topic" and (sec := _section_for(sections, p["title"], sl)) and sec["num"] not in has_page:
             has_page[sec["num"]] = sl
+    # the schema's section slug pattern: a section's page is named by it, whatever the plan called it
+    built = lambda sec: checks.section_slug(chk, sec["num"], sec["name"])
     kept = []
     for i in items:
         sec = _section_for(sections, i["title"], i["slug"]) if i["type"] == "topic" else None
+        if sec and built(sec) and sec["num"] not in has_page:
+            if any(x["slug"] == built(sec) for x in kept):
+                continue  # the section's page is planned already
+            i = {**i, "slug": built(sec), "title": sec["heading"], "action": "update" if built(sec) in existing else "create"}
         if sec and sec["num"] in has_page and i["slug"] != has_page[sec["num"]]:
             if any(x["slug"] == has_page[sec["num"]] for x in kept):
                 continue  # the section's page is planned already
@@ -1083,11 +1090,12 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         named = {**{sl: s for s in sections for sl in [has_page.get(s["num"])] if sl}, **sec_of}
         prefix = next((sl[: -len(slugify(x["name"]))] for sl, x in named.items() if sl.endswith(slugify(x["name"]))), "")
         for sec in sections:
-            slug = has_page.get(sec["num"]) or prefix + slugify(sec["name"])
+            slug = has_page.get(sec["num"]) or built(sec) or prefix + slugify(sec["name"])
             if sec["num"] in covered or slug in sec_of:
                 continue
             seen.add(slug)
-            items.append({"action": "update" if slug in existing else "create", "slug": slug, "title": sec["name"],
+            items.append({"action": "update" if slug in existing else "create", "slug": slug,
+                          "title": sec["heading"] if built(sec) else sec["name"],
                           "type": "topic", "focus": f"Section {sec['num']:02d}: {sec['name']}"})
             sec_of[slug] = sec
     # the source page counts toward the limit; section pages first, then the overview, then the rest
@@ -1597,9 +1605,12 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                             change_note=f"Claims moved here from [[{top.slug}]]")
                 ops.append(on[sl])
             on[sl].content_md = _add_blocks(on[sl].content_md, "\n\n".join(xs))
+        # sections listed as empty, not linked (the schema's Overview lines): their pages as they stand after this upload
+        empty_now = checks.empty_sections(chk, {sl: on[sl].content_md if sl in on else existing.get(sl, {}).get("content_md", "")
+                                                for sl in sec_of})
         top.content_md = await fixpass.fix_rounds(
             schema=schema, slug=top.slug, title=top.title, text=top.content_md, sources_text="", linkable=linkable,
-            check=lambda x: checks.no_claim_failures(x, set(sec_of), chk, cite_ctx["names"]) + cite_failures(x),
+            check=lambda x: checks.no_claim_failures(x, set(sec_of), chk, cite_ctx["names"], empty_now) + cite_failures(x),
             clause=lambda c: fixpass.is_clause(c, cite_ctx), may_grow=True,
             parse=lambda r: _fix_breaks(r).strip(), kind="no claims", record=check_fixes,
             ok=lambda old, new: not checks.cites(new) - checks.cites(old))  # a fix adds no claim

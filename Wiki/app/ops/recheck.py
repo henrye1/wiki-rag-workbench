@@ -133,7 +133,8 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
                        and x["slug"] not in index_pages and x["slug"] not in chk.no_claim_pages}
             home = lambda c: next((sl for sl, cs in holders.items() if c in cs), None)
             body = fixpass.move_claims(p["slug"], body, home, lambda sl: holders.get(sl, set()), record, cite_ctx["names"])[0]
-            check = lambda x: checks.no_claim_failures(x, section_pages, chk, cite_ctx["names"]) + cite_check(x)
+            empty = checks.empty_sections(chk, {x["slug"]: _split_also(x["content_md"])[0] for x in pages if x["slug"] in section_pages})
+            check = lambda x: checks.no_claim_failures(x, section_pages, chk, cite_ctx["names"], empty) + cite_check(x)
             kind, sources_text, may_grow = "no claims", "", True
         else:  # a split section's index, composed pages: their citations only
             check, sources_text = cite_check, ""
