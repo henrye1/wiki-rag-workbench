@@ -8,9 +8,10 @@ location: what kind of passage it is (table, footnote, note, comment) is kept ap
 each passage, and a footnote or comment says so in its own first word. A footnote or comment takes the location of
 the passage that carries its marker. A table of contents is left out.
 
-The paper's title is read from the paper itself, never from the file's properties: a paragraph styled as the title on
-the cover, else the cover's title line (short, not a sentence, not "Label: value", not the client's own name) printed
-largest, or the first one where the sizes do not differ, else the first heading.
+The paper's title is read from the paper itself, never from the file's properties (a title entered at upload comes
+before it): the cover line printed largest (a short line, not the client's own name); where the cover's lines are all
+one size, a line styled as the title, else the first title line (not a sentence, not "Label: value"), else the first
+heading.
 """
 import io
 import re
@@ -97,7 +98,7 @@ def read(data: bytes, control_headers: list[str] | None = None, client: str = ""
     blocks, kinds, paths, headings = [], [], [], []
     path: list[tuple[int, str]] = []  # (level, heading) from the top down
     last_caption = ""
-    styled, cover, first_heading = "", [], ""  # the title candidates: styled, cover title lines (text, size), heading
+    styled, cover, first_heading = "", [], ""  # the title candidates: styled, cover lines (text, size, title line), heading
 
     def add(text: str, kind: str = "", label: str | None = None):
         loc = label or _location([h for _, h in path])
@@ -126,8 +127,8 @@ def read(data: bytes, control_headers: list[str] | None = None, client: str = ""
                 last_caption = CAPTION.match(text).group(1)
             kind = "note" if "note" in _style(p) or re.match(r"(?i)^note\s*\d*\s*[:.–-]", text) else ""
             if text:
-                if not path and _title_line(text) and text.casefold() != client.strip().casefold():
-                    cover.append((text, _size(p)))
+                if not path and len(text.split()) <= 15 and text.casefold() != client.strip().casefold():
+                    cover.append((text, _size(p), _title_line(text)))
                 add(text, kind)
             loc = _location([h for _, h in path])
             for ref in el.iter(f"{W}footnoteReference"):  # a footnote: where its marker is
@@ -157,8 +158,11 @@ def read(data: bytes, control_headers: list[str] | None = None, client: str = ""
                 add("\n".join(" | ".join(r) for r in rows), "table", f"{loc} > {last_caption}" if last_caption else None)
             last_caption = ""
 
-    largest = max((s for _, s in cover), default=0)
-    title = styled or next((x for x, s in cover if s == largest), "") or first_heading
+    sizes = {s for _, s, _ in cover}
+    if len(sizes) > 1:  # the cover's lines differ in size: the largest is the title
+        title = next(x for x, s, _ in cover if s == max(sizes))
+    else:
+        title = styled or next((x for x, _, line in cover if line), "") or first_heading
     labels = {}
     for b, k in zip(blocks, kinds):
         lab = re.match(r"^\[([^\]]+)\]", b).group(1)

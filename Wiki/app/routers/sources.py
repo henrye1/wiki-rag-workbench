@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, HttpUrl
 from .. import jobs, llm, prompts, storage
 from ..config import get_settings
 from ..db import get_pool
-from ..ops import ingest
+from ..ops import ingest, rename
 from ..sources import extract
 from ..wiki import checks
 from .deps import Mode, wiki_dep
@@ -64,9 +64,11 @@ async def describe_file(file: UploadFile, wiki: dict = Depends(wiki_dep)):
 
 @router.post("/wikis/{w}/sources", status_code=202)
 async def add_file(file: UploadFile, mode: Mode = MODE_Q, wiki: dict = Depends(wiki_dep),
-                   issuer: str = Form(""), edition: str = Form(""), part: str = Form(""), status: str = Form("")):
+                   issuer: str = Form(""), edition: str = Form(""), part: str = Form(""), status: str = Form(""),
+                   title: str = Form("")):
     """Upload a source file (.pdf, .docx, .md, .txt), with its issuer, edition, part and (optional) status, such as
-    Draft or Approved, as confirmed by the user.
+    Draft or Approved, as confirmed by the user, and (optional) its title, which then names the source instead of the
+    title the reader finds.
     Ingest runs as a background job."""
     s = get_settings()
     data = await file.read()
@@ -80,6 +82,8 @@ async def add_file(file: UploadFile, mode: Mode = MODE_Q, wiki: dict = Depends(w
                                        issuer.strip())
     except ValueError as e:
         raise HTTPException(415, str(e))
+    if title.strip():
+        ex.title = " ".join(title.split())
     if document := {k: v.strip() for k, v in (("issuer", issuer), ("edition", edition), ("part", part), ("status", status)) if v.strip()}:
         ex.meta["document"] = document
     return await _start(wiki, ex, name, mode, file=(name, data))
@@ -159,6 +163,20 @@ async def source_file(slug: str, wiki: dict = Depends(wiki_dep)):
     except httpx.HTTPError as e:
         raise HTTPException(502, f"File storage error: {e}")
     return {"url": url, "name": row["file"]["path"].rsplit("/", 1)[-1], "content_type": row["file"]["content_type"]}
+
+
+class TitleIn(BaseModel):
+    title: str = Field(min_length=2)
+
+
+@router.put("/wikis/{w}/sources/{slug}/title")
+async def retitle_source(slug: str, body: TitleIn, wiki: dict = Depends(wiki_dep)):
+    """Retitle a source: it takes the slug its new title gives, and every link and citation to it (its source page
+    too) moves to that slug word for word. Applied at once: the source and its links move together."""
+    try:
+        return await rename.retitle(wiki, slug, body.title)
+    except KeyError:
+        raise HTTPException(404, "Source not found")
 
 
 @router.delete("/wikis/{w}/sources/{slug}", status_code=204)

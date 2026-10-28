@@ -53,13 +53,42 @@ def kept_failures(text: str, earlier: set[str]) -> list[str]:
             "longer does. Keep what the page said about it, with its citation." for c in sorted(earlier - checks.cites(text))]
 
 
+WORD = re.compile(r"[a-z0-9][a-z0-9%.-]{2,}")
+NOT_A_LABEL = re.compile(r"^The citation \[\[([^\]|]+)\|([^\]]+)\]\] does not name a paragraph")
+
+
+def _words_of(text: str) -> set[str]:
+    return set(WORD.findall(re.sub(r"\[\[[^\]]*\]\]|^\[[^\]\n]+\]", " ", text.casefold(), flags=re.M)))
+
+
+def _where_it_rests(text: str, slug: str, label: str, ctx: dict) -> str:
+    """For a citation of a location its source lacks (e.g. "Cover" in a paper with no text before its first heading):
+    the source's location whose text shares the most words with the sentences that carry it, named so the fix can
+    cite it. Empty when no location shares enough of their words."""
+    cite = f"[[{slug}|{label}]]"
+    said = set().union(*[_words_of(s) for s in checks.SENTENCE_END.split(text.replace("\n", " ")) if cite in s] or [set()])
+    if len(said) < 4:
+        return ""
+    best, score = "", 0
+    for lab, body in ctx["texts"].get(slug, {}).items():
+        n = len(said & _words_of(body))
+        if n > score:
+            best, score = lab, n
+    if score < max(3, len(said) * 0.3):
+        return ""
+    return (f' This source has no location "{label}". The sentence rests on the passage under "{best}" ("'
+            + " ".join(re.sub(r"^\[[^\]\n]+\]\s*", "", ctx["texts"][slug][best]).split()[:20]) + f' ..."): cite [[{slug}|{best}]].')
+
+
 def cite_failures(text: str, ctx: dict, chk: checks.Checks | None) -> list[str]:
-    """Citations the citation check would flag, and citations that cite something other than a clause."""
+    """Citations the citation check would flag, and citations that cite something other than a clause. A citation of
+    a location its source lacks names the location the sentence rests on, where one is clear."""
     _, _, flagged = citecheck.check(text, ctx["matchers"], ctx.get("doc_names"))
     out = [f'The citation [[{src}|{label}]] does not match a paragraph of that source ({reason}); cite the paragraph '
            "it states, by its own label." for (src, label, reason) in flagged]
-    return list(dict.fromkeys(out + checks.citation_failures(text, ctx["labels"], ctx["names"], chk)
-                              + checks.label_failures(text, ctx["labels"], chk)))
+    labels = [f + _where_it_rests(text, m.group(1), m.group(2), ctx) if (m := NOT_A_LABEL.match(f)) else f
+              for f in checks.label_failures(text, ctx["labels"], chk)]
+    return list(dict.fromkeys(out + checks.citation_failures(text, ctx["labels"], ctx["names"], chk) + labels))
 
 
 def move_claims(slug: str, text: str, home, holds, record: list, names: set[str] = frozenset()) -> tuple[str, dict[str, list[str]]]:
