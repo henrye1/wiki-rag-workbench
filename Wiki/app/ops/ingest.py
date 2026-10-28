@@ -915,7 +915,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         outline = "\n".join(ex.meta.get("outline") or [])
 
         async def route(batch: list[int]) -> dict[int, int]:
-            lines = "\n".join(f"{i} | {heads[i] or '-'} | {' '.join(paras[i].split()[:60])}" for i in batch)
+            # the whole passage: a fact late in a long passage or table weighs in its routing too
+            lines = "\n".join(f"{i} | {heads[i] or '-'} | {' '.join(paras[i].split())}" for i in batch)
             try:
                 out = await llm.generate_json(
                     system, prompts.with_schema(schema, prompts.route_prompt(briefs, lines, outline, note)), prompts.ROUTE_SCHEMA
