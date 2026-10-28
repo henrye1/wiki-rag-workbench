@@ -32,6 +32,7 @@ import { FileDrop } from '../../shared/file-drop';
           </div>
           @if (file()) {
             <div class="row doc">
+              <mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>Title (optional)</mat-label><input matInput [(ngModel)]="fileTitle" placeholder="Leave blank to read it from the cover" /></mat-form-field>
               <mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>Issuer</mat-label><input matInput [(ngModel)]="issuer" /></mat-form-field>
               <mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>Edition</mat-label><input matInput [(ngModel)]="edition" /></mat-form-field>
               <mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>Part</mat-label><input matInput [(ngModel)]="part" /></mat-form-field>
@@ -104,6 +105,7 @@ export class WikiSources {
   edition = '';
   part = '';
   status = '';
+  fileTitle = '';
 
   constructor() { effect(() => { void this.load(this.w()); }); }
 
@@ -126,7 +128,7 @@ export class WikiSources {
   /** A file was picked: suggest its issuer, edition and part from its opening pages, for the user to confirm. */
   async pick(f: File | null) {
     this.file.set(f);
-    this.issuer = this.edition = this.part = this.status = '';
+    this.issuer = this.edition = this.part = this.status = this.fileTitle = '';
     if (!f) return;
     this.describing.set(true);
     try {
@@ -141,9 +143,9 @@ export class WikiSources {
   submitFile() {
     return this.submit(async () => {
       const r = await this.api.upload(`/api/wiki/wikis/${enc(this.w())}/sources`, this.file()!, { mode: this.mode },
-        { issuer: this.issuer, edition: this.edition, part: this.part, status: this.status });
+        { issuer: this.issuer, edition: this.edition, part: this.part, status: this.status, title: this.fileTitle });
       this.file.set(null);
-      this.issuer = this.edition = this.part = this.status = '';
+      this.issuer = this.edition = this.part = this.status = this.fileTitle = '';
       this.drop()?.reset();
       return r;
     });
