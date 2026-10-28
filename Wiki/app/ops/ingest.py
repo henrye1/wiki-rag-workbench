@@ -88,7 +88,8 @@ def _sections(schema: str) -> list[dict]:
     for m in re.finditer(r"^###\s*(\d+)\.\s*(.+)$", schema, re.M):
         end = re.search(r"^##", schema[m.end():], re.M)
         stop = m.end() + end.start() if end else len(schema)
-        out.append({"num": int(m.group(1)), "name": m.group(2).strip(), "brief": schema[m.start():stop].strip()})
+        out.append({"num": int(m.group(1)), "name": m.group(2).strip(), "brief": schema[m.start():stop].strip(),
+                    "heading": m.group(0).lstrip("#").strip()})  # as the schema prints it: "08. Impairment and ..."
     return out
 
 
@@ -281,6 +282,14 @@ def _restore_tables(text: str, paras: list[str]) -> str:
         text = (before + ("\n\n" if before and not before.endswith("\n\n") else "") + table
                 + ("\n\n" if after and not after.startswith("\n") else "") + after)
     return text
+
+
+def _without_empty_text(md: str, chk) -> str:
+    """A page that holds claims never also says it is empty: a block that is only the schema's empty-section text
+    goes (a page with no claims keeps it)."""
+    if not (chk and chk.empty_text) or not checks.cites(md):
+        return md
+    return "\n\n".join(b for b in re.split(r"\n\s*\n", md) if b.strip() != chk.empty_text)
 
 
 def _fix_breaks(text: str) -> str:
@@ -885,8 +894,11 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
 
     # 2. Route: give each source paragraph to exactly one schema section (only that section's page writes it up)
     paras = [b.strip() for b in re.split(r"\n\s*\n", ex.text) if b.strip()]
-    # stubs (the schema's stub forms: a deleted or left-out paragraph) go to no page: not written up, not checked
-    stubs = {i for i, p in enumerate(paras) if checks.is_stub(p, chk)}
+    # stubs (the schema's stub forms: a deleted or left-out paragraph), and passages under the schema's skipped
+    # headings (a reference list, say), go to no page: not written up, not checked
+    read_paths = ex.meta.get("heading_paths") or []
+    read_paths = [[h for _, h in x] for x in read_paths] if len(read_paths) == len(paras) else [[] for _ in paras]
+    stubs = {i for i, p in enumerate(paras) if checks.is_skipped(p, read_paths[i], chk)}
     foot = _footnote_of(paras, checks.footnote_form(chk))  # a footnote goes wherever its paragraph goes
     para_vecs = np.asarray(await llm.embed(paras)) if paras else None
     sections = _sections(schema)
@@ -915,7 +927,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         outline = "\n".join(ex.meta.get("outline") or [])
 
         async def route(batch: list[int]) -> dict[int, int]:
-            lines = "\n".join(f"{i} | {heads[i] or '-'} | {' '.join(paras[i].split()[:60])}" for i in batch)
+            # the whole passage: a fact late in a long passage or table weighs in its routing too
+            lines = "\n".join(f"{i} | {heads[i] or '-'} | {' '.join(paras[i].split())}" for i in batch)
             try:
                 out = await llm.generate_json(
                     system, prompts.with_schema(schema, prompts.route_prompt(briefs, lines, outline, note)), prompts.ROUTE_SCHEMA
@@ -1051,9 +1064,15 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     for sl, p in sorted(existing.items(), key=lambda kv: len(kv[0])):
         if p["type"] == "topic" and (sec := _section_for(sections, p["title"], sl)) and sec["num"] not in has_page:
             has_page[sec["num"]] = sl
+    # the schema's section slug pattern: a section's page is named by it, whatever the plan called it
+    built = lambda sec: checks.section_slug(chk, sec["num"], sec["name"])
     kept = []
     for i in items:
         sec = _section_for(sections, i["title"], i["slug"]) if i["type"] == "topic" else None
+        if sec and built(sec) and sec["num"] not in has_page:
+            if any(x["slug"] == built(sec) for x in kept):
+                continue  # the section's page is planned already
+            i = {**i, "slug": built(sec), "title": sec["heading"], "action": "update" if built(sec) in existing else "create"}
         if sec and sec["num"] in has_page and i["slug"] != has_page[sec["num"]]:
             if any(x["slug"] == has_page[sec["num"]] for x in kept):
                 continue  # the section's page is planned already
@@ -1071,11 +1090,12 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         named = {**{sl: s for s in sections for sl in [has_page.get(s["num"])] if sl}, **sec_of}
         prefix = next((sl[: -len(slugify(x["name"]))] for sl, x in named.items() if sl.endswith(slugify(x["name"]))), "")
         for sec in sections:
-            slug = has_page.get(sec["num"]) or prefix + slugify(sec["name"])
+            slug = has_page.get(sec["num"]) or built(sec) or prefix + slugify(sec["name"])
             if sec["num"] in covered or slug in sec_of:
                 continue
             seen.add(slug)
-            items.append({"action": "update" if slug in existing else "create", "slug": slug, "title": sec["name"],
+            items.append({"action": "update" if slug in existing else "create", "slug": slug,
+                          "title": sec["heading"] if built(sec) else sec["name"],
                           "type": "topic", "focus": f"Section {sec['num']:02d}: {sec['name']}"})
             sec_of[slug] = sec
     # the source page counts toward the limit; section pages first, then the overview, then the rest
@@ -1475,6 +1495,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         elif gap_note and len(groups) > 1:
             content += _not_covered(content, given)
         content = _restore_tables(content, paras)  # a table of this source the reply ran onto one line
+        content = _without_empty_text(content, chk)
         first = outs[0] if outs else {"title": cur["title"] if cur else title,
                                        "summary": cur["summary"] if cur else f"{title}: items also recorded here",
                                        "change_note": f"Also recorded from {ex.title}"}
@@ -1584,9 +1605,12 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                             change_note=f"Claims moved here from [[{top.slug}]]")
                 ops.append(on[sl])
             on[sl].content_md = _add_blocks(on[sl].content_md, "\n\n".join(xs))
+        # sections listed as empty, not linked (the schema's Overview lines): their pages as they stand after this upload
+        empty_now = checks.empty_sections(chk, {sl: on[sl].content_md if sl in on else existing.get(sl, {}).get("content_md", "")
+                                                for sl in sec_of})
         top.content_md = await fixpass.fix_rounds(
             schema=schema, slug=top.slug, title=top.title, text=top.content_md, sources_text="", linkable=linkable,
-            check=lambda x: checks.no_claim_failures(x, set(sec_of), chk, cite_ctx["names"]) + cite_failures(x),
+            check=lambda x: checks.no_claim_failures(x, set(sec_of), chk, cite_ctx["names"], empty_now) + cite_failures(x),
             clause=lambda c: fixpass.is_clause(c, cite_ctx), may_grow=True,
             parse=lambda r: _fix_breaks(r).strip(), kind="no claims", record=check_fixes,
             ok=lambda old, new: not checks.cites(new) - checks.cites(old))  # a fix adds no claim

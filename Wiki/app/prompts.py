@@ -318,7 +318,7 @@ def route_prompt(briefs: str, lines: str, outline: str = "", note: str = "") -> 
         "Keep a topic together: paragraphs under the same heading go to the same section unless a brief hands one off.\n"
         f"{note}\n"
         + (f"<source_outline>\nNumbered headings of the source:\n{outline}\n</source_outline>\n\n" if outline else "")
-        + f"<section_briefs>\n{briefs}\n</section_briefs>\n\n<paragraphs>\nid | heading | text (first words)\n{lines}\n</paragraphs>"
+        + f"<section_briefs>\n{briefs}\n</section_briefs>\n\n<paragraphs>\nid | heading | text\n{lines}\n</paragraphs>"
     )
 
 

@@ -39,12 +39,15 @@ class Checks:
     no_claim_pages: list[str] = field(default_factory=list)  # pages that hold no claims: slugs, or a kind of page
     no_claim_index: bool = False  # the list names a split section's index page among them
     stub_forms: list[str] = field(default_factory=list)  # what a deleted or left-out paragraph says instead of its text
+    skipped_headings: list[str] = field(default_factory=list)  # a passage under one of these is skipped like a stub
     document_names: list[str] = field(default_factory=list)  # forms of a document's name, never a clause in a citation
     control_headers: list[str] = field(default_factory=list)  # header words that mark a document control table
     empty_text: str = ""  # the whole body of a section page that holds no claims
     absence: list[str] = field(default_factory=list)  # phrases that say something is not stated
     absence_allowed: str = ""  # where those phrases are allowed, as the schema's label says it ("... source page ...")
     papers_apart: bool = False  # a page keeps each paper's text under its own headings; a split stays within one paper
+    overview_empty: str = ""  # the word the overview lists a section with when its page holds no claims
+    section_slug: str = ""  # the pattern a section page's slug is built from, e.g. <nn>-<section name>
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
 
 
@@ -56,8 +59,9 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "defined_term_form": "defined-term citation form",
     "unlabelled_forms": "citation forms for text without a paragraph label", "page_size_limit": "page size limit",
     "subtopic_minimum": "subtopic page minimum", "slug_words": "subtopic slug", "no_claim_pages": "pages that hold no claims",
-    "stub_forms": "stub forms", "document_names": "document names", "control_headers": "document control headers",
+    "stub_forms": "stub forms", "skipped_headings": "skipped headings", "document_names": "document names", "control_headers": "document control headers",
     "empty_text": "empty section text", "absence": "absence phrases", "papers_apart": "papers kept apart",
+    "overview_empty": "overview lines", "section_slug": "section slug",
 }
 
 
@@ -109,10 +113,10 @@ def load(schema_md: str) -> Checks | None:
                 c.lead_in_words = int(m.group(1)) if m.group(1).isdigit() else NUMBER_WORDS.get(m.group(1).casefold())
         elif attr == "control_headers":  # "a · b · c" (or quoted words)
             c.control_headers = QUOTED.findall(value) or [x.strip() for x in value.split("\u00b7") if x.strip()]
-        elif attr == "stub_forms":  # "a · b · c. What is done with them.": the forms, up to the sentence after them
+        elif attr in ("stub_forms", "skipped_headings"):  # "a · b · c. What is done with them.": up to the sentence after
             forms = [x.strip() for x in value.split("\u00b7")]
             forms[-1] = re.split(r"\.\s+(?=[A-Z])", forms[-1], maxsplit=1)[0]
-            c.stub_forms = [x for x in forms if x]
+            setattr(c, attr, [x for x in forms if x])
         elif attr == "empty_text":
             c.empty_text = (QUOTED.findall(value) or [""])[0]
         elif attr == "absence":  # the phrases; where they are allowed is in the label's brackets
@@ -120,6 +124,10 @@ def load(schema_md: str) -> Checks | None:
             c.absence_allowed = (re.findall(r"\(([^)]*)\)", label_of(label)) or [""])[0]
         elif attr == "papers_apart":
             c.papers_apart = True
+        elif attr == "overview_empty":  # "... a link to the section's page if it holds claims, or the word "Empty" ..."
+            c.overview_empty = (QUOTED.findall(value) or [""])[0]
+        elif attr == "section_slug":
+            c.section_slug = value.strip()
         elif attr == "no_claim_pages":  # up to the first full stop: page slugs, and kinds of page such as index pages
             c.no_claim_pages = [x.strip() for x in value.split(".")[0].split(",") if x.strip()]
             c.no_claim_index = any(re.search(r"\bindex\b", x, re.I) for x in c.no_claim_pages)
@@ -201,6 +209,13 @@ def is_stub(text: str, c: Checks | None) -> bool:
     if not rx or not rx.search(body):
         return False
     return not re.search(r"[A-Za-z]{3,}", LABEL_TOKEN.sub(" ", rx.sub(" ", body)))
+
+
+def is_skipped(text: str, path: list[str], c: Checks | None) -> bool:
+    """A passage not written up and not checked: a stub, or under one of the schema's skipped headings (any heading on
+    its path, matched whole, case aside)."""
+    heads = {h.casefold() for h in (c.skipped_headings if c else [])}
+    return is_stub(text, c) or any(h.strip().casefold() in heads for h in path)
 
 
 def document_name_re(c: Checks | None) -> re.Pattern | None:
@@ -400,13 +415,33 @@ def label_failures(content: str, labels: dict[str, set[str]], c: Checks | None) 
     return list(dict.fromkeys(out))
 
 
-def no_claim_failures(content: str, must_link: set[str], c: Checks | None, names: set[str] = frozenset()) -> list[str]:
+def empty_sections(c: Checks | None, contents: dict[str, str]) -> set[str]:
+    """Section pages the overview lists with the schema's word for an empty section rather than a link: those holding
+    only the schema's empty-section text. None unless the schema has both entries (Overview lines, Empty section text)."""
+    if not (c and c.overview_empty and c.empty_text):
+        return set()
+    return {sl for sl, md in contents.items() if (md or "").strip() == c.empty_text}
+
+
+def section_slug(c: Checks | None, num: int, name: str) -> str:
+    """A section page's slug from the schema's pattern (<nn> the two-digit section number, <section name> the
+    section's name); empty when the schema gives no pattern."""
+    if not (c and c.section_slug):
+        return ""
+    return store.slugify(c.section_slug.replace("<nn>", f"{num:02d}").replace("<section name>", name))
+
+
+def no_claim_failures(content: str, must_link: set[str], c: Checks | None, names: set[str] = frozenset(),
+                      empty: set[str] = frozenset()) -> list[str]:
     """Where a page that holds no claims breaks that: a page it must link (the overview: every section page; an index
-    page: every subtopic page of its section) that it does not, and a sentence on it that cites a source paragraph."""
+    page: every subtopic page of its section) that it does not, and a sentence on it that cites a source paragraph.
+    empty: section pages listed with the schema's word for an empty section, never linked."""
     if not c:
         return []
     linked = {m.group(1) for m in store.LINK_RE.finditer(content)}
-    out = [f"The page does not list [[{s}]]; it lists every page it is the index of." for s in sorted(must_link - linked)]
+    out = [f"The page does not list [[{s}]]; it lists every page it is the index of." for s in sorted(must_link - empty - linked)]
+    out += [f'The page links [[{s}]], whose page holds no claims; list that section with "{c.overview_empty}" instead '
+            "of a link." for s in sorted(empty & linked)]
     return out + [f'The sentence "{" ".join(x.split()[:15])} ..." cites a source paragraph, but this page holds no claims: '
                   "the claim belongs on the page that holds that paragraph." for x in take_claims(content, names=names)[1]]
 
