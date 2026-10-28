@@ -283,6 +283,14 @@ def _restore_tables(text: str, paras: list[str]) -> str:
     return text
 
 
+def _without_empty_text(md: str, chk) -> str:
+    """A page that holds claims never also says it is empty: a block that is only the schema's empty-section text
+    goes (a page with no claims keeps it)."""
+    if not (chk and chk.empty_text) or not checks.cites(md):
+        return md
+    return "\n\n".join(b for b in re.split(r"\n\s*\n", md) if b.strip() != chk.empty_text)
+
+
 def _fix_breaks(text: str) -> str:
     """Put back line breaks the model left out: escaped "\\n" as text, a heading run on after a sentence, or a heading
     run together with the text under it (a heading line that cites something is two lines), or the next paragraph run
@@ -885,8 +893,11 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
 
     # 2. Route: give each source paragraph to exactly one schema section (only that section's page writes it up)
     paras = [b.strip() for b in re.split(r"\n\s*\n", ex.text) if b.strip()]
-    # stubs (the schema's stub forms: a deleted or left-out paragraph) go to no page: not written up, not checked
-    stubs = {i for i, p in enumerate(paras) if checks.is_stub(p, chk)}
+    # stubs (the schema's stub forms: a deleted or left-out paragraph), and passages under the schema's skipped
+    # headings (a reference list, say), go to no page: not written up, not checked
+    read_paths = ex.meta.get("heading_paths") or []
+    read_paths = [[h for _, h in x] for x in read_paths] if len(read_paths) == len(paras) else [[] for _ in paras]
+    stubs = {i for i, p in enumerate(paras) if checks.is_skipped(p, read_paths[i], chk)}
     foot = _footnote_of(paras, checks.footnote_form(chk))  # a footnote goes wherever its paragraph goes
     para_vecs = np.asarray(await llm.embed(paras)) if paras else None
     sections = _sections(schema)
@@ -1476,6 +1487,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         elif gap_note and len(groups) > 1:
             content += _not_covered(content, given)
         content = _restore_tables(content, paras)  # a table of this source the reply ran onto one line
+        content = _without_empty_text(content, chk)
         first = outs[0] if outs else {"title": cur["title"] if cur else title,
                                        "summary": cur["summary"] if cur else f"{title}: items also recorded here",
                                        "change_note": f"Also recorded from {ex.title}"}

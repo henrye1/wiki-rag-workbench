@@ -39,6 +39,7 @@ class Checks:
     no_claim_pages: list[str] = field(default_factory=list)  # pages that hold no claims: slugs, or a kind of page
     no_claim_index: bool = False  # the list names a split section's index page among them
     stub_forms: list[str] = field(default_factory=list)  # what a deleted or left-out paragraph says instead of its text
+    skipped_headings: list[str] = field(default_factory=list)  # a passage under one of these is skipped like a stub
     document_names: list[str] = field(default_factory=list)  # forms of a document's name, never a clause in a citation
     control_headers: list[str] = field(default_factory=list)  # header words that mark a document control table
     empty_text: str = ""  # the whole body of a section page that holds no claims
@@ -56,7 +57,7 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "defined_term_form": "defined-term citation form",
     "unlabelled_forms": "citation forms for text without a paragraph label", "page_size_limit": "page size limit",
     "subtopic_minimum": "subtopic page minimum", "slug_words": "subtopic slug", "no_claim_pages": "pages that hold no claims",
-    "stub_forms": "stub forms", "document_names": "document names", "control_headers": "document control headers",
+    "stub_forms": "stub forms", "skipped_headings": "skipped headings", "document_names": "document names", "control_headers": "document control headers",
     "empty_text": "empty section text", "absence": "absence phrases", "papers_apart": "papers kept apart",
 }
 
@@ -109,10 +110,10 @@ def load(schema_md: str) -> Checks | None:
                 c.lead_in_words = int(m.group(1)) if m.group(1).isdigit() else NUMBER_WORDS.get(m.group(1).casefold())
         elif attr == "control_headers":  # "a · b · c" (or quoted words)
             c.control_headers = QUOTED.findall(value) or [x.strip() for x in value.split("\u00b7") if x.strip()]
-        elif attr == "stub_forms":  # "a · b · c. What is done with them.": the forms, up to the sentence after them
+        elif attr in ("stub_forms", "skipped_headings"):  # "a · b · c. What is done with them.": up to the sentence after
             forms = [x.strip() for x in value.split("\u00b7")]
             forms[-1] = re.split(r"\.\s+(?=[A-Z])", forms[-1], maxsplit=1)[0]
-            c.stub_forms = [x for x in forms if x]
+            setattr(c, attr, [x for x in forms if x])
         elif attr == "empty_text":
             c.empty_text = (QUOTED.findall(value) or [""])[0]
         elif attr == "absence":  # the phrases; where they are allowed is in the label's brackets
@@ -201,6 +202,13 @@ def is_stub(text: str, c: Checks | None) -> bool:
     if not rx or not rx.search(body):
         return False
     return not re.search(r"[A-Za-z]{3,}", LABEL_TOKEN.sub(" ", rx.sub(" ", body)))
+
+
+def is_skipped(text: str, path: list[str], c: Checks | None) -> bool:
+    """A passage not written up and not checked: a stub, or under one of the schema's skipped headings (any heading on
+    its path, matched whole, case aside)."""
+    heads = {h.casefold() for h in (c.skipped_headings if c else [])}
+    return is_stub(text, c) or any(h.strip().casefold() in heads for h in path)
 
 
 def document_name_re(c: Checks | None) -> re.Pattern | None:

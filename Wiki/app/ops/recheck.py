@@ -11,7 +11,8 @@ from ..jobs import JobContext
 from ..wiki import checks, store
 from ..wiki.store import Op
 from . import fixpass
-from .ingest import _covers, _fix_breaks, _index_md, _section_for, _sections, _split_also, _with_also, split_written
+from .ingest import (_covers, _fix_breaks, _index_md, _section_for, _sections, _split_also, _with_also, _without_empty_text,
+                     split_written)
 
 log = logging.getLogger(__name__)
 CITE = re.compile(r"\[\[(source-[^\]|#]+)(?:#[^\]|]*)?\|([^\]]+)\]\]")
@@ -36,8 +37,16 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
             if m := re.match(r"^\[([^\]]+)\]", b):
                 by_label.setdefault(m.group(1).strip(), []).append(b)
         meta = r["meta"] or {}
+        hp = meta.get("heading_paths") or []
+        hp = [[h for _, h in x] for x in hp] if len(hp) == len(blocks) else [[] for _ in blocks]
+        # labels whose every passage is skipped (a stub, or under the schema's skipped headings): written up nowhere
+        skip: dict[str, bool] = {}
+        for b, path in zip(blocks, hp):
+            if m := re.match(r"^\[([^\]]+)\]", b):
+                skip[m.group(1).strip()] = skip.get(m.group(1).strip(), True) and checks.is_skipped(b, path, chk)
         src[r["slug"]] = {"by_label": by_label, "kinds": meta.get("para_kinds") or {}, "text": r["text"] or "",
-                          "fields": {k: v for k, v in (meta.get("document") or {}).items() if v}}
+                          "fields": {k: v for k, v in (meta.get("document") or {}).items() if v},
+                          "skipped": {lab for lab, s in skip.items() if s}}
     subtopics = [p["slug"] for p in pages if p["type"] == "subtopic"]
     section_pages = {p["slug"] for p in pages if p["type"] == "topic" and _section_for(sections, p["title"], p["slug"])}
     index_pages = {sl for sl in section_pages if any(s.startswith(sl + "-") for s in subtopics)}
@@ -63,6 +72,21 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
                     out[slug].append(b)
         return out
 
+    def only_skipped(line: str) -> bool:
+        """A line whose every source citation is of a passage the schema skips."""
+        cs = [c.split("|", 1) for c in checks.cites(line) if c.split("|", 1)[0] in src]
+        return bool(cs) and all(BASE(lab) in src[sl]["skipped"] for sl, lab in cs)
+
+    def without_skipped(body: str, lines: list[str]) -> tuple[str, list[str], int]:
+        """A page without what it wrote up from skipped passages (each such line whole), a heading left with nothing
+        under it, or the empty-section text on a page that still holds claims."""
+        kept = [ln for ln in body.split("\n") if not only_skipped(ln)]
+        n = body.count("\n") + 1 - len(kept) + sum(1 for ln in lines if only_skipped(ln))
+        if not n:
+            return body, lines, 0
+        text = checks.take_claims("\n".join(kept), lambda s: False, cite_ctx["names"])[0]
+        return _without_empty_text(text, chk), [ln for ln in lines if not only_skipped(ln)], n
+
     async def one(p: dict) -> Op | None:
         if p["slug"] in index_pages and checks.holds_no_claims(chk, p["slug"], True):
             # a split section's index holds no claims: rebuilt from its subtopic pages, in the order it listed them
@@ -77,6 +101,9 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
         # the "Also recorded here" lines (on a section page, or on a subtopic page of a split section) are kept as they
         # are: each points to its paragraph's own page, where that paragraph is checked
         body, also_lines = _split_also(p["content_md"]) if p["type"] in ("topic", "subtopic") else (p["content_md"], [])
+        body, also_lines, dropped = without_skipped(body, also_lines)
+        if dropped:
+            log.info("re-check: page %s: %s lines written up from skipped passages removed", p["slug"], dropped)
         cite_check = lambda x: fixpass.cite_failures(x, cite_ctx, chk)
         kind, given, may_shrink, may_grow = "citations", {}, False, False
         if p["type"] == "source" and p["slug"] in src:
@@ -118,7 +145,8 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
         if content.strip() == p["content_md"].strip():
             return None
         rec = next((x for x in record if x["page"] == p["slug"]), None)
-        note = f"Re-check: {rec['found'] - rec['still']} of {rec['found']} failures fixed" if rec else "Re-check: source details on their own lines"
+        note = f"Re-check: {rec['found'] - rec['still']} of {rec['found']} failures fixed" if rec else \
+            f"Re-check: {dropped} lines written up from skipped passages removed" if dropped else "Re-check: source details on their own lines"
         return Op(op="update", slug=p["slug"], title=p["title"], type=p["type"], summary=p["summary"], content_md=content,
                   tags=p["tags"] or [], base_version=p["version"], change_note=note)
 
