@@ -7,7 +7,7 @@ import httpx
 import pymupdf
 import trafilatura
 
-from . import pdf_ifrs
+from . import docx_reader, pdf_ifrs
 from .text import clean, split_long
 
 TEXT_EXT = (".txt", ".md", ".markdown")
@@ -84,12 +84,12 @@ def _with_head(content: str, head: str) -> str:
 def from_pdf(name: str, data: bytes, max_words: int, example_re=None, stub_re=None, footnote_form=None) -> Extracted:
     doc = pymupdf.open(stream=data, filetype="pdf")
     meta = {"pages": doc.page_count, **{k: v for k, v in (doc.metadata or {}).items() if v}}
-    chunks, layout = pdf_ifrs.parse_document(doc, stub_re=stub_re, footnote_form=footnote_form)
+    chunks, layout = pdf_ifrs.parse_document(doc, stub_re=stub_re, footnote_form=footnote_form, example_re=example_re)
     if layout == "standard":
         # Binding text only, labelled by paragraph number so notes can cite it
         chunks = [c for c in chunks if c.source_type in ("standard", "appendix_a", "appendix_b", "footnote")]
         heads = _example_heads(chunks, example_re)
-        blocks = [f"[{c.para_ref or 'p' + str(c.page)}] {_with_head(c.content, h)}" for c, h in zip(chunks, heads)]
+        blocks = [f"[{c.para_ref or 'p' + str(c.page)}] {_with_head(c.content, h if not (stub_re and stub_re.match(c.content)) else "")}" for c, h in zip(chunks, heads)]
         meta["parser"] = "ifrs"
         meta["headings"] = [(c.heading or "").strip() for c in chunks]  # one per block, for routing to schema sections
         meta["outline"] = _outline(chunks)
@@ -100,7 +100,7 @@ def from_pdf(name: str, data: bytes, max_words: int, example_re=None, stub_re=No
         chunks = [c for c in chunks if c.source_type in KIND_LABELS or c.source_type == "footnote"]
         heads = _example_heads(chunks, example_re)
         blocks = [f"[{c.para_ref}] " + (f"({KIND_LABELS[c.source_type]}) " if c.source_type in KIND_LABELS else "")
-                  + _with_head(c.content, h) for c, h in zip(chunks, heads)]
+                  + _with_head(c.content, h if not (stub_re and stub_re.match(c.content)) else "") for c, h in zip(chunks, heads)]
         meta["parser"] = "ifrs_accompanying"
         meta["headings"] = [(c.heading or "").strip() for c in chunks]
         meta["kinds"] = [c.source_type for c in chunks]
@@ -115,22 +115,11 @@ def from_pdf(name: str, data: bytes, max_words: int, example_re=None, stub_re=No
     return Extracted(_title_from(name), "pdf", text, _pack(blocks, max_words), meta)
 
 
-def from_docx(name: str, data: bytes, max_words: int) -> Extracted:
-    import docx  # python-docx
-
-    d = docx.Document(io.BytesIO(data))
-    blocks = []
-    for p in d.paragraphs:
-        t = p.text.strip()
-        if not t:
-            continue
-        blocks.append(f"## {t}" if p.style.name.lower().startswith("heading") else t)
-    for table in d.tables:
-        rows = [" | ".join(clean(c.text) for c in r.cells) for r in table.rows]
-        blocks.append("\n".join(rows))
-    text = "\n\n".join(blocks)
-    title = d.core_properties.title or _title_from(name)
-    return Extracted(title, "docx", text, _pack(blocks, max_words), {})
+def from_docx(name: str, data: bytes, max_words: int, control_headers: list[str] | None = None) -> Extracted:
+    """A Word paper as labelled passages: each with its location (heading path, "Cover", "Document control"); what
+    kind of passage each is (table, footnote, note, comment) is kept apart, in meta (see docx_reader)."""
+    title, blocks, meta = docx_reader.read(data, control_headers)
+    return Extracted(title or _title_from(name), "docx", "\n\n".join(blocks), _pack(blocks, max_words), meta)
 
 
 def from_text(name: str, data: bytes, max_words: int, title: str | None = None) -> Extracted:
@@ -171,7 +160,8 @@ def opening_text(name: str, data: bytes, pages: int = 3, chars: int = 6000) -> s
     return from_upload(name, data, 3000).text[:chars]
 
 
-def from_upload(name: str, data: bytes, max_words: int, example_re=None, stub_re=None, footnote_form=None) -> Extracted:
+def from_upload(name: str, data: bytes, max_words: int, example_re=None, stub_re=None, footnote_form=None,
+                control_headers: list[str] | None = None) -> Extracted:
     """example_re: the wiki schema's example labels, so the issuer's example headings are kept with their paragraphs.
     stub_re: its stub forms, so a stub inside the text is read as its own paragraph.
     footnote_form: its citation form for a footnote, so footnotes are kept under their paragraph."""
@@ -179,7 +169,7 @@ def from_upload(name: str, data: bytes, max_words: int, example_re=None, stub_re
     if low.endswith(".pdf"):
         return from_pdf(name, data, max_words, example_re, stub_re, footnote_form)
     if low.endswith(".docx"):
-        return from_docx(name, data, max_words)
+        return from_docx(name, data, max_words, control_headers)
     if low.endswith(TEXT_EXT):
         return from_text(name, data, max_words)
     raise ValueError(f"Unsupported file type. Supported: {', '.join(SUPPORTED_EXT)}")

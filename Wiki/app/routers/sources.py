@@ -64,8 +64,9 @@ async def describe_file(file: UploadFile, wiki: dict = Depends(wiki_dep)):
 
 @router.post("/wikis/{w}/sources", status_code=202)
 async def add_file(file: UploadFile, mode: Mode = MODE_Q, wiki: dict = Depends(wiki_dep),
-                   issuer: str = Form(""), edition: str = Form(""), part: str = Form("")):
-    """Upload a source file (.pdf, .docx, .md, .txt), with its issuer, edition and part as confirmed by the user.
+                   issuer: str = Form(""), edition: str = Form(""), part: str = Form(""), status: str = Form("")):
+    """Upload a source file (.pdf, .docx, .md, .txt), with its issuer, edition, part and (optional) status, such as
+    Draft or Approved, as confirmed by the user.
     Ingest runs as a background job."""
     s = get_settings()
     data = await file.read()
@@ -75,10 +76,10 @@ async def add_file(file: UploadFile, mode: Mode = MODE_Q, wiki: dict = Depends(w
     try:
         chk = checks.load(wiki.get("schema_md") or "")
         ex = await asyncio.to_thread(extract.from_upload, name, data, s.section_words, checks.example_label_re(chk) if chk else None,
-                                       checks.stub_re(chk), checks.footnote_form(chk))
+                                       checks.stub_re(chk), checks.footnote_form(chk), chk.control_headers if chk else None)
     except ValueError as e:
         raise HTTPException(415, str(e))
-    if document := {k: v.strip() for k, v in (("issuer", issuer), ("edition", edition), ("part", part)) if v.strip()}:
+    if document := {k: v.strip() for k, v in (("issuer", issuer), ("edition", edition), ("part", part), ("status", status)) if v.strip()}:
         ex.meta["document"] = document
     return await _start(wiki, ex, name, mode, file=(name, data))
 

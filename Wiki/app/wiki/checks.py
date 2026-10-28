@@ -32,11 +32,15 @@ class Checks:
     split: dict[int, str] = field(default_factory=dict)  # section number -> what its subtopic pages are grouped by
     defined_term_form: str = ""  # how a defined term is cited, e.g. a prefix followed by <term>
     page_size_limit: int | None = None  # words: a section page over this is split by the source's headings
+    resplit_margin: float = 0.0  # after writing, a page is split again only if this share (0.1 = 10%) over the limit
     subtopic_minimum: int | None = None  # words: a smaller group is joined to its neighbour under the same parent
     slug_words: int | None = None  # words of an unnumbered heading used in a subtopic slug
     unlabelled_forms: dict[str, str] = field(default_factory=dict)  # kind of text without a paragraph label -> its citation form
-    no_claim_pages: list[str] = field(default_factory=list)  # slugs of pages that link every section and hold no claims
+    no_claim_pages: list[str] = field(default_factory=list)  # pages that hold no claims: slugs, or a kind of page
+    no_claim_index: bool = False  # the list names a split section's index page among them
     stub_forms: list[str] = field(default_factory=list)  # what a deleted or left-out paragraph says instead of its text
+    document_names: list[str] = field(default_factory=list)  # forms of a document's name, never a clause in a citation
+    control_headers: list[str] = field(default_factory=list)  # header words that mark a document control table
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
 
 
@@ -48,7 +52,7 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "defined_term_form": "defined-term citation form",
     "unlabelled_forms": "citation forms for text without a paragraph label", "page_size_limit": "page size limit",
     "subtopic_minimum": "subtopic page minimum", "slug_words": "subtopic slug", "no_claim_pages": "pages that hold no claims",
-    "stub_forms": "stub forms",
+    "stub_forms": "stub forms", "document_names": "document names", "control_headers": "document control headers",
 }
 
 
@@ -89,22 +93,28 @@ def load(schema_md: str) -> Checks | None:
         elif attr == "defined_term_form":
             c.defined_term_form = (QUOTED.findall(value) or [""])[0]
         elif attr == "split":
-            c.split = {int(k): v for k, v in _mapping(value).items() if k.strip().isdigit()}
+            c.split = {int(k): re.split(r"\.\s+(?=[A-Z])", v, maxsplit=1)[0] for k, v in _mapping(value).items()
+                       if k.strip().isdigit()}  # each up to the sentence after the list
         elif attr == "routed_kinds":
             c.routed_kinds = [x.strip().strip('"').casefold() for x in value.split(",") if x.strip()]
         elif attr == "linking":
             c.linking = QUOTED.findall(value)
             if m := re.search(r"\bup to (\w+) words?\b", value):
                 c.lead_in_words = int(m.group(1)) if m.group(1).isdigit() else NUMBER_WORDS.get(m.group(1).casefold())
+        elif attr == "control_headers":  # "a · b · c" (or quoted words)
+            c.control_headers = QUOTED.findall(value) or [x.strip() for x in value.split("\u00b7") if x.strip()]
         elif attr == "stub_forms":  # "a · b · c. What is done with them.": the forms, up to the sentence after them
             forms = [x.strip() for x in value.split("\u00b7")]
             forms[-1] = re.split(r"\.\s+(?=[A-Z])", forms[-1], maxsplit=1)[0]
             c.stub_forms = [x for x in forms if x]
-        elif attr == "no_claim_pages":  # the slugs, up to the first full stop
+        elif attr == "no_claim_pages":  # up to the first full stop: page slugs, and kinds of page such as index pages
             c.no_claim_pages = [x.strip() for x in value.split(".")[0].split(",") if x.strip()]
+            c.no_claim_index = any(re.search(r"\bindex\b", x, re.I) for x in c.no_claim_pages)
         elif attr in ("max_takeaways", "examples_section", "page_size_limit", "subtopic_minimum", "slug_words"):
             n = re.search(r"\d+", value)
             setattr(c, attr, int(n.group(0)) if n else None)
+            if attr == "page_size_limit" and (m := re.search(r"(\d+(?:\.\d+)?)\s*%\s+over", value)):
+                c.resplit_margin = float(m.group(1)) / 100
         else:
             setattr(c, attr, QUOTED.findall(value))
     return c
@@ -114,12 +124,26 @@ NUMBER = r"(?:\d+[A-Z]?|[A-Z])"  # the schema's <n>: a number or a letter
 LIST_LABEL = re.compile(r"^[^*:\n\[]{1,80}\*\*\s*[:\u2013\u2014-]\s*")  # a bold list label before the sentence itself
 
 
-def _template(text: str, wild: str) -> str:
-    """A schema phrase as a pattern: <n> matches a number or a letter; other "<...>" placeholders and "..." match any
-    short run of words."""
+def _template(text: str, wild: str, named: dict[str, str] | None = None) -> str:
+    """A schema phrase as a pattern: <n> matches a number or a letter; a placeholder naming one of the Checks lists
+    (<example label>: any of the Example labels) matches any item of that list; other "<...>" placeholders and "..."
+    match any short run of words."""
     out = re.escape(text)
-    out = re.sub(r"<([^>]*)>", lambda m: f"({NUMBER if m.group(1) == 'n' else wild})", out.replace(r"\<", "<").replace(r"\>", ">"))
+    pick = lambda name: NUMBER if name == "n" else (named or {}).get(name.replace("\\ ", " ").casefold(), wild)
+    out = re.sub(r"<([^>]*)>", lambda m: f"({pick(m.group(1))})", out.replace(r"\<", "<").replace(r"\>", ">"))
     return out.replace(re.escape("..."), r".+?")
+
+
+def _named(c: Checks) -> dict[str, str]:
+    """The Checks lists of phrases a placeholder can name, by the singular of the list's name ("example labels" ->
+    "example label"), each as one pattern of its items."""
+    out = {}
+    for attr, label in LISTS.items():
+        items = getattr(c, attr, None)
+        if label.endswith("s") and isinstance(items, list) and items and all(isinstance(x, str) for x in items):
+            pats = (_template(x, r"[^,.\]\n]{1,60}?").replace(r"\ ", r"\s+") for x in items)
+            out[label[:-1]] = "(?:" + "|".join(re.sub(r"\((?!\?)", "(?:", x) for x in pats) + ")"  # one group: the whole item
+    return out
 
 
 def _opener_res(c: Checks) -> dict[str, re.Pattern]:
@@ -127,7 +151,8 @@ def _opener_res(c: Checks) -> dict[str, re.Pattern]:
     leads = ([rf"(?:{link})\s+"] if link else []) + (  # the listed words, or any lead-in of up to n words and a comma
         [rf"(?:[^\s,.;:\[\]]+\s+){{0,{c.lead_in_words - 1}}}[^\s,.;:\[\]]+,\s+"] if c.lead_in_words else [])
     lead = f"(?:{'|'.join(leads)})?" if leads else ""
-    return {kind: re.compile(rf"^{lead}(?:" + "|".join(_template(o, r"[^,.\]\n]{1,150}?") for o in ops) + r")", re.I)
+    named = _named(c)
+    return {kind: re.compile(rf"^{lead}(?:" + "|".join(_template(o, r"[^,.\]\n]{1,150}?", named) for o in ops) + r")", re.I)
             for kind, ops in c.openers.items() if ops}
 
 
@@ -163,6 +188,26 @@ def is_stub(text: str, c: Checks | None) -> bool:
     if not rx or not rx.search(body):
         return False
     return not re.search(r"[A-Za-z]{3,}", LABEL_TOKEN.sub(" ", rx.sub(" ", body)))
+
+
+def document_name_re(c: Checks | None) -> re.Pattern | None:
+    """The schema's document names ("IFRS <n>") as one pattern: a name, not a clause, inside a citation label."""
+    if not c or not c.document_names:
+        return None
+    return re.compile(r"\b(?:" + "|".join(_template(x, NUMBER).replace(r"\ ", r"\s*") for x in c.document_names) + r")\b")
+
+
+def example_item(path: list[str], text: str, c: Checks | None) -> str | None:
+    """The labelled example a paragraph belongs to: the outermost heading on its path that carries one of the schema's
+    example labels (the example's title, over its scenarios), else the first label in its own text."""
+    rx = example_label_re(c) if c else None
+    if not rx:
+        return None
+    for h in path:
+        if m := rx.search(h):
+            return m.group(0)
+    m = rx.search(re.sub(r"^\[[^\]]+\]\s*", "", text))
+    return m.group(0) if m else None
 
 
 def footnote_form(c: Checks | None) -> str | None:
@@ -202,11 +247,15 @@ def _is_claim(sentence: str, names: set[str] = frozenset()) -> bool:
 
 def take_claims(text: str, movable=lambda sentence: True, names: set[str] = frozenset()) -> tuple[str, list[str]]:
     """A page's text without the sentences that cite a source paragraph (those movable allows), and those sentences.
+    A sentence that also links a wiki page (a section listed with what it covers) stays, without its source citations.
     A line left with no words is dropped, and so is a heading left with nothing under it. names: the wiki's source and
     section names, which a link may show in place of a clause."""
     lines, taken = [], []
     is_claim = lambda x: _is_claim(x, names)
     take = lambda x: is_claim(x) and movable(x.strip())
+    navigates = lambda x: any(not m.group(1).startswith("source-") for m in store.LINK_RE.finditer(x))
+    uncited = lambda x: re.sub(r"\s+([.,;:])", r"\1", store.LINK_RE.sub(
+        lambda m: "" if m.group(1).startswith("source-") and m.group(2) and m.group(2).strip() not in names else m.group(0), x)).strip()
     for line in text.split("\n"):
         if re.match(r"^#{1,6} ", line) or not is_claim(line):
             lines.append(line)
@@ -214,7 +263,7 @@ def take_claims(text: str, movable=lambda sentence: True, names: set[str] = froz
         lead = (BULLET.match(line) or [""])[0]
         parts = SENTENCE_END.split(line[len(lead):])
         taken += [x.strip() for x in parts if take(x)]
-        rest = " ".join(x for x in parts if not take(x)).strip()
+        rest = " ".join(uncited(x) if take(x) and navigates(x) else x for x in parts if not take(x) or navigates(x)).strip()
         if re.search(r"[A-Za-z]", store.LINK_RE.sub("x", rest)):
             lines.append(lead + rest)
     blocks = [b for b in re.split(r"\n\s*\n", "\n".join(lines)) if b.strip()]
@@ -223,14 +272,98 @@ def take_claims(text: str, movable=lambda sentence: True, names: set[str] = froz
     return "\n\n".join(blocks), taken
 
 
-def no_claim_failures(content: str, slug: str, section_slugs: set[str], c: Checks | None,
-                      names: set[str] = frozenset()) -> list[str]:
-    """Where a page the schema says holds no claims breaks that: a section page it does not link, a sentence on it that
-    cites a source paragraph."""
-    if not c or slug not in c.no_claim_pages:
+def holds_no_claims(c: Checks | None, slug: str, is_index: bool = False) -> bool:
+    """Whether the schema says this page holds no claims: it is named, or it is a split section's index page and the
+    schema names those."""
+    return bool(c) and (slug in c.no_claim_pages or (is_index and c.no_claim_index))
+
+
+REPEAT = "The page holds the same text twice"
+
+
+def _cited_sentences(content: str) -> list[str]:
+    """The page's sentences that cite a source paragraph, in order (headings aside)."""
+    out = []
+    for line in content.split("\n"):
+        if re.match(r"^#{1,6} ", line):
+            continue
+        out += [x.strip() for x in SENTENCE_END.split(BULLET.sub("", line)) if _is_claim(x)]
+    return out
+
+
+def _same(x: str) -> str:
+    return " ".join(re.sub(r"[^\w\[\]|.]+", " ", x.casefold()).split())
+
+
+def repeat_failures(content: str) -> list[str]:
+    """A cited sentence the page holds more than once."""
+    seen, out = set(), []
+    for x in _cited_sentences(content):
+        if (k := _same(x)) in seen:
+            out.append(f'{REPEAT}: "{" ".join(x.split()[:15])} ..." appears more than once; keep it once.')
+        seen.add(k)
+    return list(dict.fromkeys(out))
+
+
+def drop_repeats(content: str) -> tuple[str, int]:
+    """The page without the later copies of a cited sentence it already holds, word for word the same; a line left
+    with no words goes too, and so does a heading left with nothing under it. Returns (text, how many went)."""
+    seen: set[str] = set()
+    lines, dropped = [], 0
+    for line in content.split("\n"):
+        if re.match(r"^#{1,6} ", line) or not _is_claim(line):
+            lines.append(line)
+            continue
+        lead = (BULLET.match(line) or [""])[0]
+        kept = []
+        for x in SENTENCE_END.split(line[len(lead):]):
+            if _is_claim(x) and _same(x) in seen:
+                dropped += 1
+                continue
+            if _is_claim(x):
+                seen.add(_same(x))
+            kept.append(x)
+        rest = " ".join(kept).strip()
+        if re.search(r"[A-Za-z]", store.LINK_RE.sub("x", rest)):
+            lines.append(lead + rest)
+    blocks = [b for b in re.split(r"\n\s*\n", "\n".join(lines)) if b.strip()]
+    blocks = [b for n, b in enumerate(blocks) if not (re.fullmatch(r"#{1,6} [^\n]*", b.strip()) and (
+        n + 1 == len(blocks) or re.match(r"#{1,%d} " % len(b.strip().split(" ")[0]), blocks[n + 1].strip())))]
+    return ("\n\n".join(blocks), dropped) if dropped else (content, 0)
+
+
+def label_failures(content: str, labels: dict[str, set[str]], c: Checks | None) -> list[str]:
+    """A citation whose label is not made of paragraph labels of the source it names: a document, chapter or section
+    number is not a paragraph. Ranges ("B4.1.1–B4.1.26"), lists and sub-paragraph letters ("5.5.17(a)", "(i)-(ii)")
+    are read part by part; the schema's forms for defined terms and unlabelled text are labels of the source too."""
+    out = []
+    term = c.defined_term_form.split("<", 1)[0].strip() if c and "<" in c.defined_term_form else ""
+    for m in store.LINK_RE.finditer(content):
+        slug, lab = m.group(1), (m.group(2) or "").strip()
+        if slug not in labels or not lab or lab in labels[slug]:
+            continue
+        flat = re.sub(r"\s*:\s*", ": ", lab)
+        if flat in {re.sub(r"\s*:\s*", ": ", x) for x in labels[slug]}:
+            continue
+        if term and flat.casefold().startswith(term.casefold()):
+            continue  # a defined term: its own check reads the form
+        sub = r"\((?:[a-z]{1,3}|[ivxlcdm]{1,6}|\d{1,3}|[A-Z])\)"  # a sub-paragraph letter or number: (a), (iv), (2), (B)
+        bare = re.sub(rf"(?:\s*{sub}(?:\s*[\u2013-]\s*{sub})?)+", "", lab)  # sub-paragraph letters and their ranges
+        pieces = [x.strip() for x in re.split(r",|;|\band\b|\s*[\u2013\u2014-]\s*", bare) if x.strip()]
+        if pieces and all(x in labels[slug] for x in pieces):
+            continue
+        out.append(f"The citation [[{slug}|{lab}]] does not name a paragraph of that source (a document, chapter or "
+                   "section is not a paragraph): cite the paragraph's own label.")
+    return list(dict.fromkeys(out))
+
+
+def no_claim_failures(content: str, must_link: set[str], c: Checks | None, names: set[str] = frozenset()) -> list[str]:
+    """Where a page that holds no claims breaks that: a page it must link (the overview: every section page; an index
+    page: every subtopic page of its section) that it does not, and a sentence on it that cites a source paragraph."""
+    if not c:
         return []
     linked = {m.group(1) for m in store.LINK_RE.finditer(content)}
-    out = [f"The page does not list the section page [[{s}]]; it lists every section page." for s in sorted(section_slugs - linked)]
+    out = [f"The page does not list [[{s}]]; it lists every page it is the index of." for s in sorted(must_link - linked)]
     return out + [f'The sentence "{" ".join(x.split()[:15])} ..." cites a source paragraph, but this page holds no claims: '
                   "the claim belongs on the page that holds that paragraph." for x in take_claims(content, names=names)[1]]
 
@@ -251,9 +384,10 @@ def _stub_parts(body: str, part_re: re.Pattern, c: Checks) -> set[str]:
 
 
 def section_failures(content: str, given: list[str], kinds: dict[str, str], source_slug: str, c: Checks, covers,
-                     labels: set[str] = frozenset()) -> list[str]:
-    """Where a written page breaks the schema's checks for its own paragraphs: a lettered part or a condition phrase of
-    a paragraph missing near its citation, and a sentence citing a non-Standard paragraph without the schema's opener."""
+                     labels: set[str] = frozenset(), holds=lambda ref: True) -> list[str]:
+    """Where a written page breaks the schema's checks for its own paragraphs: a lettered part of a paragraph whose
+    write-up the page holds (holds: a page citing it as a cross-reference is not checked for its parts) missing near its
+    citation, a condition phrase missing there, and a sentence citing a non-Standard paragraph without its opener."""
     failures = []
     blocks = [b for b in re.split(r"\n\s*\n", content) if b.strip()]
     part_re = _part_re(c)
@@ -264,7 +398,7 @@ def section_failures(content: str, given: list[str], kinds: dict[str, str], sour
             m.group(1) == source_slug and m.group(2) and covers(m.group(2), ref) for m in store.LINK_RE.finditer(b)))
         if not near:
             continue  # not written up at all: the coverage passes deal with that
-        if part_re and len(parts := list(dict.fromkeys(part_re.findall(body)))) >= 2:
+        if part_re and holds(ref) and len(parts := list(dict.fromkeys(part_re.findall(body)))) >= 2:
             stubs = _stub_parts(body, part_re, c)  # a part that is only a stub ("(c) [deleted]") is not written up
             if lost := [x for x in parts if x not in near and x not in stubs]:
                 failures.append(f"Paragraph {ref} has lettered or numbered parts {', '.join(parts)}; "
@@ -341,10 +475,17 @@ def detail_lines(content: str, c: Checks) -> str:
     if not names:
         return content
     pat = re.compile(r"(?:\*\*)?\b(?:" + "|".join(map(re.escape, names)) + r")\b(?:\*\*)?\s*:", re.I)
+    # a line break the reply left out: a sentence's end run straight into the next ("draft for review.Client:"), or a
+    # detail's value run into a sentence ("Owner: Not statedThe stated purpose ...")
+    content = re.sub(r"(?<=[a-z0-9)][.!?])(?=[A-Z][a-z])", "\n", content)
+    # a label run into its text ("Key takeaways:The ..."); a detail and its value ("Status:Draft") stay together
+    content = re.sub(r"(?m)^([^\n:\[\]]{1,40}:)(?=[A-Z])", lambda m: m.group(1) if pat.match(m.group(1).lstrip(" -*\u2022")) else m.group(1) + "\n", content)
+    content = "\n".join(re.sub(r"(?<=[a-z])(?=[A-Z][a-z]+ [a-z])", "\n", ln) if pat.match(ln.lstrip(" -*\u2022")) else ln
+                         for ln in content.split("\n"))
     out = []
     for line in content.split("\n"):
         hits = [m.start() for m in pat.finditer(line)]
-        if len(hits) < 2:
+        if not hits or (len(hits) < 2 and not line[:hits[0]].strip(" -*\u2022")):
             out.append(line)
             continue
         bullet = re.match(r"^\s*([-*\u2022])\s+", line)

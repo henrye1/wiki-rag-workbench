@@ -11,7 +11,7 @@ from ..jobs import JobContext
 from ..wiki import checks, store
 from ..wiki.store import Op
 from . import fixpass
-from .ingest import _covers, _fix_breaks, _section_for, _sections, _split_also, _with_also
+from .ingest import _covers, _fix_breaks, _index_md, _section_for, _sections, _split_also, _with_also, split_written
 
 log = logging.getLogger(__name__)
 CITE = re.compile(r"\[\[(source-[^\]|#]+)(?:#[^\]|]*)?\|([^\]]+)\]\]")
@@ -42,6 +42,14 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
     section_pages = {p["slug"] for p in pages if p["type"] == "topic" and _section_for(sections, p["title"], p["slug"])}
     index_pages = {sl for sl in section_pages if any(s.startswith(sl + "-") for s in subtopics)}
     linkable = await store.compact_index(wiki_id, exclude_types=("synthesis",))
+    # the page that holds a paragraph's write-up: the one citing it most (a cross-reference cites it in passing)
+    times: dict[str, dict[str, int]] = {}
+    for x in pages:
+        if x["type"] in ("topic", "subtopic") and x["slug"] not in index_pages:
+            for slug, label in CITE.findall(_split_also(x["content_md"])[0]):
+                times.setdefault(f"{slug}|{BASE(label)}", {}).setdefault(x["slug"], 0)
+                times[f"{slug}|{BASE(label)}"][x["slug"]] += 1
+    write_up = {k: {sl for sl, n in v.items() if n == max(v.values())} for k, v in times.items()}
     await ctx.progress(stage="check", pages=len(pages))
     record: list[dict] = []
 
@@ -56,9 +64,21 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
         return out
 
     async def one(p: dict) -> Op | None:
-        body, also_lines = _split_also(p["content_md"]) if p["slug"] in section_pages else (p["content_md"], [])
+        if p["slug"] in index_pages and checks.holds_no_claims(chk, p["slug"], True):
+            # a split section's index holds no claims: rebuilt from its subtopic pages, in the order it listed them
+            subs = sorted((x for x in pages if x["type"] == "subtopic" and x["slug"].startswith(p["slug"] + "-")),
+                          key=lambda x: p["content_md"].find(f"[[{x['slug']}") % (len(p["content_md"]) + 1))
+            sec = _section_for(sections, p["title"], p["slug"])
+            content, summary = _index_md(sec["name"] if sec else p["title"], subs, cite_ctx["titles"])
+            if content.strip() == p["content_md"].strip():
+                return None
+            return Op(op="update", slug=p["slug"], title=p["title"], type=p["type"], summary=summary, content_md=content,
+                      tags=p["tags"] or [], base_version=p["version"], change_note="Re-check: index rebuilt from its subtopic pages")
+        # the "Also recorded here" lines (on a section page, or on a subtopic page of a split section) are kept as they
+        # are: each points to its paragraph's own page, where that paragraph is checked
+        body, also_lines = _split_also(p["content_md"]) if p["type"] in ("topic", "subtopic") else (p["content_md"], [])
         cite_check = lambda x: fixpass.cite_failures(x, cite_ctx, chk)
-        kind, given, may_shrink = "citations", {}, False
+        kind, given, may_shrink, may_grow = "citations", {}, False, False
         if p["type"] == "source" and p["slug"] in src:
             s = src[p["slug"]]
             # the sections this source informs: section pages (or their subtopic pages) that cite it
@@ -75,21 +95,22 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
             def check(x: str) -> list[str]:
                 out = []
                 for slug, paras in given.items():
-                    out += checks.section_failures(x, paras, src[slug]["kinds"], slug, chk, _covers, cite_ctx["labels"].get(slug, set()))
-                return out + cite_check(x)
+                    out += checks.section_failures(x, paras, src[slug]["kinds"], slug, chk, _covers, cite_ctx["labels"].get(slug, set()),
+                                                   holds=lambda ref, slug=slug: p["slug"] in write_up.get(f"{slug}|{ref}", {p["slug"]}))
+                return out + checks.repeat_failures(x) + cite_check(x)
             kind, sources_text = "section", "\n\n".join(b for paras in given.values() for b in paras)
-        elif p["slug"] in chk.no_claim_pages:  # a claim already on the page that holds its paragraph is dropped here
+        elif checks.holds_no_claims(chk, p["slug"]):  # a claim already on the page that holds its paragraph is dropped here
             holders = {x["slug"]: checks.cites(x["content_md"]) for x in pages if x["type"] in ("topic", "subtopic")
                        and x["slug"] not in index_pages and x["slug"] not in chk.no_claim_pages}
             home = lambda c: next((sl for sl, cs in holders.items() if c in cs), None)
             body = fixpass.move_claims(p["slug"], body, home, lambda sl: holders.get(sl, set()), record, cite_ctx["names"])[0]
-            check = lambda x: checks.no_claim_failures(x, p["slug"], section_pages, chk, cite_ctx["names"]) + cite_check(x)
-            kind, sources_text = "no claims", ""
+            check = lambda x: checks.no_claim_failures(x, section_pages, chk, cite_ctx["names"]) + cite_check(x)
+            kind, sources_text, may_grow = "no claims", "", True
         else:  # a split section's index, composed pages: their citations only
             check, sources_text = cite_check, ""
         new = await fixpass.fix_rounds(
             schema=schema, slug=p["slug"], title=p["title"], text=body, check=check, sources_text=sources_text,
-            linkable=linkable, kind=kind, record=record, may_shrink=may_shrink,
+            linkable=linkable, kind=kind, record=record, may_shrink=may_shrink, may_grow=may_grow, clause=lambda c: fixpass.is_clause(c, cite_ctx),
             parse=(lambda r: checks.detail_lines(_fix_breaks(r).strip(), chk)) if kind == "source page" else (lambda r: _fix_breaks(r).strip()))
         content = _with_also(new, also_lines) if also_lines else new
         if content.strip() == p["content_md"].strip():
@@ -100,9 +121,15 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
                   tags=p["tags"] or [], base_version=p["version"], change_note=note)
 
     ops = [o for o in await llm.gather_limited([one(p) for p in pages]) if o]
+    # the schema's rule after writing: a page over the size limit by more than its margin is split again
+    now = {p["slug"]: dict(p) for p in pages} | {o.slug: {**next(p for p in pages if p["slug"] == o.slug), "content_md": o.content_md,
+                                                         "summary": o.summary} for o in ops}
+    more, resplit = await split_written(wiki_id, chk, sections, now, {sl for sl, p in now.items() if p["type"] in ("topic", "subtopic")})
+    for x in more:
+        ops = [o for o in ops if o.slug != x.slug] + [x]
     await ctx.progress(stage="commit")
     result = await store.commit(wiki_id, "check", "Re-check: page checks", ops, mode, job_id=ctx.id)
     await store.add_log(wiki_id, "check", "Re-check of every page",
                         "\n".join(f"- [[{o.slug}]]: {o.change_note}" for o in ops) or "No page needed a change.")
-    return {"mode": mode, "pages_checked": len(pages), "pages_changed": [o.slug for o in ops], "check_fixes": record,
+    return {"mode": mode, "pages_checked": len(pages), "pages_changed": [o.slug for o in ops], "check_fixes": record, "resplit": resplit,
             **{k: v for k, v in result.items() if k != "ops"}}

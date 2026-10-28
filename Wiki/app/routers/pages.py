@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..db import get_pool
-from ..wiki import saved, store
+from ..ops.ingest import _sections, split_written
+from ..wiki import checks, saved, store
 from ..wiki.store import PAGE_TYPES, Op
 from .deps import wiki_dep
 
@@ -108,4 +109,9 @@ async def revert(slug: str, version: int, wiki: dict = Depends(wiki_dep)):
             tags=old["tags"], base_version=page["version"], change_note=f"Revert to v{version}")
     res = await store.commit(wiki["id"], "edit", f"Revert {slug} to v{version}", [op], "auto")
     await store.add_log(wiki["id"], "revert", f"{slug} → v{version}")
+    # the schema's rule after writing: a restored page over the size limit by more than its margin is split again
+    pages = {p["slug"]: p for p in await store.list_pages(wiki["id"], with_content=True)}
+    more, resplit = await split_written(wiki["id"], checks.load(wiki["schema_md"]), _sections(wiki["schema_md"]), pages, {slug})
+    if more:
+        res = {**res, "resplit": resplit, "split": await store.commit(wiki["id"], "edit", f"Split {slug} after revert", more, "auto")}
     return res

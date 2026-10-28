@@ -43,8 +43,8 @@ def record(answers: list[dict]) -> str:
 async def check(wiki: dict, content: str, answers: list[dict]) -> dict:
     """Problems in a draft (nothing is changed): wrongly attributed or unknown citations, citations that were not in the
     wiki answers, and links to pages that do not exist."""
-    matchers = await citecheck.sources(wiki["id"])
-    _, fixed, flagged = citecheck.check(content, matchers)
+    names = await citecheck.document_names(wiki["id"])
+    _, fixed, flagged = citecheck.check(content, await citecheck.sources(wiki["id"], names), names)
     allowed = {x for a in answers for x in _links(a["answer"])}
     slugs = {p["slug"] for p in await store.list_pages(wiki["id"])}
     problems = []

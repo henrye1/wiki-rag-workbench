@@ -35,6 +35,7 @@ import { FileDrop } from '../../shared/file-drop';
               <mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>Issuer</mat-label><input matInput [(ngModel)]="issuer" /></mat-form-field>
               <mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>Edition</mat-label><input matInput [(ngModel)]="edition" /></mat-form-field>
               <mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>Part</mat-label><input matInput [(ngModel)]="part" /></mat-form-field>
+              <mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>Status (optional)</mat-label><input matInput [(ngModel)]="status" placeholder="e.g. Draft, Approved" /></mat-form-field>
               <mat-icon class="muted" title="Read from the file's opening pages where they state it. Check each field before ingesting; leave a field blank if the document does not state it. The source page is checked against these values.">info</mat-icon>
             </div>
             @if (describing()) { <p class="muted">Reading the title page…</p> }
@@ -102,6 +103,7 @@ export class WikiSources {
   issuer = '';
   edition = '';
   part = '';
+  status = '';
 
   constructor() { effect(() => { void this.load(this.w()); }); }
 
@@ -120,11 +122,11 @@ export class WikiSources {
       this.busy.set(false);
     }
   }
-  docLine(d: any) { return [d.issuer, d.edition, d.part].filter((x: string) => !!x).join(' · '); }
+  docLine(d: any) { return [d.issuer, d.edition, d.part, d.status].filter((x: string) => !!x).join(' · '); }
   /** A file was picked: suggest its issuer, edition and part from its opening pages, for the user to confirm. */
   async pick(f: File | null) {
     this.file.set(f);
-    this.issuer = this.edition = this.part = '';
+    this.issuer = this.edition = this.part = this.status = '';
     if (!f) return;
     this.describing.set(true);
     try {
@@ -139,9 +141,9 @@ export class WikiSources {
   submitFile() {
     return this.submit(async () => {
       const r = await this.api.upload(`/api/wiki/wikis/${enc(this.w())}/sources`, this.file()!, { mode: this.mode },
-        { issuer: this.issuer, edition: this.edition, part: this.part });
+        { issuer: this.issuer, edition: this.edition, part: this.part, status: this.status });
       this.file.set(null);
-      this.issuer = this.edition = this.part = '';
+      this.issuer = this.edition = this.part = this.status = '';
       this.drop()?.reset();
       return r;
     });
