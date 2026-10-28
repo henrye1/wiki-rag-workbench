@@ -85,7 +85,7 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
             informed = {sl for sl in section_pages if any(f"[[{p['slug']}|" in x["content_md"] for x in pages
                                                           if x["slug"] == sl or x["slug"].startswith(sl + "-"))}
             args = dict(fields=s["fields"], authority=checks.authority_sentences(s["text"], chk), informed=informed,
-                        sections=section_pages, source_slug=p["slug"], c=chk)
+                        sections=section_pages, source_slug=p["slug"], c=chk, labels=cite_ctx["labels"].get(p["slug"], set()))
             check = lambda x: checks.source_failures(x, **args)[0] + cite_check(x)
             kind, may_shrink, sources_text = "source page", True, "\n\n".join(args["authority"])
             body = checks.detail_lines(body, chk)
@@ -97,6 +97,8 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
                 for slug, paras in given.items():
                     out += checks.section_failures(x, paras, src[slug]["kinds"], slug, chk, _covers, cite_ctx["labels"].get(slug, set()),
                                                    holds=lambda ref, slug=slug: p["slug"] in write_up.get(f"{slug}|{ref}", {p["slug"]}))
+                if not checks.absence_allowed_on(chk, p["type"], p["title"]):
+                    out += checks.absence_failures(x, chk, "\n\n".join(b for paras in given.values() for b in paras))
                 return out + checks.repeat_failures(x) + cite_check(x)
             kind, sources_text = "section", "\n\n".join(b for paras in given.values() for b in paras)
         elif checks.holds_no_claims(chk, p["slug"]):  # a claim already on the page that holds its paragraph is dropped here

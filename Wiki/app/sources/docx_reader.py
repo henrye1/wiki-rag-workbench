@@ -7,6 +7,10 @@ headers) is "Document control"; a table adds its own caption label ("> Table 3")
 location: what kind of passage it is (table, footnote, note, comment) is kept apart from it, in the reader's record of
 each passage, and a footnote or comment says so in its own first word. A footnote or comment takes the location of
 the passage that carries its marker. A table of contents is left out.
+
+The paper's title is read from the paper itself, never from the file's properties: a paragraph styled as the title on
+the cover, else the cover's title line (short, not a sentence, not "Label: value", not the client's own name) printed
+largest, or the first one where the sizes do not differ, else the first heading.
 """
 import io
 import re
@@ -64,10 +68,26 @@ def _is_control(rows: list[list[str]], heads: list[str]) -> bool:
     return sum(1 for w in heads if re.search(rf"\b{re.escape(w.casefold())}\b", head)) >= 2
 
 
-def read(data: bytes, control_headers: list[str] | None = None) -> tuple[str, list[str], dict]:
+def _title_line(text: str) -> bool:
+    """A cover line that can be the paper's title: a few words, not a sentence, not "Label: value"."""
+    return len(text.split()) <= 15 and not re.search(r"[.:;,]$", text) and not re.match(r"^[^:]{1,30}:\s", text)
+
+
+def _size(p) -> float:
+    """A paragraph's largest text size in points, from its runs or else its style (0 when none is set)."""
+    sizes = [r.font.size.pt for r in p.runs if r.font.size]
+    style = p.style
+    while not sizes and style is not None:
+        sizes = [style.font.size.pt] if style.font.size else []
+        style = style.base_style
+    return max(sizes, default=0.0)
+
+
+def read(data: bytes, control_headers: list[str] | None = None, client: str = "") -> tuple[str, list[str], dict]:
     """The paper as (title, labelled blocks, meta). Each block is "[<location>] <text>"; meta["kinds"] says, block by
     block, what kind of passage it is. control_headers: the schema's document control headers (none: no table is
-    read as document control)."""
+    read as document control). client: who issued the paper, as recorded at upload: a cover line naming them is not
+    the title."""
     import docx  # python-docx
     from docx.table import Table
     from docx.text.paragraph import Paragraph
@@ -77,6 +97,7 @@ def read(data: bytes, control_headers: list[str] | None = None) -> tuple[str, li
     blocks, kinds, paths, headings = [], [], [], []
     path: list[tuple[int, str]] = []  # (level, heading) from the top down
     last_caption = ""
+    styled, cover, first_heading = "", [], ""  # the title candidates: styled, cover title lines (text, size), heading
 
     def add(text: str, kind: str = "", label: str | None = None):
         loc = label or _location([h for _, h in path])
@@ -94,7 +115,10 @@ def read(data: bytes, control_headers: list[str] | None = None) -> tuple[str, li
             text = clean(p.text)
             if _style(p).startswith("toc") or not text and not el.findall(f".//{W}footnoteReference"):
                 continue  # a table of contents line, or an empty paragraph
+            if not path and text and not styled and _style(p) == "title":
+                styled = text
             if (lvl := _heading_level(p)) is not None and text:
+                first_heading = first_heading or text
                 path = [x for x in path if x[0] < lvl] + [(lvl, text)]
                 last_caption = ""
                 continue
@@ -102,6 +126,8 @@ def read(data: bytes, control_headers: list[str] | None = None) -> tuple[str, li
                 last_caption = CAPTION.match(text).group(1)
             kind = "note" if "note" in _style(p) or re.match(r"(?i)^note\s*\d*\s*[:.–-]", text) else ""
             if text:
+                if not path and _title_line(text) and text.casefold() != client.strip().casefold():
+                    cover.append((text, _size(p)))
                 add(text, kind)
             loc = _location([h for _, h in path])
             for ref in el.iter(f"{W}footnoteReference"):  # a footnote: where its marker is
@@ -131,7 +157,8 @@ def read(data: bytes, control_headers: list[str] | None = None) -> tuple[str, li
                 add("\n".join(" | ".join(r) for r in rows), "table", f"{loc} > {last_caption}" if last_caption else None)
             last_caption = ""
 
-    title = doc.core_properties.title or ""
+    largest = max((s for _, s in cover), default=0)
+    title = styled or next((x for x, s in cover if s == largest), "") or first_heading
     labels = {}
     for b, k in zip(blocks, kinds):
         lab = re.match(r"^\[([^\]]+)\]", b).group(1)
