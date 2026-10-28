@@ -41,6 +41,10 @@ class Checks:
     stub_forms: list[str] = field(default_factory=list)  # what a deleted or left-out paragraph says instead of its text
     document_names: list[str] = field(default_factory=list)  # forms of a document's name, never a clause in a citation
     control_headers: list[str] = field(default_factory=list)  # header words that mark a document control table
+    empty_text: str = ""  # the whole body of a section page that holds no claims
+    absence: list[str] = field(default_factory=list)  # phrases that say something is not stated
+    absence_allowed: str = ""  # where those phrases are allowed, as the schema's label says it ("... source page ...")
+    papers_apart: bool = False  # a page keeps each paper's text under its own headings; a split stays within one paper
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
 
 
@@ -53,6 +57,7 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "unlabelled_forms": "citation forms for text without a paragraph label", "page_size_limit": "page size limit",
     "subtopic_minimum": "subtopic page minimum", "slug_words": "subtopic slug", "no_claim_pages": "pages that hold no claims",
     "stub_forms": "stub forms", "document_names": "document names", "control_headers": "document control headers",
+    "empty_text": "empty section text", "absence": "absence phrases", "papers_apart": "papers kept apart",
 }
 
 
@@ -76,6 +81,7 @@ def load(schema_md: str) -> Checks | None:
         return None
     items = {k.strip().casefold(): v for k, v in ITEM.findall(m.group(1))}
     get = lambda label: next((v for k, v in items.items() if k.startswith(label)), None)
+    label_of = lambda label: next((k for k in items if k.startswith(label)), "")
     c = Checks()
     for attr, label in LISTS.items():
         value = get(label)
@@ -107,6 +113,13 @@ def load(schema_md: str) -> Checks | None:
             forms = [x.strip() for x in value.split("\u00b7")]
             forms[-1] = re.split(r"\.\s+(?=[A-Z])", forms[-1], maxsplit=1)[0]
             c.stub_forms = [x for x in forms if x]
+        elif attr == "empty_text":
+            c.empty_text = (QUOTED.findall(value) or [""])[0]
+        elif attr == "absence":  # the phrases; where they are allowed is in the label's brackets
+            c.absence = QUOTED.findall(value)
+            c.absence_allowed = (re.findall(r"\(([^)]*)\)", label_of(label)) or [""])[0]
+        elif attr == "papers_apart":
+            c.papers_apart = True
         elif attr == "no_claim_pages":  # up to the first full stop: page slugs, and kinds of page such as index pages
             c.no_claim_pages = [x.strip() for x in value.split(".")[0].split(",") if x.strip()]
             c.no_claim_index = any(re.search(r"\bindex\b", x, re.I) for x in c.no_claim_pages)
@@ -236,6 +249,8 @@ def cites(text: str) -> set[str]:
 
 
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
+# a line break the reply left out: a sentence's end run straight into the next ("in progress.The document"), outside a link
+SENTENCE_RUN_ON = re.compile(r"(?<=[a-z0-9)][.!?])(?=[A-Z][a-z])(?![^\[\n]*\]\])")
 BULLET = re.compile(r"^(\s*(?:[-*]|\d+\.)\s+)")
 
 
@@ -276,6 +291,34 @@ def holds_no_claims(c: Checks | None, slug: str, is_index: bool = False) -> bool
     """Whether the schema says this page holds no claims: it is named, or it is a split section's index page and the
     schema names those."""
     return bool(c) and (slug in c.no_claim_pages or (is_index and c.no_claim_index))
+
+
+def absence_allowed_on(c: Checks | None, ptype: str, title: str) -> bool:
+    """Whether the schema's absence phrases may stand on this page: the pages its label names, by kind of page ("the
+    source page") or by title ("Overview and status"). With no such entry, every page may hold them."""
+    if not (c and c.absence):
+        return True
+    where = c.absence_allowed.casefold()
+    return f"{ptype} page" in where or bool(title) and title.casefold() in where
+
+
+def absence_failures(content: str, c: Checks | None, source_text: str = "") -> list[str]:
+    """Sentences that say something is not stated, not addressed or was searched for (the schema's absence phrases),
+    on a page where they are not allowed. A phrase the source paragraphs themselves use is the paper's own words."""
+    if not (c and c.absence):
+        return []
+    said = source_text.casefold()
+    phrases = [p for p in c.absence if p.casefold() not in said]
+    if not phrases:
+        return []
+    pat = re.compile(r"\b(?:" + "|".join(re.escape(p) for p in phrases) + r")\b", re.I)
+    out = []
+    for line in content.split("\n"):
+        if re.match(r"^#{1,6} ", line):
+            continue
+        out += [f'The page says "{x.strip()[:200]}". A page here records what the paper states, never what it leaves '
+                "out or what was looked for; remove that sentence." for x in SENTENCE_END.split(line) if pat.search(x)]
+    return out
 
 
 REPEAT = "The page holds the same text twice"
@@ -477,7 +520,10 @@ def detail_lines(content: str, c: Checks) -> str:
     pat = re.compile(r"(?:\*\*)?\b(?:" + "|".join(map(re.escape, names)) + r")\b(?:\*\*)?\s*:", re.I)
     # a line break the reply left out: a sentence's end run straight into the next ("draft for review.Client:"), or a
     # detail's value run into a sentence ("Owner: Not statedThe stated purpose ...")
-    content = re.sub(r"(?<=[a-z0-9)][.!?])(?=[A-Z][a-z])", "\n", content)
+    content = SENTENCE_RUN_ON.sub("\n", content)
+    # a detail run straight on after the value before it ("Client: Sample Bank LtdTitle: ..."), written capitalised
+    content = re.sub(r"(?<=[a-z0-9).])(?=(?:\*\*)?(?:" + "|".join(re.escape(n[:1].upper() + n[1:]) for n in names) + r")(?:\*\*)?\s*:)",
+                     "\n", content)
     # a label run into its text ("Key takeaways:The ..."); a detail and its value ("Status:Draft") stay together
     content = re.sub(r"(?m)^([^\n:\[\]]{1,40}:)(?=[A-Z])", lambda m: m.group(1) if pat.match(m.group(1).lstrip(" -*\u2022")) else m.group(1) + "\n", content)
     content = "\n".join(re.sub(r"(?<=[a-z])(?=[A-Z][a-z]+ [a-z])", "\n", ln) if pat.match(ln.lstrip(" -*\u2022")) else ln
@@ -511,7 +557,7 @@ def authority_sentences(text: str, c: Checks) -> list[str]:
 
 
 def source_failures(content: str, *, fields: dict[str, str], authority: list[str], informed: set[str],
-                    sections: set[str], source_slug: str, c: Checks) -> tuple[list[str], list[str]]:
+                    sections: set[str], source_slug: str, c: Checks, labels: set[str] = frozenset()) -> tuple[list[str], list[str]]:
     """Where a source page lacks a part the schema's Checks list names. Each part is checked by what its entry asks
     for: recorded fields (e.g. issuer, edition, part), the authority forms, the informed sections, cited claims.
     Returns (failures, parts that could not be checked)."""
@@ -532,9 +578,16 @@ def source_failures(content: str, *, fields: dict[str, str], authority: list[str
                 failures.append(f"The page lists " + ", ".join(f"[[{x}]]" for x in wrong)
                                 + " as sections this source informs, but no paragraph of this source is on them.")
         elif "cited claims" in what:
-            claims = [s for s in re.split(r"(?<=\]\])[.;:]?\s+|\n+", content) if any(
-                m.group(1) == source_slug and m.group(2) and re.search(r"\d", m.group(2))
-                and not re.fullmatch(r"p(?:age)?\s*\d+", m.group(2).strip())  # the reader's page label, not a paragraph
+            # within the part itself where the page names it (the schema's name for the part, up to "as ..."), so the
+            # document's facts and purpose, cited above it, are not counted as takeaways
+            name = re.split(r"\s+as\s+", part)[0]
+            lead = re.search(rf"(?im)^[#*\s-]*{re.escape(name)}\b[^\n]*$", content)
+            scope = content[lead.start():] if lead else content
+            if lead and (nxt := re.search(r"(?m)^#{1,4} ", scope[lead.end() - lead.start():])):
+                scope = scope[: lead.end() - lead.start() + nxt.start()]
+            claims = [s for s in re.split(r"(?<=\]\])[.;:]?\s+|\n+", scope) if any(
+                m.group(1) == source_slug and m.group(2) and (m.group(2).strip() in labels or re.search(r"\d", m.group(2))
+                and not re.fullmatch(r"p(?:age)?\s*\d+", m.group(2).strip()))  # a location it has; not the reader's page label
                 for m in store.LINK_RE.finditer(s))]
             if not claims:
                 failures.append(f"The page lacks {part}: no line states a claim of this source with its paragraph citation.")

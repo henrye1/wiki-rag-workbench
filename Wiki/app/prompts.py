@@ -122,7 +122,7 @@ def write_page_prompt(
     *, slug: str, title: str, ptype: str, focus: str, existing_md: str | None, material: str,
     linkable: str, source_slug: str | None, source_paragraphs: str | None = None,
     background_paragraphs: str | None = None, auto_gaps: bool = False,
-    part: tuple[int, int] | None = None, earlier_parts: str = "", fill: bool = False,
+    part: tuple[int, int] | None = None, earlier_parts: str = "", fill: bool = False, others_md: str | None = None,
 ) -> str:
     cite = (
         f"The source page is [[{source_slug}]]; cite it exactly as the wiki schema requires. "
@@ -192,6 +192,15 @@ def write_page_prompt(
         )
     else:
         current = "This is a new page.\n"
+    if others_md:  # the page holds other papers' text: it stays as it is, and this paper's text goes after it
+        current += (
+            f"<other_papers_text>\n{others_md}\n</other_papers_text>\n"
+            "The page already holds the text above, from other papers. It stays exactly as it is and is not part of "
+            "your reply. Write only this paper's text, from <source_paragraphs>, under this paper's own headings at the "
+            "page's top heading level, to go after it: never under a heading of the other papers' text, and never "
+            "repeating it. Where this paper states a different method, value or definition for something the other "
+            "papers' text states, record it as the schema's contradiction rule says.\n"
+        )
     return (
         f"Write the wiki page `{slug}` (type: {ptype}, title: \"{title}\").\n"
         f"Focus: {focus}\n{cite}{scope}{gaps}"
