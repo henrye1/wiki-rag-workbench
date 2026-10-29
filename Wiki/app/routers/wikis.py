@@ -18,7 +18,7 @@ router = APIRouter(tags=["wikis"])
 DEFAULT_SCHEMA = (pathlib.Path(__file__).resolve().parent.parent / "schema_default.md").read_text(encoding="utf-8")
 
 
-AnswerMethod = Literal["search_pick", "browse"]
+AnswerMethod = Literal["search_pick", "browse", "search_browse"]
 
 
 class WikiIn(BaseModel):
@@ -26,13 +26,15 @@ class WikiIn(BaseModel):
     name: str
     description: str = ""
     schema_md: str | None = Field(None, description="Conventions doc; defaults to the built-in generic schema")
-    answer_method: AnswerMethod | None = Field(None, description="How answers choose pages; defaults to browse")
+    answer_method: AnswerMethod | None = Field(None, description="How answers choose pages; defaults to search_browse")
 
 
 class SettingsIn(BaseModel):
     answer_method: AnswerMethod = Field(description="search_pick: a search's top pages plus the model's picks from the "
                                                     "index, read at once; browse: the model reads the page list, chooses "
-                                                    "pages and follows their links until it has enough")
+                                                    "pages and follows their links until it has enough; search_browse: "
+                                                    "browse, with a shortlist from a search of every page's text (scores "
+                                                    "and matching passages) beside the page list")
 
 
 class SchemaIn(BaseModel):
@@ -46,7 +48,7 @@ async def create_wiki(body: WikiIn):
             row = await (
                 await conn.execute(
                     "insert into wiki.wikis (slug, name, description, schema_md, answer_method) "
-                    "values (%s,%s,%s,%s,coalesce(%s, 'browse')) returning *",
+                    "values (%s,%s,%s,%s,coalesce(%s, 'search_browse')) returning *",
                     (body.slug, body.name, body.description, body.schema_md or DEFAULT_SCHEMA, body.answer_method),
                 )
             ).fetchone()

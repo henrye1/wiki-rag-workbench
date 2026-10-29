@@ -17,6 +17,19 @@ async def search_pages(wiki_id: UUID, query: str, k: int, embedding: list[float]
         return await cur.fetchall()
 
 
+async def shortlist(wiki_id: UUID, query: str, k: int) -> list[dict]:
+    """The pages whose text matches the query by its labels and numbers (as written), its words or its meaning, best
+    first: each with its score, its best label, keyword and meaning ranks (None where it did not match that way) and
+    the passage that matched."""
+    embedding = await llm.embed_query(query)
+    async with get_pool().connection() as conn:
+        cur = await conn.execute(
+            "select * from wiki.shortlist_pages(%s, %s, %s, %s)",
+            (wiki_id, query, np.asarray(embedding, dtype=np.float32), k),
+        )
+        return await cur.fetchall()
+
+
 async def search_many(wiki_id: UUID, queries: list[str], k: int) -> list[dict]:
     """Run several queries, merge by best score per page."""
     queries = [q for q in queries if q.strip()]
