@@ -34,7 +34,11 @@ class Checks:
     page_size_limit: int | None = None  # words: a section page over this is split by the source's headings
     resplit_margin: float = 0.0  # after writing, a page is split again only if this share (0.1 = 10%) over the limit
     subtopic_minimum: int | None = None  # words: a smaller group is joined to its neighbour under the same parent
+    join_related: bool = False  # a small group joins its most related group under the same parent, not the one before
     slug_words: int | None = None  # words of an unnumbered heading used in a subtopic slug
+    slug_main: bool = False  # a page holding several headings takes its slug from the one holding most of its words
+    guidance_kinds: list[str] = field(default_factory=list)  # the schema's kind names filed with their requirement
+    summary_heads: int | None = None  # a subtopic summary: the first requirement claim under this many largest headings
     unlabelled_forms: dict[str, str] = field(default_factory=dict)  # kind of text without a paragraph label -> its citation form
     no_claim_pages: list[str] = field(default_factory=list)  # pages that hold no claims: slugs, or a kind of page
     no_claim_index: bool = False  # the list names a split section's index page among them
@@ -62,6 +66,8 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "stub_forms": "stub forms", "skipped_headings": "skipped headings", "document_names": "document names", "control_headers": "document control headers",
     "empty_text": "empty section text", "absence": "absence phrases", "papers_apart": "papers kept apart",
     "overview_empty": "overview lines", "section_slug": "section slug",
+    "guidance_kinds": "guidance filed with its requirement", "summary_heads": "subtopic summary",
+    "join_related": "subtopic join", "slug_main": "joined subtopic slug",
 }
 
 
@@ -131,11 +137,16 @@ def load(schema_md: str) -> Checks | None:
         elif attr == "no_claim_pages":  # up to the first full stop: page slugs, and kinds of page such as index pages
             c.no_claim_pages = [x.strip() for x in value.split(".")[0].split(",") if x.strip()]
             c.no_claim_index = any(re.search(r"\bindex\b", x, re.I) for x in c.no_claim_pages)
-        elif attr in ("max_takeaways", "examples_section", "page_size_limit", "subtopic_minimum", "slug_words"):
+        elif attr in ("join_related", "slug_main"):  # a setting: on only with the schema's value for it
+            setattr(c, attr, value.strip().rstrip(".").casefold() == {"join_related": "most related", "slug_main": "largest heading"}[attr])
+        elif attr == "guidance_kinds":  # "a, b. What is done with them.": the kind names up to the first full stop
+            c.guidance_kinds = [x.strip().casefold() for x in value.split(".")[0].split(",") if x.strip()]
+        elif attr in ("max_takeaways", "examples_section", "page_size_limit", "subtopic_minimum", "slug_words", "summary_heads"):
             n = re.search(r"\d+", value)
             setattr(c, attr, int(n.group(0)) if n else None)
             if attr == "page_size_limit" and (m := re.search(r"(\d+(?:\.\d+)?)\s*%\s+over", value)):
                 c.resplit_margin = float(m.group(1)) / 100
+
         else:
             setattr(c, attr, QUOTED.findall(value))
     return c
@@ -300,6 +311,33 @@ def take_claims(text: str, movable=lambda sentence: True, names: set[str] = froz
     blocks = [b for n, b in enumerate(blocks) if not (re.fullmatch(r"#{1,6} [^\n]*", b.strip()) and (
         n + 1 == len(blocks) or re.match(r"#{1,%d} " % len(b.strip().split(" ")[0]), blocks[n + 1].strip())))]
     return "\n\n".join(blocks), taken
+
+
+def subtopic_summary(content: str, c: Checks | None) -> str | None:
+    """The schema's subtopic summary: the first requirement claim (one that opens with none of the schema's openers)
+    under each of the page's largest headings by words, in page order, on one line; a page with one heading gives its
+    first claims, requirement claims first. None when the schema sets no such rule or the page holds no claims."""
+    if not c or not c.summary_heads:
+        return None
+    plain = lambda x: " ".join(re.sub(r"\s+([.,;:])", r"\1", store.LINK_RE.sub(
+        lambda m: "" if m.group(1).startswith("source-") else (m.group(2) or m.group(1)), LIST_LABEL.sub("", x))).split())
+    openers = list(_opener_res(c).values())
+    is_req = lambda x: not any(p.match(plain(x)) for p in openers)
+    parts = []  # (words, claims) under each heading, in page order
+    for block in re.split(r"(?m)^(?=#{1,6} )", content):
+        claims = [x.strip() for line in block.split("\n") if not re.match(r"#{1,6} ", line)
+                  for x in SENTENCE_END.split(BULLET.sub("", line)) if _is_claim(x)]
+        if claims:
+            parts.append((len(block.split()), claims))
+    if not parts:
+        return None
+    if len(parts) == 1:
+        claims = parts[0][1]
+        picked = ([x for x in claims if is_req(x)] + [x for x in claims if not is_req(x)])[: c.summary_heads]
+    else:
+        top = sorted(sorted(range(len(parts)), key=lambda k: -parts[k][0])[: c.summary_heads])
+        picked = [next((x for x in parts[k][1] if is_req(x)), parts[k][1][0]) for k in top]
+    return " ".join(plain(x) for x in picked)
 
 
 def holds_no_claims(c: Checks | None, slug: str, is_index: bool = False) -> bool:

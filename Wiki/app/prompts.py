@@ -304,6 +304,37 @@ def group_prompt(brief: str, grouped_by: str, groups: str, lines: str) -> str:
     )
 
 
+REQUIREMENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "assignments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"id": {"type": "integer"},
+                               "requirement": {"type": "integer", "description": "The requirement's number, or 0 if it applies to none listed"}},
+                "required": ["id", "requirement"],
+            },
+        },
+    },
+    "required": ["assignments"],
+}
+
+
+def requirement_prompt(brief: str, requirements: str, lines: str) -> str:
+    """Guidance paragraphs of a split section, each to the requirement paragraph it applies to (the schema's rule that
+    guidance is filed with its requirement)."""
+    return (
+        "Below are one section's requirement paragraphs and its guidance paragraphs. For each guidance paragraph, choose "
+        "the ONE requirement it applies to: the requirement whose rule it explains, applies, elaborates or says how to "
+        "meet. Judge by what both say, not by the guidance's own heading or its number alone; a paragraph number the "
+        "guidance mentions is a clue, not the answer. Give 0 only if it applies to none of them. Return every id "
+        "exactly once.\n\n"
+        f"<section_brief>\n{brief}\n</section_brief>\n\n<requirements>\nnumber | heading | text (first words)\n{requirements}\n"
+        f"</requirements>\n\n<guidance>\nid | heading | text (first words)\n{lines}\n</guidance>"
+    )
+
+
 def index_prompt_focus(name: str) -> str:
     """Focus for a split section's own page: the index of its subtopic pages, as the wiki schema sets out."""
     return (f"{name}. This section is split: write its page as the index of its subtopic pages, as the wiki schema "
