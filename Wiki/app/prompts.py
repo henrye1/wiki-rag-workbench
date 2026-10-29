@@ -279,13 +279,30 @@ def also_prompt(brief: str, lines: str) -> str:
     )
 
 
-def also_record_prompt(*, slug: str, title: str, items: str, linkable: str, source_slug: str) -> str:
+ALSO_DECLINE_SCHEMA = {
+    **FILL_SCHEMA,
+    "properties": {
+        **FILL_SCHEMA["properties"],
+        "not_recorded": {"type": "array", "description": "The paragraphs given that the page brief does not record here",
+                         "items": {"type": "object", "properties": {"paragraph": {"type": "string"}, "why": {"type": "string"}},
+                                   "required": ["paragraph", "why"]}},
+    },
+    "required": [*FILL_SCHEMA.get("required", []), "not_recorded"],
+}
+
+
+def also_record_prompt(*, slug: str, title: str, items: str, linkable: str, source_slug: str, brief: str | None = None) -> str:
+    """brief: the page's section brief, given when the writer may decline a paragraph the brief does not record here."""
+    decline = (
+        "A paragraph that the page brief below does not record here gets no line: list its paragraph number in "
+        "not_recorded, with the reason in a few words. It stays written up on its main page.\n"
+        f"<page_brief>\n{brief}\n</page_brief>\n" if brief else "")
     return (
         f"Add short entries to the wiki page `{slug}` (\"{title}\"). Each paragraph in <paragraphs> is written up in full on "
-        "its main page (named after it) and is ALSO recorded here, without repeating it.\n"
+        "its main page (named after it) and is ALSO recorded here, without repeating it.\n" + decline +
         f"Every paragraph in <paragraphs> comes from the source [[{source_slug}]]. Cite each one to that source, as "
         f"[[{source_slug}|<paragraph number>]], and never to any other source page.\n"
-        "For each paragraph write exactly ONE line, as a markdown bullet: what the entity decides, presumes, elects or "
+        f"For each paragraph{' it records' if brief else ''} write exactly ONE line, as a markdown bullet: what the entity decides, presumes, elects or "
         "estimates, in a few words, then a link to its main page, then the paragraph's citation, e.g.\n"
         f"- Policy choice: measure the loss allowance at lifetime expected credit losses: see [[main-page-slug]] [[{source_slug}|5.5.15]]\n"
         "Cite each paragraph exactly as the wiki schema requires, with its paragraph number. Nothing else: no heading, no "

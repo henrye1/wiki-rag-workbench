@@ -418,14 +418,17 @@ def _pack_items(idx: list[int], item_of: dict[int, str], words: list[int], limit
 
 
 def _join_small(parts: list, words: list[int], minimum: int, limit: int | None = None, floor: int = 0,
-                related=None) -> tuple[list, list]:
+                related=None, place=None) -> tuple[list, list]:
     """Groups under the minimum joined to the group before them under the same parent heading (or the one after, if
     first), until none is under it or none can be joined. A join that would go over the limit goes to the other side
     instead; if both would, the small group stays as it is. related (the schema's most related group): a score of two
     groups' paragraphs; each small group joins the highest-scoring group under the same parent that fits, the one
     before it on a tie. A group named by no more than floor names (a whole paper, where each path starts with its
-    paper) joins nothing. Returns (groups, [(joined, into)])."""
-    parts = [(list(n), list(i), [n[-1]] if n else []) for n, i in parts]  # (path, paragraphs, headings it holds)
+    paper) joins nothing. place: a paragraph's place in the source (default its index), which orders a joined group's
+    headings. Returns (groups, [(joined, into)])."""
+    place = place or (lambda i: i)
+    # (path, paragraphs, headings it holds, each with the place of its first paragraph)
+    parts = [(list(n), list(i), [(min(map(place, i)), n[-1])] if n and i else []) for n, i in parts]
     joined, alone = [], set()  # alone: small groups that cannot join either side without going over
     size = lambda idx: sum(words[i] for i in idx)
     while True:
@@ -447,13 +450,12 @@ def _join_small(parts: list, words: list[int], minimum: int, limit: int | None =
                 continue
             if j is not None:
                 tn, ti, th = parts[j]
-                order = sorted([(min(ti), th), (min(idx), heads)])  # headings in document order
-                parts[j] = (tn, sorted(ti + idx), order[0][1] + order[1][1])
+                parts[j] = (tn, sorted(ti + idx), sorted(th + heads))  # each heading by its place in the source
                 joined.append((names[-1] if names else "", tn[-1] if tn else ""))
                 del parts[k]
                 break
         else:  # a joined group is named after every heading it holds, in document order
-            return [(n[:-1] + [HEADS_SEP.join(h)] if n else n, i) for n, i, h in parts], joined
+            return [(n[:-1] + [HEADS_SEP.join(dict.fromkeys(x for _, x in h))] if n else n, i) for n, i, h in parts], joined
 
 
 HEADS_SEP = " · "  # between the headings of a group joined from several
@@ -565,12 +567,13 @@ async def _source_paths(wiki_id) -> dict[str, dict]:
         sp = [b.strip() for b in re.split(r"\n\s*\n", r["text"] or "") if b.strip()]
         hp = (r["meta"] or {}).get("heading_paths") or []
         paths = _drop_title(_anchored_paths(sp, hp if len(hp) == len(sp) else [[] for _ in sp], (r["meta"] or {}).get("para_kinds")))
-        out[r["slug"]] = {"path": {}, "para": {}, "title": ((r["meta"] or {}).get("document") or {}).get("part") or r["title"],
+        out[r["slug"]] = {"path": {}, "para": {}, "place": {}, "title": ((r["meta"] or {}).get("document") or {}).get("part") or r["title"],
                           "kinds": (r["meta"] or {}).get("para_kinds") or {}}
-        for p, pa in zip(sp, paths):
+        for k, (p, pa) in enumerate(zip(sp, paths)):
             if _ref(p):
                 out[r["slug"]]["path"].setdefault(_ref(p), pa)
                 out[r["slug"]]["para"].setdefault(_ref(p), p)
+                out[r["slug"]]["place"].setdefault(_ref(p), k)
     for r in rows:
         for lab, req in ((r["meta"] or {}).get("applies_to") or {}).items():
             if (path := out.get(req["source"], {}).get("path", {}).get(req["label"])) is not None and lab in out[r["slug"]]["path"]:
@@ -609,7 +612,7 @@ async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dic
         body, lines = _split_also(p["content_md"])
         body = "\n".join(x for x in body.split("\n") if not x.startswith("Not yet covered"))
         blocks = _blocks(body)
-        paths, items, last = [], [], []
+        paths, items, last, places, at = [], [], [], [], ("", -1)
         for b in blocks:  # the heading path of the paragraph the block cites; a block citing none goes with the one before
             m = next((m for m in store.LINK_RE.finditer(b) if m.group(1) in src and m.group(2)), None)
             lab = re.sub(r"(?:\s*\([^)]*\))+$", "", m.group(2).strip()) if m else ""
@@ -618,6 +621,8 @@ async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dic
                 path = [m.group(1)] + path
             last = path if path is not None else last
             paths.append(last)
+            at = (m.group(1), src[m.group(1)]["place"][lab]) if path is not None else at  # its paragraph's place in the source
+            places.append(at)
             items.append(checks.example_item(last, src[m.group(1)]["para"].get(lab, ""), chk) if m else None)
         words = [len(b.split()) for b in blocks]
         idx = list(range(len(blocks)))
@@ -638,7 +643,8 @@ async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dic
         else:
             parts = _size_split(idx, paths, words, limit)
             if len(parts) > 1 and chk.subtopic_minimum:
-                parts = _join_small(parts, words, chk.subtopic_minimum, limit, floor=1 if apart else 0, related=related)[0]
+                parts = _join_small(parts, words, chk.subtopic_minimum, limit, floor=1 if apart else 0, related=related,
+                                    place=places.__getitem__)[0]
             if apart:  # a paper is a group's first name only where the page held more than one: its headings name it,
                 # or, for the whole paper, its title
                 parts = [([n for n in names if n not in src] or [src[names[0]]["title"]] if names else names, part)
@@ -1411,6 +1417,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     cite_failures = lambda text: fixpass.cite_failures(text, cite_ctx, chk)
     fill_passes: list[dict] = []  # what each extra writing pass was asked for and returned
     missed: list[dict] = []  # paragraphs still not written up (or not also recorded) after the extra passes
+    declined: list[dict] = []  # paragraphs marked "also record here" that the writer said the page's brief does not record
     restored: list[dict] = []  # earlier write-ups a rewrite dropped and its fix rounds did not bring back: put back as they were
 
     own: dict[int, list[int]] = {}
@@ -1619,24 +1626,32 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                 for ln in lines]
             lines = fold(lines)
             # check: every paragraph marked "also record here" has a line citing it. The list is long, so it is never
-            # rewritten as a whole: only the missing lines are asked for, a few at a time, and added with their citation
+            # rewritten as a whole: only the missing lines are asked for, a few at a time, and added with their citation.
+            # Here the writer has the page's brief and may decline a paragraph the brief does not record on this page:
+            # the paragraph stays on its main page, and the writer's reason is reported
+            no_line: dict[str, str] = {}
             if gaps := [i for i in extra if _uncited("\n".join(lines), [paras[i]])]:
                 rec = {"page": slug, "kind": "also recorded", "found": len(gaps)}
+                brief = (sec or (sub or {}).get("sec") or {}).get("brief")
                 for k in range(0, len(gaps), 5):
                     group = [item(i) for i in gaps[k:k + 5]]
                     refs = {_ref(p) for p in group}
                     try:
                         out = await llm.generate_json(system, prompts.with_schema(schema, prompts.also_record_prompt(
-                            slug=slug, title=title, items="\n\n".join(group), linkable=linkable, source_slug=source_slug)),
-                            prompts.FILL_SCHEMA)
+                            slug=slug, title=title, items="\n\n".join(group), linkable=linkable, source_slug=source_slug,
+                            brief=brief)), prompts.ALSO_DECLINE_SCHEMA if brief else prompts.FILL_SCHEMA)
                         lines += [ln for ln in also_lines(out["content_md"], refs) if not _uncited(ln, [paras[i] for i in gaps])]
+                        no_line |= {x["paragraph"].strip(): x["why"] for x in out.get("not_recorded") or [] if x["paragraph"].strip() in refs}
                     except Exception as e:
                         log.warning("ingest: page %s also-record backstop failed: %s", slug, e)
                 lines = fold(lines)
                 rec["still"] = sum(1 for i in extra if _uncited("\n".join(lines), [paras[i]]))
                 check_fixes.append(rec)
-            if still := [_ref(paras[i]) for i in extra if _uncited("\n".join(lines), [paras[i]])]:
-                missed.append({"page": slug, "paragraphs": list(dict.fromkeys(still)), "reason": "not recorded after two tries and the backstop"})
+            still = list(dict.fromkeys(_ref(paras[i]) for i in extra if _uncited("\n".join(lines), [paras[i]])))
+            if out_of := {x: no_line[x] for x in still if x in no_line}:
+                declined.append({"page": slug, "paragraphs": list(out_of), "why": out_of})
+            if still := [x for x in still if x not in out_of]:
+                missed.append({"page": slug, "paragraphs": still, "reason": "not recorded after two tries and the backstop"})
 
         if (sec or sub) and (old_also or extra):  # earlier uploads' lines first; a line for the same paragraph is replaced
             new = lines if extra else []
@@ -1824,7 +1839,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     subtopics = {sl: [label(i) for i in sub["paras"]] for sl, sub in sub_of.items()}
     also_recorded = {f"{x['num']:02d} {x['name']}": [label(i) for i in also[x["num"]]] for x in sections if x["num"] in also}
     return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "empty_retries": empty_retries, "check_fixes": check_fixes, "routing": routing, "subtopics": subtopics, "splits": splits, "unassigned": unassigned, "stubs": [_ref(paras[i]) for i in sorted(stubs)],
-            "also_recorded": also_recorded, "missed_paragraphs": missed, "restored": restored, "resplit": resplit, "citations": citations, "fill_passes": fill_passes, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
+            "also_recorded": also_recorded, "also_declined": declined, "missed_paragraphs": missed, "restored": restored, "resplit": resplit, "citations": citations, "fill_passes": fill_passes, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
 
 
 async def run_safe(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: str) -> dict:
