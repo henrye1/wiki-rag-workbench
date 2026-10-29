@@ -349,16 +349,27 @@ BROWSE_SCHEMA = {
 }
 
 
-def browse_prompt(question: str, page_list: str, read_md: str, left: int) -> str:
+def browse_prompt(question: str, page_list: str, read_md: str, left: int, shortlist: str = "") -> str:
+    found = (
+        "A search of the text of every page found the pages in the shortlist, best first: each with its score, how it "
+        "matched (its rank among passages holding the question's labels and numbers as written, among passages matching "
+        "its words, and among passages close to its meaning; \"-\" where it did not match that way) and the passage that "
+        "matched. A page's title may "
+        "not name everything on it, so the passage shows what the page holds. The shortlist is a guide only: read a "
+        "page from it only where it bears on the question; it may miss pages and list pages that do not help.\n"
+        if shortlist else "")
     return (
         "You are finding the wiki pages needed to answer a question, the way a reader uses a wiki. The page list gives "
         "every page's slug, type, title and one-line summary. The pages you have read so far are given in full.\n"
-        "Choose the next pages to read: from the page list, or by following a [[link]] on a page you have read (a "
-        "section page that is an index links to its subtopic pages; pages link to related pages). Choose only pages "
-        "that bear on the question, and do not choose a page you have read.\n"
+        + found +
+        "Choose the next pages to read: from the page list" + (" or the shortlist" if shortlist else "") + ", or by "
+        "following a [[link]] on a page you have read (a section page that is an index links to its subtopic pages; "
+        "pages link to related pages). Choose only pages that bear on the question, and do not choose a page you have read.\n"
         "When the pages read are enough to answer the question, or nothing in the wiki would help, set enough to true "
         f"and choose none. You can read at most {left} more pages. Return slugs exactly as given; say briefly why.\n\n"
-        f"<page_list>\nslug | type | title | summary\n{page_list}\n</page_list>\n\n"
+        + (f"<shortlist>\nslug | score | labels rank | words rank | meaning rank | title | passage that matched\n{shortlist}\n</shortlist>\n\n"
+           if shortlist else "")
+        + f"<page_list>\nslug | type | title | summary\n{page_list}\n</page_list>\n\n"
         f"<pages_read>\n{read_md or '(none yet)'}\n</pages_read>\n\nQuestion: {question}"
     )
 

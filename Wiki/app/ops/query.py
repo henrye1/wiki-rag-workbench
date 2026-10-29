@@ -1,8 +1,10 @@
 """Query: choose pages -> read them -> cited answer; optionally file the answer back as a synthesis page.
 
 How pages are chosen is the wiki's answer_method: search_pick (a search's top pages plus the model's picks from the
-index, read at once) or browse (the model reads the page list, chooses pages, reads them and follows their links in
-rounds until it has enough; only the pages the answer cites are listed).
+index, read at once), browse (the model reads the page list, chooses pages, reads them and follows their links in
+rounds until it has enough; only the pages the answer cites are listed) or search_browse (browse, with a shortlist
+from a search of every page's text beside the page list: its scores and matching passages guide the choice, and
+nothing on it has to be read).
 
 Synthesis pages are never chosen as one of the pages for a question. Saved answers (synthesis pages filed with the
 Save button) relevant to the question are read in addition, as earlier answers to check against those pages."""
@@ -43,22 +45,30 @@ async def _select_pages(wiki: dict, question: str) -> list[dict]:
     return [pages[x] for x in order if x in pages]
 
 
-async def _browse(wiki: dict, question: str, sources: str) -> tuple[list[dict], list[dict]]:
+def _shortlist_md(hits: list[dict]) -> str:
+    one = lambda x: " ".join(x.split())
+    return "\n".join(f"{h['slug']} | {h['score']:.4f} | {h['label_rank'] or '-'} | {h['keyword_rank'] or '-'} | "
+                     f"{h['meaning_rank'] or '-'} | {h['title']} | {one(h['excerpt'] or '')}" for h in hits)
+
+
+async def _browse(wiki: dict, question: str, sources: str, shortlist: list[dict] | None = None) -> tuple[list[dict], list[dict]]:
     """The pages for a question, chosen the way a reader uses a wiki: from the page list (every page's title and
-    one-line summary, subtopic pages included), then by following links on the pages read, until the model has enough.
-    The limits are safety nets. Returns the pages read and, per round, what was chosen and why."""
+    one-line summary, subtopic pages included) and the search shortlist where given, then by following links on the
+    pages read, until the model has enough. The limits are safety nets. Returns the pages read and, per round, what was
+    chosen and why."""
     s = get_settings()
     listed = [p for p in await store.list_pages(wiki["id"]) if p["type"] != "synthesis"]
     listed.sort(key=lambda p: (p["type"] != "overview", p["slug"]))  # a subtopic page follows its section page
     page_list = "\n".join(f"{p['slug']} | {p['type']} | {p['title']} | {p['summary']}" for p in listed)
     known = {p["slug"] for p in listed}
+    found = _shortlist_md(shortlist or [])
     read: list[dict] = []
     rounds: list[dict] = []
     for rnd in range(1, s.browse_max_rounds + 1):
         left = s.browse_max_pages - len(read)
         try:
             out = await llm.generate_json(prompts.MAINTAINER_SYSTEM, prompts.with_schema(wiki["schema_md"], prompts.browse_prompt(
-                question, page_list, _pages_md(read), left)), prompts.BROWSE_SCHEMA)
+                question, page_list, _pages_md(read), left, found)), prompts.BROWSE_SCHEMA)
         except Exception as e:
             log.warning("query: choosing pages, round %s failed: %s", rnd, e)
             rounds.append({"round": rnd, "error": f"{type(e).__name__}: {e}"})
@@ -176,13 +186,20 @@ def _cited(answer: str, pages: list[dict]) -> list[dict]:
 
 
 def browses(wiki: dict) -> bool:
-    return wiki.get("answer_method") == "browse"
+    """Pages are chosen in rounds by the model (browse, search_browse), not read at once (search_pick)."""
+    return wiki.get("answer_method") in ("browse", "search_browse")
 
 
 async def _read(wiki: dict, question: str, sources: str, use_saved: bool) -> tuple[list[dict], list[dict], list[dict]]:
     """The pages for the question and, if use_saved, the saved answers read with them (both under the Sources
-    setting), and the rounds of choosing (browse only)."""
-    if browses(wiki):
+    setting), and the rounds of choosing (browse and search_browse; under search_browse the first entry is the
+    shortlist)."""
+    if wiki.get("answer_method") == "search_browse":
+        hits = await search.shortlist(wiki["id"], question, get_settings().shortlist_size)
+        pages, rounds = await _browse(wiki, question, sources, hits)
+        rounds = [{"shortlist": [{k: h[k] for k in ("slug", "score", "label_rank", "keyword_rank", "meaning_rank")} for h in hits]},
+                  *rounds]
+    elif browses(wiki):
         pages, rounds = await _browse(wiki, question, sources)
     else:
         pages, rounds = await _restrict(wiki, await _select_pages(wiki, question), sources), []
@@ -191,9 +208,9 @@ async def _read(wiki: dict, question: str, sources: str, use_saved: bool) -> tup
 
 
 def listed(wiki: dict, answer: str, pages: list[dict]) -> list[dict]:
-    """The pages shown with an answer: every page read, marked cited or not; under browse, only the cited ones (and
-    the saved answers read with them, which are never cited but are recorded as read). Under browse a page counts as
-    cited when the answer links it or cites a source paragraph the page cites: answers cite clauses, not pages."""
+    """The pages shown with an answer: every page read, marked cited or not; under browse and search_browse, only the
+    cited ones (and the saved answers read with them, which are never cited but are recorded as read). There a page
+    counts as cited when the answer links it or cites a source paragraph the page cites: answers cite clauses, not pages."""
     out = _cited(answer, pages)
     if not browses(wiki):
         return out
@@ -204,8 +221,10 @@ def listed(wiki: dict, answer: str, pages: list[dict]) -> list[dict]:
 
 
 def _rounds_md(rounds: list[dict]) -> str:
-    return "".join(f"\nRound {r['round']}: " + (", ".join(f"[[{x}]]" for x in r["read"]) or "nothing new")
-                   + (" (enough)" if r.get("enough") else "") for r in rounds if "read" in r)
+    found = "".join("\nShortlist: " + (", ".join(f"[[{h['slug']}]]" for h in r["shortlist"]) or "nothing found")
+                    for r in rounds if "shortlist" in r)
+    return found + "".join(f"\nRound {r['round']}: " + (", ".join(f"[[{x}]]" for x in r["read"]) or "nothing new")
+                           + (" (enough)" if r.get("enough") else "") for r in rounds if "read" in r)
 
 
 def _prompt(wiki: dict, question: str, pages: list[dict], extra: list[dict]) -> str:
