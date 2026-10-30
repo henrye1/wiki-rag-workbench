@@ -39,6 +39,9 @@ class Checks:
     slug_main: bool = False  # a page holding several headings takes its slug from the one holding most of its words
     guidance_kinds: list[str] = field(default_factory=list)  # the schema's kind names filed with their requirement
     summary_heads: int | None = None  # a subtopic summary: the first requirement claim under this many largest headings
+    summary_lead: str = ""  # a subtopic summary opens with this, then the source headings its title does not name
+    summary_sep: str = ""  # between those headings
+    summary_max: int | None = None  # characters: a subtopic summary is no longer, headings first
     unlabelled_forms: dict[str, str] = field(default_factory=dict)  # kind of text without a paragraph label -> its citation form
     no_claim_pages: list[str] = field(default_factory=list)  # pages that hold no claims: slugs, or a kind of page
     no_claim_index: bool = False  # the list names a split section's index page among them
@@ -146,6 +149,11 @@ def load(schema_md: str) -> Checks | None:
             setattr(c, attr, int(n.group(0)) if n else None)
             if attr == "page_size_limit" and (m := re.search(r"(\d+(?:\.\d+)?)\s*%\s+over", value)):
                 c.resplit_margin = float(m.group(1)) / 100
+            if attr == "summary_heads":  # "<lead>" ... headings ... separated by "<sep>"; at most <n> characters
+                quoted = QUOTED.findall(value)
+                c.summary_lead, c.summary_sep = (quoted + ["", ""])[:2] if len(quoted) >= 2 else ("", "")
+                n = re.search(r"\bat most (\d+) characters\b", value, re.I)
+                c.summary_max = int(n.group(1)) if n else None
 
         else:
             setattr(c, attr, QUOTED.findall(value))
@@ -313,12 +321,36 @@ def take_claims(text: str, movable=lambda sentence: True, names: set[str] = froz
     return "\n\n".join(blocks), taken
 
 
-def subtopic_summary(content: str, c: Checks | None) -> str | None:
+def subtopic_summary(content: str, c: Checks | None, heads: list[str] | None = None) -> str | None:
     """The schema's subtopic summary: the first requirement claim (one that opens with none of the schema's openers)
     under each of the page's largest headings by words, in page order, on one line; a page with one heading gives its
-    first claims, requirement claims first. None when the schema sets no such rule or the page holds no claims."""
+    first claims, requirement claims first. heads: the source headings its paragraphs sit under that its title does not
+    name, in document order; where the schema gives a lead for them, the summary opens with the lead and those
+    headings, and the whole summary is kept to the schema's length, headings first. None when the schema sets no such rule or the page
+    holds neither claims nor such headings."""
     if not c or not c.summary_heads:
         return None
+    claims = _summary_claims(content, c)
+    if not c.summary_lead:
+        return claims
+    cap = c.summary_max or 10**9
+    fit = []
+    for h in heads:  # whole headings, while they fit
+        if len(c.summary_lead + c.summary_sep.join(fit + [h])) + 1 > cap:
+            break
+        fit.append(h)
+    out = c.summary_lead + c.summary_sep.join(fit) + "." if fit else ""
+    for x in SENTENCE_END.split(claims or ""):  # then whole claims, while they fit
+        if not x.strip():
+            continue
+        if len(out) + 1 + len(x.strip()) > cap:
+            break
+        out = f"{out} {x.strip()}".strip()
+    return out or None
+
+
+def _summary_claims(content: str, c: Checks) -> str | None:
+    """The claims part of the schema's subtopic summary (see subtopic_summary)."""
     plain = lambda x: " ".join(re.sub(r"\s+([.,;:])", r"\1", store.LINK_RE.sub(
         lambda m: "" if m.group(1).startswith("source-") else (m.group(2) or m.group(1)), LIST_LABEL.sub("", x))).split())
     openers = list(_opener_res(c).values())

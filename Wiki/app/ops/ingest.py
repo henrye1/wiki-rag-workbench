@@ -565,19 +565,22 @@ def _index_md(sec_name: str, subs: list[dict], titles: dict[str, str]) -> tuple[
 async def _source_paths(wiki_id, footnote_form: str | None = None) -> dict[str, dict]:
     """Each source's paragraph labels with their heading path (title heading left off), their text and the reader's
     kind of each. A guidance paragraph filed with the requirement it applies to (the source's applies_to) takes that
-    requirement's path; a footnote (labelled in footnote_form, the schema's) takes its paragraph's."""
+    requirement's path; a footnote (labelled in footnote_form, the schema's) takes its paragraph's. own: each label's
+    path as the source prints it (before either move); rank: the source's place in upload order."""
     async with get_pool().connection() as conn:
-        rows = await (await conn.execute("select slug, title, text, meta from wiki.sources where wiki_id = %s", (wiki_id,))).fetchall()
+        rows = await (await conn.execute("select slug, title, text, meta from wiki.sources where wiki_id = %s order by created_at",
+                                         (wiki_id,))).fetchall()
     out = {}
-    for r in rows:
+    for rank, r in enumerate(rows):
         sp = [b.strip() for b in re.split(r"\n\s*\n", r["text"] or "") if b.strip()]
         hp = (r["meta"] or {}).get("heading_paths") or []
         paths = _drop_title(_anchored_paths(sp, hp if len(hp) == len(sp) else [[] for _ in sp], (r["meta"] or {}).get("para_kinds")))
-        out[r["slug"]] = {"path": {}, "para": {}, "place": {}, "title": ((r["meta"] or {}).get("document") or {}).get("part") or r["title"],
+        out[r["slug"]] = {"path": {}, "own": {}, "rank": rank, "para": {}, "place": {}, "title": ((r["meta"] or {}).get("document") or {}).get("part") or r["title"],
                           "kinds": (r["meta"] or {}).get("para_kinds") or {}}
         for k, (p, pa) in enumerate(zip(sp, paths)):
             if _ref(p):
                 out[r["slug"]]["path"].setdefault(_ref(p), pa)
+                out[r["slug"]]["own"].setdefault(_ref(p), list(pa))
                 out[r["slug"]]["para"].setdefault(_ref(p), p)
                 out[r["slug"]]["place"].setdefault(_ref(p), k)
     for r in rows:
@@ -590,6 +593,25 @@ async def _source_paths(wiki_id, footnote_form: str | None = None) -> dict[str, 
         for i, j in _footnote_of(sp, footnote_form).items():
             own[_ref(sp[i])] = list(own.get(_ref(sp[j]), own.get(_ref(sp[i]), [])))
     return out
+
+
+def _untitled_heads(content: str, title: str, src: dict) -> list[str]:
+    """The source headings a subtopic page's own paragraphs sit under (each its nearest heading as the source prints it,
+    a bracketed reference to paragraphs left off) that its title does not name, in document order: what the schema's
+    subtopic summary lists. src: _source_paths."""
+    bare = lambda h: re.sub(r"\s*\([^)]*\d[^)]*\)\s*$", "", h).strip()
+    named = {bare(h) for h in _sub_names(title)}
+    first: dict[str, tuple] = {}
+    for c in checks.cites(_split_also(content)[0]):
+        s_slug, lab = c.split("|", 1)
+        lab = re.sub(r"(?:\s*\([^)]*\))+$", "", lab.strip())
+        info = src.get(s_slug)
+        path = info["own"].get(lab) if info else None
+        if not path or (h := bare(path[-1])) in named:
+            continue
+        at = (info["rank"], info["place"].get(lab, 0))
+        first[h] = min(first.get(h, at), at)
+    return sorted(first, key=first.get)
 
 
 async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dict], targets: set[str]) -> tuple[list, list]:
@@ -690,7 +712,7 @@ async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dic
             title = f"{sec['name']}: {' – '.join(names)}"
             cur = pages.get(psl)
             ops[psl] = Op(op="update" if cur else "create", slug=psl, type="subtopic", title=title,
-                          summary=checks.subtopic_summary(text, chk) or title,
+                          summary=checks.subtopic_summary(text, chk, _untitled_heads(text, title, src)) or title,
                           content_md=text, tags=(cur or p).get("tags") or [], base_version=cur.get("version") if cur else None,
                           change_note=f"Split from {sl}: over the page size limit once written")
             pieces.append((psl, title, text))
@@ -1813,8 +1835,9 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     ops = [o for o in ops if o.slug not in gone]
     for x in more:  # an op for the same page is replaced by the split's
         ops = [o for o in ops if o.slug != x.slug] + [x]
+    heads_src = await _source_paths(wiki_id, checks.footnote_form(chk)) if chk and chk.summary_lead else {}
     for o in ops:  # the schema's subtopic summary, drawn across the page's headings
-        if o.type == "subtopic" and (sm := checks.subtopic_summary(o.content_md, chk)):
+        if o.type == "subtopic" and (sm := checks.subtopic_summary(o.content_md, chk, _untitled_heads(o.content_md, o.title, heads_src))):
             o.summary = sm
     valid = set(existing) | {o.slug for o in ops} | {source["slug"]}
     for o in ops:
