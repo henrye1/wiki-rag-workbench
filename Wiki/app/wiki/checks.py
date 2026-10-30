@@ -349,6 +349,13 @@ def subtopic_summary(content: str, c: Checks | None, heads: list[str] | None = N
     return out or None
 
 
+def summary_cut(text: str, c: Checks | None) -> str:
+    """A subtopic summary kept to the schema's length (where it sets one): cut at a whole word, marked as cut."""
+    if not c or not c.summary_max or len(text or "") <= c.summary_max:
+        return text
+    return text[:c.summary_max].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+
+
 def _summary_claims(content: str, c: Checks) -> str | None:
     """The claims part of the schema's subtopic summary (see subtopic_summary)."""
     plain = lambda x: " ".join(re.sub(r"\s+([.,;:])", r"\1", store.LINK_RE.sub(

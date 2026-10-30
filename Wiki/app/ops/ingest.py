@@ -1837,8 +1837,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         ops = [o for o in ops if o.slug != x.slug] + [x]
     heads_src = await _source_paths(wiki_id, checks.footnote_form(chk)) if chk and chk.summary_lead else {}
     for o in ops:  # the schema's subtopic summary, drawn across the page's headings
-        if o.type == "subtopic" and (sm := checks.subtopic_summary(o.content_md, chk, _untitled_heads(o.content_md, o.title, heads_src))):
-            o.summary = sm
+        if o.type == "subtopic":  # where the rule gives none, the page's own summary, kept to the schema's length
+            o.summary = checks.subtopic_summary(o.content_md, chk, _untitled_heads(o.content_md, o.title, heads_src)) or checks.summary_cut(o.summary, chk)
     valid = set(existing) | {o.slug for o in ops} | {source["slug"]}
     for o in ops:
         o.content_md = _unlink(o.content_md, valid)
