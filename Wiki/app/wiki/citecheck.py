@@ -63,6 +63,23 @@ def _covered(key: str, pat: re.Pattern) -> bool:
     return bool(pat.search(key)) and not FILLER.sub("", pat.sub("", key))
 
 
+def names_unlinked(content: str, names: re.Pattern | None) -> tuple[str, int]:
+    """The page text with each source citation whose label is only a document's name (one of the schema's document
+    names, and no clause) put back as that name in plain text, as the source wrote it ("paragraph 6.7.1 of <name>"):
+    a name is not a citation, and the sentence cites the paragraph it rests on elsewhere. Returns (text, how many)."""
+    n = 0
+
+    def one(m: re.Match) -> str:
+        nonlocal n
+        label = m.group(3)
+        if not m.group(1).startswith("source-") or not names.search(label) or re.search(r"\d", _norm(label, names)):
+            return m.group(0)
+        n += 1
+        return label.strip()
+
+    return (CITE_RE.sub(one, content or ""), n) if names else (content, 0)
+
+
 def check(content: str, matchers: dict[str, re.Pattern], names: re.Pattern | None = None) -> tuple[str, Counter, Counter]:
     """The page text with wrongly attributed citations corrected; Counters of (from, to, label) fixes and of
     (source, label, reason) flags."""
@@ -103,6 +120,9 @@ async def check_ops(wiki_id: UUID, ops: list) -> dict:
     for o in ops:
         if not o.content_md:
             continue
+        o.content_md, plain = names_unlinked(o.content_md, names)
+        if plain:
+            report.setdefault("names_unlinked", []).append({"page": o.slug, "count": plain})
         o.content_md, fixed, flagged = check(o.content_md, matchers, names)
         if fixed:
             moves = Counter()

@@ -292,6 +292,37 @@ def _without_empty_text(md: str, chk) -> str:
     return "\n\n".join(b for b in re.split(r"\n\s*\n", md) if b.strip() != chk.empty_text)
 
 
+def _heading_run_on(line: str) -> int | None:
+    """Where a heading line that holds a source citation runs into its text: the first place, before its first link,
+    a word runs straight into the next ("Terms Defined in <name> 9An ...", "Appendix A\\"12-month ...", "on
+    'Derivative'Application ...", "ItemsA hedged ..."). A digit runs into a capital only where a word starts there
+    ("9An"), never inside a paragraph number ("4.1.2A", "11B"). None when there is no such place: a capital run into a
+    capital ("OCIAt") is left to the page check, since names are written that way too."""
+    m = re.match(r"(#{2,6} )(.*)", line)
+    if not m or not any(x.group(1).startswith("source-") for x in store.LINK_RE.finditer(line)):
+        return None
+    body, off = m.group(2), len(m.group(1))
+    end = body.find("[[")
+    for i in range(1, end if end > 0 else len(body)):
+        a, b, nxt = body[i - 1], body[i], body[i + 1:i + 2]
+        if b in "\"'“‘" and a.isalnum():  # a quote straight after a word: opening (split before it) or closing
+            if b in "“‘" or body[:i].count(b) % 2 == 0:
+                return off + i
+            continue
+        if a in "\"'”’)]" and b.isupper():
+            if a in "\"'" and body[:i - 1].count(a) % 2 == 0:  # an opening straight quote, not a closing one
+                continue
+            return off + i
+        if (a.islower() and b.isupper()) or (a.isdigit() and b.isupper() and nxt.islower()):
+            return off + i
+    return None
+
+
+def _split_headings(text: str) -> str:
+    """Each heading run together with the text under it put on its own line (see _heading_run_on)."""
+    return "\n".join(f"{l[:k]}\n{l[k:]}" if (k := _heading_run_on(l)) else l for l in text.split("\n"))
+
+
 def _fix_breaks(text: str) -> str:
     """Put back line breaks the model left out: escaped "\\n" as text, a heading run on after a sentence, or a heading
     run together with the text under it (a heading line that cites something is two lines), or the next paragraph run
@@ -300,6 +331,7 @@ def _fix_breaks(text: str) -> str:
     fixed = text.replace("\\n", "\n")
     fixed = HEADING_IN_TEXT.sub(r"\n\n\1", fixed)
     fixed = HEADING_RUN_ON.sub(r"\1\n\2", fixed)
+    fixed = _split_headings(fixed)
     fixed = CITE_RUN_ON.sub(r"\1\n\n", fixed)
     fixed = BULLET_RUN_ON.sub(r"\1\n", fixed)
     fixed = TABLE_RUN_ON.sub(_unflatten_table, fixed)
@@ -1578,7 +1610,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         if given and source_slug:
             content = await check_and_fix(
                 "section", content, lambda x: (checks.section_failures(x, given, para_kinds, source_slug, chk, _covers, src_labels)
-                                               if chk else []) + checks.repeat_failures(x) + cite_failures(x)
+                                               if chk else []) + checks.repeat_failures(x) + checks.heading_failures(x) + cite_failures(x)
                 + ([] if checks.absence_allowed_on(chk, ptype, title) else checks.absence_failures(x, chk, "\n\n".join(given))),
                 sources_text="\n\n".join(given), parse=lambda r: _fix_breaks(r).strip(),
                 ok=lambda old, new: not ({_ref(p) for p in _uncited(new, given)} - {_ref(p) for p in _uncited(old, given)}))
@@ -1835,10 +1867,6 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     ops = [o for o in ops if o.slug not in gone]
     for x in more:  # an op for the same page is replaced by the split's
         ops = [o for o in ops if o.slug != x.slug] + [x]
-    heads_src = await _source_paths(wiki_id, checks.footnote_form(chk)) if chk and chk.summary_lead else {}
-    for o in ops:  # the schema's subtopic summary, drawn across the page's headings
-        if o.type == "subtopic":  # where the rule gives none, the page's own summary, kept to the schema's length
-            o.summary = checks.subtopic_summary(o.content_md, chk, _untitled_heads(o.content_md, o.title, heads_src)) or checks.summary_cut(o.summary, chk)
     valid = set(existing) | {o.slug for o in ops} | {source["slug"]}
     for o in ops:
         o.content_md = _unlink(o.content_md, valid)
@@ -1846,6 +1874,24 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     citations = await citecheck.check_ops(wiki_id, ops)
     if citations["corrected"] or citations["flagged"]:
         await ctx.progress(citations=citations)
+    # summaries, from the text as it is saved: the schema's subtopic summary, drawn across the page's headings, and
+    # its page summary for every other page (what it holds); where neither gives one, the page's own, kept to length
+    heads_src = await _source_paths(wiki_id, checks.footnote_form(chk)) if chk and chk.summary_lead else {}
+    now = {sl: p for sl, p in existing.items()} | {o.slug: {"type": o.type, "title": o.title, "content_md": o.content_md} for o in ops}
+    titles = {sl: p["title"] for sl, p in now.items()}
+    held_terms = {sl: len(checks.defined_terms(p["content_md"], chk)) for sl, p in now.items()}
+    top = max(held_terms, key=held_terms.get, default=None)
+    terms_page = top if top and held_terms[top] * 2 > len({t for p in now.values() for t in checks.defined_terms(p["content_md"], chk)}) else None
+    is_index = lambda sl: any(x.startswith(sl + "-") and p["type"] == "subtopic" for x, p in now.items())
+    for o in ops:
+        sm = checks.subtopic_summary(o.content_md, chk, _untitled_heads(o.content_md, o.title, heads_src)) if o.type == "subtopic" else None
+        if not sm and o.type != "synthesis" and not (o.type == "topic" and is_index(o.slug)):
+            sm = checks.page_summary(o.content_md, chk, terms=o.slug == terms_page, source=o.type == "source", titles=titles,
+                                     skip_heads=frozenset({ALSO_HEADING}))
+        if sm:
+            o.summary = sm
+        elif o.type == "subtopic":
+            o.summary = checks.summary_cut(o.summary, chk)
     # a page whose write-ups moved to other pages (a section page now an index, a page that holds no claims): what it
     # cited before must be cited on one of the wiki's pages after this upload
     final = {sl: p["content_md"] for sl, p in existing.items()} | {o.slug: o.content_md for o in ops}
