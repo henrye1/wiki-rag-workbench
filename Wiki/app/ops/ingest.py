@@ -361,7 +361,9 @@ def _size_split(idx: list[int], paths: list[list[str]], words: list[int], limit:
                 extra_words: int = 0, once: bool = False) -> list[tuple[list[str], list[int]]]:
     """Paragraphs over the size limit, split by the source's headings: at the highest heading level (from depth down)
     where they fall under more than one heading, each group split again one level down while still over the limit.
-    Returns (heading names, paragraphs) per group; a paragraph with no heading at that level stays with the one before."""
+    Returns (heading names, paragraphs) per group. A paragraph directly under the heading above that level (before
+    its sub-headings, or guidance filed with such a paragraph) is a group of its own, named by that heading; one with
+    no heading at all stays with the one before."""
     if sum(words[i] for i in idx) + extra_words <= limit:
         return [([], idx)]
     for d in range(depth, max((len(paths[i]) for i in idx), default=0)):
@@ -372,6 +374,9 @@ def _size_split(idx: list[int], paths: list[list[str]], words: list[int], limit:
             groups: dict[str, list[int]] = {}
             last = next((h for h in heads if h), None)
             for i, h in zip(idx, heads):
+                if h is None and not once and 0 < d == len(paths[i]):
+                    groups.setdefault(paths[i][d - 1], []).append(i)  # under the heading above, not a sub-heading's
+                    continue
                 last = h or last
                 groups.setdefault(last, []).append(i)
             out = []
@@ -383,7 +388,8 @@ def _size_split(idx: list[int], paths: list[list[str]], words: list[int], limit:
                         next((paths[i][d - 1] for i in part if 0 < d <= len(paths[i])), "")
                     out.append(([parent, name], part))
                 else:
-                    out += [([name] + sub, p) for sub, p in _size_split(part, paths, words, limit, d + 1)]
+                    # a group of the heading above names itself once
+                    out += [([name] + (sub[1:] if sub[:1] == [name] else sub), p) for sub, p in _size_split(part, paths, words, limit, d + 1)]
             return out
     return [([], idx)]  # no heading to split by: it stays one page
 
@@ -556,10 +562,10 @@ def _index_md(sec_name: str, subs: list[dict], titles: dict[str, str]) -> tuple[
     return "\n\n".join(blocks), summary[:500]
 
 
-async def _source_paths(wiki_id) -> dict[str, dict]:
+async def _source_paths(wiki_id, footnote_form: str | None = None) -> dict[str, dict]:
     """Each source's paragraph labels with their heading path (title heading left off), their text and the reader's
     kind of each. A guidance paragraph filed with the requirement it applies to (the source's applies_to) takes that
-    requirement's path."""
+    requirement's path; a footnote (labelled in footnote_form, the schema's) takes its paragraph's."""
     async with get_pool().connection() as conn:
         rows = await (await conn.execute("select slug, title, text, meta from wiki.sources where wiki_id = %s", (wiki_id,))).fetchall()
     out = {}
@@ -578,6 +584,11 @@ async def _source_paths(wiki_id) -> dict[str, dict]:
         for lab, req in ((r["meta"] or {}).get("applies_to") or {}).items():
             if (path := out.get(req["source"], {}).get("path", {}).get(req["label"])) is not None and lab in out[r["slug"]]["path"]:
                 out[r["slug"]]["path"][lab] = list(path)
+    for r in rows:
+        sp = [b.strip() for b in re.split(r"\n\s*\n", r["text"] or "") if b.strip()]
+        own = out[r["slug"]]["path"]
+        for i, j in _footnote_of(sp, footnote_form).items():
+            own[_ref(sp[i])] = list(own.get(_ref(sp[j]), own.get(_ref(sp[i]), [])))
     return out
 
 
@@ -599,7 +610,7 @@ async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dic
             and len(_split_also(pages[sl]["content_md"])[0].split()) > cap]
     if not todo:
         return [], []
-    src = await _source_paths(wiki_id)
+    src = await _source_paths(wiki_id, checks.footnote_form(chk))
     apart = chk.papers_apart  # each block's path starts with its paper: groups form within one paper only
     ops: dict[str, Op] = {}
     report = []
@@ -655,12 +666,12 @@ async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dic
         pieces, renamed = [], None
         # a piece is named after the headings it holds: the page's own heading above them stays, a list of the page's
         # headings at the level the split divides is not carried over
-        divided = {h for n, _ in parts for x in n[:1] for h in x.split(HEADS_SEP)}
+        divided = {h for n, _ in parts for x in n for h in x.split(HEADS_SEP)}
         keep = base[:-1] if base and set(base[-1].split(HEADS_SEP)) & divided else base
         for k, (names, part) in enumerate(parts):
             main = _main_heading(names, part, paths, words) if chk.slug_main else None
             if base:  # a subtopic page's pieces: its own groups, then the heading (or numbered examples) each holds
-                names = base[:-1] + names if any(items) else keep + names
+                names = base[:-1] + names if any(items) else keep + [x for x in names if x not in keep]
             new_slug = lambda: _sub_slug(home, names, chk.slug_words, main)
             if p["type"] == "subtopic" and k == 0:
                 psl = sl
@@ -1246,7 +1257,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                     continue
                 reqs = [(("here", i), heading(paths[i]), paras[i]) for i in mine if role(i) == "requirement"]
                 if olds:
-                    others = others or await _source_paths(wiki_id)
+                    others = others or await _source_paths(wiki_id, checks.footnote_form(chk))
                     for x in olds:
                         for c in sorted(checks.cites(existing[x]["content_md"])):
                             src_slug, lab = c.split("|", 1)
@@ -1268,6 +1279,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                 async with get_pool().connection() as conn:
                     await conn.execute("update wiki.sources set meta = coalesce(meta, '{}'::jsonb) || %s where id = %s",
                                        (Jsonb({"applies_to": ex.meta["applies_to"]}), source["id"]))
+        for i, j in foot.items():  # a footnote is grouped under its paragraph's headings, not alone under its own
+            paths[i] = list(paths[j])
         related = _related_by([{_ref(p)} - {""} for p in paras], [{r.rstrip(".") for r in REFERS.findall(p)} for p in paras],
                               para_vecs) if chk.join_related and para_vecs is not None else None
         for num, sl in slug_of.items():
@@ -1668,7 +1681,9 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                                        "summary": cur["summary"] if cur else f"{title}: items also recorded here",
                                        "change_note": f"Also recorded from {ex.title}"}
         return Op(
-            op="update" if cur else "create", slug=slug, title=first["title"] or title, type=ptype, summary=first["summary"],
+            # a subtopic page is named after its headings (the schema's rule), not by the writer's reply
+            op="update" if cur else "create", slug=slug, title=title if ptype == "subtopic" else first["title"] or title,
+            type=ptype, summary=first["summary"],
             content_md=content, tags=list(dict.fromkeys(t for o in outs for t in o["tags"])) or (cur["tags"] if cur else []),
             base_version=cur["version"] if cur else None, change_note=first["change_note"],
         )
