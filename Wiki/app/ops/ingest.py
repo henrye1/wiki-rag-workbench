@@ -1891,7 +1891,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     heads_src = await _source_paths(wiki_id, checks.footnote_form(chk)) if chk and chk.summary_lead else {}
     now = {sl: p for sl, p in existing.items()} | {o.slug: {"type": o.type, "title": o.title, "content_md": o.content_md} for o in ops}
     titles = {sl: p["title"] for sl, p in now.items()}
-    sections = frozenset(sl for sl, p in now.items() if p["type"] == "topic")  # the wiki's section pages
+    section_pages = frozenset(sl for sl, p in now.items() if p["type"] == "topic")  # the wiki's section pages
     held_terms = {sl: len(checks.defined_terms(p["content_md"], chk)) for sl, p in now.items()}
     top = max(held_terms, key=held_terms.get, default=None)
     terms_page = top if top and held_terms[top] * 2 > len({t for p in now.values() for t in checks.defined_terms(p["content_md"], chk)}) else None
@@ -1901,7 +1901,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                                      titles) if o.type == "subtopic" else None
         if not sm and o.type != "synthesis" and not (o.type == "topic" and is_index(o.slug)):
             sm = checks.page_summary(o.content_md, chk, terms=o.slug == terms_page, source=o.type == "source", titles=titles,
-                                     sections=sections,
+                                     sections=section_pages,
                                      skip_heads=frozenset({ALSO_HEADING}))
         if sm:
             o.summary = sm
