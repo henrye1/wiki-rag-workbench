@@ -331,16 +331,27 @@ def take_claims(text: str, movable=lambda sentence: True, names: set[str] = froz
     return "\n\n".join(blocks), taken
 
 
-def subtopic_summary(content: str, c: Checks | None, heads: list[str] | None = None) -> str | None:
+def listing_lines(content: str) -> list[str] | None:
+    """A page whose own text (headings aside) is only lines that each point to another page, with words of their own
+    before the link: those lines, in page order. None for any other page."""
+    lines = [l.strip() for l in (content or "").splitlines() if l.strip() and not re.match(r"#{1,6} ", l.strip())]
+    page_links = lambda x: [m for m in store.LINK_RE.finditer(x) if not m.group(1).startswith("source-")]
+    points = lambda l: page_links(l) and re.search(r"[A-Za-z]", BULLET.sub("", l[:page_links(l)[0].start()]))
+    return lines if lines and all(points(l) for l in lines) else None
+
+
+def subtopic_summary(content: str, c: Checks | None, heads: list[str] | None = None,
+                     titles: dict[str, str] | None = None) -> str | None:
     """The schema's subtopic summary: the first requirement claim (one that opens with none of the schema's openers)
     under each of the page's largest headings by words, in page order, on one line; a page with one heading gives its
     first claims, requirement claims first. heads: the source headings its paragraphs sit under that its title does not
     name, in document order; where the schema gives a lead for them, the summary opens with the lead and those
     headings, and the whole summary is kept to the schema's length, headings first. None when the schema sets no such rule or the page
-    holds neither claims nor such headings."""
-    if not c or not c.summary_heads:
+    holds neither claims nor such headings. A page of lines that each point to another page holds no claims of its own:
+    None (the page summary lists them). titles: page titles, naming a link that shows no label."""
+    if not c or not c.summary_heads or listing_lines(content):
         return None
-    claims = _summary_claims(content, c)
+    claims = _summary_claims(content, c, titles or {})
     if not c.summary_lead:
         return claims
     cap = c.summary_max or 10**9
@@ -376,10 +387,11 @@ def defined_terms(content: str, c: Checks | None) -> list[str]:
 
 
 def page_summary(content: str, c: Checks | None, *, terms: bool = False, source: bool = False,
-                 titles: dict[str, str] | None = None, skip_heads: frozenset[str] = frozenset()) -> str | None:
+                 titles: dict[str, str] | None = None, sections: frozenset[str] = frozenset(),
+                 skip_heads: frozenset[str] = frozenset()) -> str | None:
     """The schema's page summary, for a page no other summary rule covers: its lead, then what the page holds, in page
     order: on the page that defines the wiki's terms (terms), each term it defines; on a source page (source), the
-    pages it informs (the pages it links); on a page whose own text is only lines that each point to another page,
+    sections it informs (the section pages it links, by their titles; sections: their slugs); on a page whose own text is only lines that each point to another page,
     each line's own words before its link (up to its last colon); otherwise its own headings (skip_heads aside). Then
     whole requirement claims while they fit, to the schema's length. None when the schema sets no such rule or the
     page holds none of these: an empty page keeps its line."""
@@ -395,9 +407,9 @@ def page_summary(content: str, c: Checks | None, *, terms: bool = False, source:
     if terms:
         items = defined_terms(content, c)
     elif source:
-        items = [name(m) for l in body for m in page_links(l)]
-    elif body and all(page_links(l) and re.search(r"[A-Za-z]", before(l)) for l in body):
-        items = [" ".join(before(l).rsplit(":", 1)[0].split()).strip(" ,;:") for l in body]
+        items = [titles.get(m.group(1), m.group(1)) for l in body for m in page_links(l) if m.group(1) in sections]
+    elif listed := listing_lines(content):
+        items = [" ".join(before(l).rsplit(":", 1)[0].split()).strip(" ,;:") for l in listed]
     else:
         items = [" ".join(store.LINK_RE.sub(name, h.split(" ", 1)[1]).split()) for h in heads if h not in skip_heads]
     items = [x for x in dict.fromkeys(items) if x]
@@ -419,10 +431,12 @@ def page_summary(content: str, c: Checks | None, *, terms: bool = False, source:
     return out or None
 
 
-def _summary_claims(content: str, c: Checks) -> str | None:
+def _summary_claims(content: str, c: Checks, titles: dict[str, str] | None = None) -> str | None:
     """The claims part of the schema's subtopic summary (see subtopic_summary)."""
+    titles = titles or {}
     plain = lambda x: " ".join(re.sub(r"\s+([.,;:])", r"\1", store.LINK_RE.sub(
-        lambda m: "" if m.group(1).startswith("source-") else (m.group(2) or m.group(1)), LIST_LABEL.sub("", x))).split())
+        lambda m: "" if m.group(1).startswith("source-") else (m.group(2) or titles.get(m.group(1), m.group(1))),
+        LIST_LABEL.sub("", x))).split())
     openers = list(_opener_res(c).values())
     is_req = lambda x: not any(p.match(plain(x)) for p in openers)
     parts = []  # (words, claims) under each heading, in page order

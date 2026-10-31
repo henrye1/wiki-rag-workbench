@@ -190,8 +190,9 @@ def _covers(label: str, ref: str) -> bool:
 
 
 def _uncited(content: str, paras: list[str]) -> list[str]:
-    """The labelled paragraphs in paras that no citation on the page names (each chunk of an uncited paragraph)."""
-    labels = [m.group(2) for m in store.LINK_RE.finditer(content) if m.group(2)]
+    """The labelled paragraphs in paras that no citation on the page names (each chunk of an uncited paragraph). Only a
+    link to a source cites a paragraph: a link to another wiki page labelled with its number points the reader there."""
+    labels = [m.group(2) for m in store.LINK_RE.finditer(content) if m.group(1).startswith("source-") and m.group(2)]
     out, cited = [], {}
     for p in paras:
         ref = _ref(p)
@@ -646,6 +647,15 @@ def _untitled_heads(content: str, title: str, src: dict) -> list[str]:
     return sorted(first, key=first.get)
 
 
+def _own_cite(block: str, src: dict) -> re.Match | None:
+    """The citation a block's text rests on: the first that ends a sentence (others after it aside), not one inside a
+    sentence ("within the scope of [[...]], but ..." refers to another paragraph); the block's first citation where
+    none ends one. Only citations of a source paragraph with a label count. src: _source_paths."""
+    ms = [m for m in store.LINK_RE.finditer(block) if m.group(1) in src and m.group(2)]
+    ends = lambda m: re.match(r"(?:\s*\[\[[^\]]*\]\])*\s*(?:[.;:!?]|$)", block[m.end():].split("\n", 1)[0])
+    return next((m for m in ms if ends(m)), ms[0] if ms else None)
+
+
 async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dict], targets: set[str]) -> tuple[list, list]:
     """The schema's rule after writing, wherever a page is written: a section or subtopic page whose write-up is over
     the page size limit by more than the schema's margin is split again. Its blocks move word for word, grouped by
@@ -677,16 +687,17 @@ async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dic
         body, lines = _split_also(p["content_md"])
         body = "\n".join(x for x in body.split("\n") if not x.startswith("Not yet covered"))
         blocks = _blocks(body)
-        paths, items, last, places, at = [], [], [], [], ("", -1)
+        paths, items, last, places, at = [], [], [], [], (-1, -1)
         for b in blocks:  # the heading path of the paragraph the block cites; a block citing none goes with the one before
-            m = next((m for m in store.LINK_RE.finditer(b) if m.group(1) in src and m.group(2)), None)
+            m = _own_cite(b, src)
             lab = re.sub(r"(?:\s*\([^)]*\))+$", "", m.group(2).strip()) if m else ""
             path = src[m.group(1)]["path"].get(lab) if m else None
             if apart and path is not None:
                 path = [m.group(1)] + path
             last = path if path is not None else last
             paths.append(last)
-            at = (m.group(1), src[m.group(1)]["place"][lab]) if path is not None else at  # its paragraph's place in the source
+            # its paragraph's place: sources in upload order, then its place in the source
+            at = (src[m.group(1)]["rank"], src[m.group(1)]["place"][lab]) if path is not None else at
             places.append(at)
             items.append(checks.example_item(last, src[m.group(1)]["para"].get(lab, ""), chk) if m else None)
         words = [len(b.split()) for b in blocks]
@@ -744,7 +755,8 @@ async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dic
             title = f"{sec['name']}: {' – '.join(names)}"
             cur = pages.get(psl)
             ops[psl] = Op(op="update" if cur else "create", slug=psl, type="subtopic", title=title,
-                          summary=checks.subtopic_summary(text, chk, _untitled_heads(text, title, src)) or title,
+                          summary=checks.subtopic_summary(text, chk, _untitled_heads(text, title, src),
+                                                          {k: v["title"] for k, v in pages.items()}) or title,
                           content_md=text, tags=(cur or p).get("tags") or [], base_version=cur.get("version") if cur else None,
                           change_note=f"Split from {sl}: over the page size limit once written")
             pieces.append((psl, title, text))
@@ -1879,14 +1891,17 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     heads_src = await _source_paths(wiki_id, checks.footnote_form(chk)) if chk and chk.summary_lead else {}
     now = {sl: p for sl, p in existing.items()} | {o.slug: {"type": o.type, "title": o.title, "content_md": o.content_md} for o in ops}
     titles = {sl: p["title"] for sl, p in now.items()}
+    sections = frozenset(sl for sl, p in now.items() if p["type"] == "topic")  # the wiki's section pages
     held_terms = {sl: len(checks.defined_terms(p["content_md"], chk)) for sl, p in now.items()}
     top = max(held_terms, key=held_terms.get, default=None)
     terms_page = top if top and held_terms[top] * 2 > len({t for p in now.values() for t in checks.defined_terms(p["content_md"], chk)}) else None
     is_index = lambda sl: any(x.startswith(sl + "-") and p["type"] == "subtopic" for x, p in now.items())
     for o in ops:
-        sm = checks.subtopic_summary(o.content_md, chk, _untitled_heads(o.content_md, o.title, heads_src)) if o.type == "subtopic" else None
+        sm = checks.subtopic_summary(o.content_md, chk, _untitled_heads(o.content_md, o.title, heads_src),
+                                     titles) if o.type == "subtopic" else None
         if not sm and o.type != "synthesis" and not (o.type == "topic" and is_index(o.slug)):
             sm = checks.page_summary(o.content_md, chk, terms=o.slug == terms_page, source=o.type == "source", titles=titles,
+                                     sections=sections,
                                      skip_heads=frozenset({ALSO_HEADING}))
         if sm:
             o.summary = sm
