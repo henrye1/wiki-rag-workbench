@@ -21,14 +21,14 @@ import { Api, enc, errMsg } from '../../core/api';
       @if (rows().length) {
         <div class="cards">
           @for (s of totals(); track s.sys) {
-            <div class="card"><h3>{{ s.sys === 'rag' ? 'RAG' : 'Wiki' }} similarity</h3>
+            <div class="card"><h3>{{ s.sys === 'rag' ? 'RAG (per topic)' : 'Wiki' }} similarity</h3>
               <div class="stat">{{ s.a ?? '—' }} → {{ s.b ?? '—' }}</div>
               <div [class.pos]="s.delta > 0" [class.neg]="s.delta < 0">{{ s.delta > 0 ? '+' : '' }}{{ s.delta | number: '1.2-2' }}</div></div>
           }
         </div>
         <p class="muted">Topics present in both runs. Δ = run B − run A (mean similarity /10).</p>
         <table class="simple">
-          <thead><tr><th>#</th><th>Topic</th><th>RAG A</th><th>RAG B</th><th>Δ RAG</th><th>Wiki A</th><th>Wiki B</th><th>Δ Wiki</th></tr></thead>
+          <thead><tr><th>#</th><th>Topic</th><th>RAG (per topic) A</th><th>RAG (per topic) B</th><th>Δ RAG (per topic)</th><th>Wiki A</th><th>Wiki B</th><th>Δ Wiki</th></tr></thead>
           <tbody>
             @for (r of rows(); track r.n) {
               <tr>

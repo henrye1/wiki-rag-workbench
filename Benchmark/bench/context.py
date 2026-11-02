@@ -17,6 +17,7 @@ import httpx
 
 from . import judge
 from .config import get_settings
+from .systems import RAGS
 
 VERSION = "context-2"  # 2: Standard-only context recall
 MAX_CLAIMS = 40
@@ -122,7 +123,7 @@ async def run_context(data: dict, sem: asyncio.Semaphore, use_batch: bool, save,
         for rec, rid, sysname, ans in todo:
             key = f"x{rec['number']}-r{rid}-{sysname}"
             try:
-                ctx, note = _context_rag(ans) if sysname == "rag" else await _context_wiki(http, wiki, sources, ans)
+                ctx, note = _context_rag(ans) if sysname in RAGS else await _context_wiki(http, wiki, sources, ans)
             except Exception as e:
                 ctx, note = None, f"what the answer read could not be rebuilt ({type(e).__name__})"
             if ctx is None:

@@ -1,3 +1,5 @@
+import asyncio
+
 import numpy as np
 
 from . import llm
@@ -38,6 +40,28 @@ async def search(
             (query, np.asarray(embedding, dtype=np.float32), k, include_types, exclude, collection_id),
         )
         return await cur.fetchall()
+
+
+async def search_each(
+    queries: list[str],
+    k: int,
+    cap: int,
+    include_types: list[str] | None = None,
+    include_editorial: bool = False,
+    collection_id=None,
+) -> list[dict]:
+    """One hybrid search per query (k hits each), merged round-robin so every query contributes its best hits before
+    the cap of `cap` passages."""
+    embeddings = await llm.embed(queries, task="RETRIEVAL_QUERY")
+    results = await asyncio.gather(
+        *(search(q, k, include_types, include_editorial, embedding=e, collection_id=collection_id) for q, e in zip(queries, embeddings))
+    )
+    seen: dict[int, dict] = {}
+    for rank in range(k):
+        for rows in results:
+            if rank < len(rows) and rows[rank]["id"] not in seen and len(seen) < cap:
+                seen[rows[rank]["id"]] = rows[rank]
+    return list(seen.values())
 
 
 def chunk_id(row: dict) -> str:

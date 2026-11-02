@@ -56,14 +56,31 @@ class QueryIn(BaseModel):
     include_editorial: bool = Field(False, description="Include notes/intro/Appendix C (excluded by default)")
     sources: Literal["standard", "all"] = Field(
         "all", description="standard = only the Standard itself (Part A); all = also documents published with it (Parts B and C)")
+    retrieval: Literal["whole", "per_question"] = Field(
+        "whole", description="whole = one search for the whole question (top_k passages); per_question = when the "
+        "question lists numbered questions (Q1. ..., Q2. ...), one search for its first line and one per question, as the "
+        "bulk run searches (bulk_k_per_query each, up to bulk_max_chunks), answered with the same prompt")
+
+
+QUESTION_RE = re.compile(r"^Q\d+\..*$", re.M)  # as the bulk run reads a topic's questions
+
+
+def _queries(question: str) -> list[str]:
+    """The searches of a per-question retrieval: the question's first line, then each numbered question; the whole
+    question when it lists none."""
+    qs = QUESTION_RE.findall(question)
+    return [question.strip().splitlines()[0]] + qs if qs else [question]
 
 
 async def _retrieve(q: QueryIn, col: dict) -> list[dict]:
+    s = get_settings()
     types = q.source_types
     if q.sources == "standard":  # Part A only, whatever else the collection holds
         types = [t for t in (types or STANDARD_TYPES) if t in STANDARD_TYPES]
-    return await retrieval.search(q.question, q.top_k or get_settings().top_k, types, q.include_editorial,
-                                  collection_id=col["id"])
+    if q.retrieval == "per_question":
+        return await retrieval.search_each(_queries(q.question), s.bulk_k_per_query, s.bulk_max_chunks, types,
+                                           q.include_editorial, collection_id=col["id"])
+    return await retrieval.search(q.question, q.top_k or s.top_k, types, q.include_editorial, collection_id=col["id"])
 
 
 def _cited(answer: str, rows: list[dict]) -> list[dict]:

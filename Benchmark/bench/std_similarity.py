@@ -6,6 +6,8 @@ blind labels, Message Batches with the normal API for the rest), against only th
 touched. Each answer's score is the mean of its two orders; a topic's is the mean over its repetitions; a run's is the
 mean of topic means, with the wiki-minus-RAG gap and its 95% interval as for the other tests. A topic with no point
 tagged standard is not scored. The result is stored in the run's results under "standard_similarity".
+Each RAG column's pair is judged (rag vs wiki; in newer runs also rag_q vs wiki). The wiki's own score is from its pair
+with rag, as in every run; its score in each other pair is kept with that pair (`pairs`), with that pair's gap.
 
   python -m bench.std_similarity RUN_ID [RUN_ID ...]
 """
@@ -17,7 +19,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from . import gaps, judge
+from . import gaps, judge, systems
 from .config import get_settings
 
 VERSION = "std-sim-1"
@@ -55,7 +57,8 @@ def _user(rec: dict, points: list[dict], answer_a: str, answer_b: str) -> str:
 
 
 def _requests(data: dict) -> tuple[dict[str, dict], dict[str, tuple]]:
-    """Every pair to judge, by custom id (topic, repetition, order), with what each answer label stands for."""
+    """Every pair to judge, by custom id (topic, repetition, order, and the pair's RAG system after the first), with what
+    each answer label stands for."""
     reqs, where = {}, {}
     for n, rec in data["topics"].items():
         points = [p for p in rec["key_points"] if p["kind"] == "standard"]
@@ -64,22 +67,27 @@ def _requests(data: dict) -> tuple[dict[str, dict], dict[str, tuple]]:
         for r, run in rec["runs"].items():
             if not run.get("judgement"):
                 continue
-            for k in ORDERS:
-                label = run["orders"][k]["blind_labels"]
-                cid = f"t{n}-r{r}-o{k}"
-                user = _user(rec, points, run["systems"][label["A"]]["answer"], run["systems"][label["B"]]["answer"])
-                reqs[cid] = judge._params(STD_SYSTEM, user, STD_SCHEMA)
-                where[cid] = (n, r, k, label, user)
+            for rag in systems.pairs(data):
+                orders = run["orders"] if rag == "rag" else run["pairs"][rag]["orders"]
+                for k in ORDERS:
+                    label = orders[k]["blind_labels"]
+                    cid = f"t{n}-r{r}-o{k}" + ("" if rag == "rag" else f"-{rag}")
+                    user = _user(rec, points, run["systems"][label["A"]]["answer"], run["systems"][label["B"]]["answer"])
+                    reqs[cid] = judge._params(STD_SYSTEM, user, STD_SCHEMA)
+                    where[cid] = (n, r, k, label, user, rag)
     return reqs, where
 
 
-def _summary(scores: dict) -> dict:
-    """Run means (mean of topic means) per system, and the gap with its interval, as for the other judged tests."""
-    pseudo = {"topics": {n: {"runs": {r: {"judgement": True, "systems": {s: {"similarity": v[s]} for s in ("rag", "wiki")}}
-                                      for r, v in by_r.items()}} for n, by_r in scores.items()}}
-    topic_means = {s: [statistics.mean(v[s] for v in by_r.values()) for by_r in scores.values()] for s in ("rag", "wiki")}
+def _summary(scores: dict, rag: str = "rag") -> dict:
+    """Run means (mean of topic means) of one pair's two systems, and the gap with its interval, as for the other judged
+    tests."""
+    def run(v):  # one repetition's two scores, laid out as gaps reads a run (the wiki of another pair under `pairs`)
+        out = {"judgement": True, "systems": {s: {"similarity": v[s]} for s in (rag, "wiki")}}
+        return out if rag == "rag" else {**out, "pairs": {rag: {"wiki": out["systems"]["wiki"]}}}
+    pseudo = {"topics": {n: {"runs": {r: run(v) for r, v in by_r.items()}} for n, by_r in scores.items()}}
+    topic_means = {s: [statistics.mean(v[s] for v in by_r.values()) for by_r in scores.values()] for s in (rag, "wiki")}
     return {"by_system": {s: {"mean": round(statistics.mean(m), 2), "n_topics": len(m)} for s, m in topic_means.items()},
-            "gap": gaps.gaps(pseudo)["similarity"]}
+            "gap": gaps.gaps(pseudo, rag=rag)["similarity"]}
 
 
 async def run(run_id: str, conn: psycopg.Connection):
@@ -108,23 +116,33 @@ async def run(run_id: str, conn: psycopg.Connection):
                 got[cid] = e
     await asyncio.gather(*(again(c) for c, v in got.items() if isinstance(v, Exception)))
 
-    per_pair, errors = {}, {}
-    for cid, (n, r, k, label, _) in where.items():
+    by_rag, errors = {}, {}  # the pair's RAG system -> topic -> repetition -> order -> scores
+    for cid, (n, r, k, label, _, rag) in where.items():
         res = got[cid]
         if isinstance(res, Exception):
             errors[cid] = f"{type(res).__name__}: {res}"
             continue
         sim = res["data"]["similarity"]
-        per_pair.setdefault(n, {}).setdefault(r, {})[k] = {"scores": {label["A"]: sim["A"], label["B"]: sim["B"]},
-                                                           "rationale": res["data"]["rationale"], "usage": res["usage"]}
-    scores = {n: {r: {sys_: statistics.mean(o[k]["scores"][sys_] for k in ORDERS) for sys_ in ("rag", "wiki")}
+        by_rag.setdefault(rag, {}).setdefault(n, {}).setdefault(r, {})[k] = {
+            "scores": {label["A"]: sim["A"], label["B"]: sim["B"]}, "rationale": res["data"]["rationale"], "usage": res["usage"]}
+
+    def scores_of(rag):
+        per_pair = by_rag.get(rag) or {}
+        sc = {n: {r: {sys_: statistics.mean(o[k]["scores"][sys_] for k in ORDERS) for sys_ in (rag, "wiki")}
                   for r, o in by_r.items() if all(k in o for k in ORDERS)} for n, by_r in per_pair.items()}
-    scores = {n: v for n, v in scores.items() if v}
+        return per_pair, {n: v for n, v in sc.items() if v}
+    per_pair, scores = scores_of("rag")
     value = {"version": VERSION, "status": "done", "judge_model": s.judge_model, "judge_effort": s.judge_effort,
              "reference": "rubric points tagged standard", "scale": "0-10, as similarity",
              "orders": "both, with the run's blind labels; each answer's score is the mean of the two",
              "topics": {n: {"repetitions": per_pair[n], "scores": scores.get(n)} for n in per_pair},
              "summary": _summary(scores) if scores else None, "errors": errors}
+    for rag in systems.pairs(data):
+        if rag == "rag":
+            continue
+        pp, sc = scores_of(rag)
+        value.setdefault("pairs", {})[rag] = {"topics": {n: {"repetitions": pp[n], "scores": sc.get(n)} for n in pp},
+                                              "summary": _summary(sc, rag) if sc else None}
     store(value)
     sm = value["summary"]
     if sm:
@@ -132,6 +150,11 @@ async def run(run_id: str, conn: psycopg.Connection):
               f"  wiki standard-only similarity {sm['by_system']['wiki']['mean']}/10\n"
               f"  gap {sm['gap']['diff']} CI {sm['gap']['ci']} -> {sm['gap']['verdict']}"
               + (f"\n  errors: {errors}" if errors else ""), flush=True)
+    for rag, p in (value.get("pairs") or {}).items():
+        if p["summary"]:
+            ps = p["summary"]
+            print(f"  {rag} standard-only similarity {ps['by_system'][rag]['mean']}/10 | wiki in this pair "
+                  f"{ps['by_system']['wiki']['mean']}/10 | gap {ps['gap']['diff']} CI {ps['gap']['ci']} -> {ps['gap']['verdict']}", flush=True)
 
 
 async def main():

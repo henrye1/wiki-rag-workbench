@@ -20,7 +20,8 @@ import { poller } from '../../shared/poll';
   template: `
     <div class="page">
       <h1>Benchmark</h1>
-      <p class="muted">RAG and Wiki answer each topic of the IFRS 9 query set; Claude grades both blind against a human-written IFRS 9 assessment
+      <p class="muted">The Wiki and two RAG columns answer each topic of the IFRS 9 query set: RAG (per topic) searches once for the whole topic,
+        RAG (per question) once per question. Claude grades the Wiki against each RAG column blind, against a human-written IFRS 9 assessment
         (key-point checklist, 0–10 similarity, winner).</p>
       <div class="card">
         <h3>New run</h3>
@@ -137,7 +138,7 @@ import { poller } from '../../shared/poll';
         @else { <span class="muted small">Tick two runs to compare</span> }
       </div>
       <table class="simple">
-        <thead><tr><th></th><th>Run</th><th>Compared</th><th>Sources</th><th>Saved answers</th><th>Topics × runs</th><th>Mode</th><th>Rubric</th><th>Judge</th><th>RAG sim / cov</th><th>Wiki sim / cov</th><th>Wins (rag / wiki / tie)</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Run</th><th>Compared</th><th>Sources</th><th>Saved answers</th><th>Topics × runs</th><th>Mode</th><th>Rubric</th><th>Judge</th><th>RAG (per topic) sim / cov</th><th>RAG (per question) sim / cov</th><th>Wiki sim / cov</th><th>Wins (rag per topic / wiki / tie)</th><th>Status</th><th></th></tr></thead>
         <tbody>
           @for (r of list(); track r.id) {
             <tr>
@@ -152,9 +153,10 @@ import { poller } from '../../shared/poll';
               <td class="small" [title]="r.judge?.title ?? ''">{{ r.judge?.label ?? '—' }}</td>
               @if (r.summary?.by_system; as b) {
                 <td><b>{{ b.rag.similarity.mean }}</b> / {{ b.rag.coverage.mean }}%</td>
+                <td>@if (b.rag_q) { <b>{{ b.rag_q.similarity.mean }}</b> / {{ b.rag_q.coverage.mean }}% } @else { <span class="muted">—</span> }</td>
                 <td><b>{{ b.wiki.similarity.mean }}</b> / {{ b.wiki.coverage.mean }}%</td>
                 <td>{{ r.summary.wins_by_run.rag }} / {{ r.summary.wins_by_run.wiki }} / {{ r.summary.wins_by_run.tie }}</td>
-              } @else { <td colspan="3" class="muted">—</td> }
+              } @else { <td colspan="4" class="muted">—</td> }
               <td><span class="pill" [class.ok]="r.progress.status === 'finished'" [class.warn]="r.progress.status === 'running'"
                         [class.bad]="r.progress.status === 'failed' || r.progress.status === 'interrupted'">{{ r.progress.status }}</span></td>
               <td class="actions">
