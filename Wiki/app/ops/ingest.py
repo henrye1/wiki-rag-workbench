@@ -599,7 +599,8 @@ async def _source_paths(wiki_id, footnote_form: str | None = None) -> dict[str, 
     """Each source's paragraph labels with their heading path (title heading left off), their text and the reader's
     kind of each. A guidance paragraph filed with the requirement it applies to (the source's applies_to) takes that
     requirement's path; a footnote (labelled in footnote_form, the schema's) takes its paragraph's. own: each label's
-    path as the source prints it (before either move); rank: the source's place in upload order."""
+    path as the source prints it (before either move); rank: the source's place in upload order; route_kind: the
+    reader's kind each paragraph was routed by ("" where the reader gives none)."""
     async with get_pool().connection() as conn:
         rows = await (await conn.execute("select slug, title, text, meta from wiki.sources where wiki_id = %s order by created_at",
                                          (wiki_id,))).fetchall()
@@ -607,8 +608,11 @@ async def _source_paths(wiki_id, footnote_form: str | None = None) -> dict[str, 
     for rank, r in enumerate(rows):
         sp = [b.strip() for b in re.split(r"\n\s*\n", r["text"] or "") if b.strip()]
         hp = (r["meta"] or {}).get("heading_paths") or []
+        rk = (r["meta"] or {}).get("kinds") or []
+        rk = rk if len(rk) == len(sp) else [""] * len(sp)
         paths = _drop_title(_anchored_paths(sp, hp if len(hp) == len(sp) else [[] for _ in sp], (r["meta"] or {}).get("para_kinds")))
-        out[r["slug"]] = {"path": {}, "own": {}, "rank": rank, "para": {}, "place": {}, "title": ((r["meta"] or {}).get("document") or {}).get("part") or r["title"],
+        out[r["slug"]] = {"path": {}, "own": {}, "rank": rank, "para": {}, "place": {}, "route_kind": {},
+                          "title": ((r["meta"] or {}).get("document") or {}).get("part") or r["title"],
                           "kinds": (r["meta"] or {}).get("para_kinds") or {}}
         for k, (p, pa) in enumerate(zip(sp, paths)):
             if _ref(p):
@@ -616,6 +620,7 @@ async def _source_paths(wiki_id, footnote_form: str | None = None) -> dict[str, 
                 out[r["slug"]]["own"].setdefault(_ref(p), list(pa))
                 out[r["slug"]]["para"].setdefault(_ref(p), p)
                 out[r["slug"]]["place"].setdefault(_ref(p), k)
+                out[r["slug"]]["route_kind"].setdefault(_ref(p), rk[k])
     for r in rows:
         for lab, req in ((r["meta"] or {}).get("applies_to") or {}).items():
             if (path := out.get(req["source"], {}).get("path", {}).get(req["label"])) is not None and lab in out[r["slug"]]["path"]:
@@ -628,12 +633,29 @@ async def _source_paths(wiki_id, footnote_form: str | None = None) -> dict[str, 
     return out
 
 
-def _untitled_heads(content: str, title: str, src: dict) -> list[str]:
+def _to_examples(chk, kind: str, para: str) -> bool:
+    """Whether a paragraph is routed to the schema's examples section: by the reader's kind where it gives one (e.g. a
+    Part B's illustrative examples), else, in a Standard, by carrying one of the schema's example labels."""
+    if kind:
+        return checks.routed_to_examples(chk, kind)
+    label_re = checks.example_label_re(chk) if chk else None
+    return bool(label_re and label_re.search(para))
+
+
+def _examples_name(sections: list[dict], chk) -> str | None:
+    """The name of the section the schema routes the issuer's labelled examples to."""
+    return next((x["name"] for x in sections if chk and x["num"] == chk.examples_section), None)
+
+
+def _untitled_heads(content: str, title: str, src: dict, chk=None, examples: str | None = None) -> list[str]:
     """The source headings a subtopic page's own paragraphs sit under (each its nearest heading as the source prints it,
     a bracketed reference to paragraphs left off) that its title does not name, in document order: what the schema's
-    subtopic summary lists. src: _source_paths."""
+    subtopic summary lists. A cited paragraph is the page's own when it was filed there: on a page of the examples
+    section (examples: its name), one routed to that section; on any other page, one filed under a heading its title
+    names. A paragraph the page only refers to is not its own. src: _source_paths; chk: the schema's checks."""
     bare = lambda h: re.sub(r"\s*\([^)]*\d[^)]*\)\s*$", "", h).strip()
     named = {bare(h) for h in _sub_names(title)}
+    in_examples = bool(examples) and title.split(": ", 1)[0] == examples
     first: dict[str, tuple] = {}
     for c in checks.cites(_split_also(content)[0]):
         s_slug, lab = c.split("|", 1)
@@ -641,6 +663,12 @@ def _untitled_heads(content: str, title: str, src: dict) -> list[str]:
         info = src.get(s_slug)
         path = info["own"].get(lab) if info else None
         if not path or (h := bare(path[-1])) in named:
+            continue
+        if in_examples:
+            own = _to_examples(chk, info["route_kind"].get(lab, ""), info["para"].get(lab, ""))
+        else:
+            own = bool({bare(x) for x in info["path"].get(lab) or path} & named)
+        if not own:
             continue
         at = (info["rank"], info["place"].get(lab, 0))
         first[h] = min(first.get(h, at), at)
@@ -667,6 +695,7 @@ async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dic
     if not limit:
         return [], []
     cap = limit * (1 + chk.resplit_margin)
+    examples = _examples_name(sections, chk)
     section_slug = {sl: sec for sl, p in pages.items() if p["type"] == "topic" and (sec := _section_for(sections, p["title"], sl))}
     subs_of = lambda sec_slug: [x for x in pages if x.startswith(sec_slug + "-") and pages[x]["type"] == "subtopic"]
     todo = [sl for sl in targets if sl in pages and pages[sl]["type"] in ("topic", "subtopic")
@@ -755,7 +784,7 @@ async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dic
             title = f"{sec['name']}: {' – '.join(names)}"
             cur = pages.get(psl)
             ops[psl] = Op(op="update" if cur else "create", slug=psl, type="subtopic", title=title,
-                          summary=checks.subtopic_summary(text, chk, _untitled_heads(text, title, src),
+                          summary=checks.subtopic_summary(text, chk, _untitled_heads(text, title, src, chk, examples),
                                                           {k: v["title"] for k, v in pages.items()}) or title,
                           content_md=text, tags=(cur or p).get("tags") or [], base_version=cur.get("version") if cur else None,
                           change_note=f"Split from {sl}: over the page size limit once written")
@@ -1095,9 +1124,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             # illustrative examples); in a Standard, paragraphs carrying one of the schema's example labels
             kinds = ex.meta.get("kinds") or []
             kinds = kinds if len(kinds) == len(paras) else [""] * len(paras)
-            label_re = checks.example_label_re(chk)
-            labelled = {_ref(p) or i for i, p in enumerate(paras)
-                        if (checks.routed_to_examples(chk, kinds[i]) if kinds[i] else bool(label_re and label_re.search(p)))}
+            labelled = {_ref(p) or i for i, p in enumerate(paras) if _to_examples(chk, kinds[i], p)}
             owner.update({i: ex_sec["num"] for i, p in enumerate(paras) if (_ref(p) or i) in labelled and i not in stubs})
         targets = [x for x in sections if x is not ex_sec]
         briefs = "\n\n".join(x["brief"] for x in targets)
@@ -1897,7 +1924,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     terms_page = top if top and held_terms[top] * 2 > len({t for p in now.values() for t in checks.defined_terms(p["content_md"], chk)}) else None
     is_index = lambda sl: any(x.startswith(sl + "-") and p["type"] == "subtopic" for x, p in now.items())
     for o in ops:
-        sm = checks.subtopic_summary(o.content_md, chk, _untitled_heads(o.content_md, o.title, heads_src),
+        sm = checks.subtopic_summary(o.content_md, chk, _untitled_heads(o.content_md, o.title, heads_src, chk,
+                                                     _examples_name(sections, chk)),
                                      titles) if o.type == "subtopic" else None
         if not sm and o.type != "synthesis" and not (o.type == "topic" and is_index(o.slug)):
             sm = checks.page_summary(o.content_md, chk, terms=o.slug == terms_page, source=o.type == "source", titles=titles,
