@@ -9,8 +9,8 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from psycopg.errors import UniqueViolation
 from pydantic import BaseModel, Field
 
-from .. import storage
 from ..db import get_pool
+from ..ops import copywiki
 from ..wiki import store
 from .deps import wiki_dep
 
@@ -58,6 +58,22 @@ async def create_wiki(body: WikiIn):
     return row
 
 
+class CopyIn(BaseModel):
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")
+    name: str
+    description: str | None = Field(None, description="Defaults to the original's")
+
+
+@router.post("/wikis/{w}/copy", status_code=201)
+async def copy_wiki(body: CopyIn, wiki: dict = Depends(wiki_dep)):
+    """Copy the wiki under a new slug: settings, schema, sources, pages with every version, links, flags and search
+    index. The copy's sources share the original's stored files; its log, jobs and changesets start empty. No AI call."""
+    try:
+        return await copywiki.copy(wiki, body.slug, body.name, body.description)
+    except UniqueViolation:
+        raise HTTPException(409, "Wiki slug already exists")
+
+
 @router.get("/wikis")
 async def list_wikis():
     async with get_pool().connection() as conn:
@@ -94,7 +110,7 @@ async def delete_wiki(wiki: dict = Depends(wiki_dep)):
         ).fetchall()
         await conn.execute("delete from wiki.wikis where id = %s", (wiki["id"],))
     for f in files:
-        await storage.remove(f["file"])
+        await store.remove_file(f["file"])
 
 
 @router.get("/wikis/{w}/schema", response_class=PlainTextResponse)

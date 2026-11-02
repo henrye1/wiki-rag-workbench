@@ -9,7 +9,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from .. import jobs
 from ..db import get_pool
-from ..ops import lint, query, recheck, synthesis
+from ..ops import lint, query, recheck, summaries, synthesis
 from ..wiki import store
 from .deps import Mode, wiki_dep
 
@@ -126,6 +126,17 @@ async def run_recheck(body: RecheckIn, wiki: dict = Depends(wiki_dep)):
     """Run the after-writing page checks (and their fix rounds) on every page the wiki has, without re-ingesting."""
     job_id = await jobs.submit(wiki["id"], "recheck", body.model_dump(), lambda ctx: recheck.run(ctx, wiki, body.mode))
     return {"job_id": str(job_id)}
+
+
+class SummariesIn(BaseModel):
+    dry_run: bool = Field(False, description="Report what would change; save nothing")
+
+
+@router.post("/wikis/{w}/summaries")
+async def recompute_summaries(body: SummariesIn, wiki: dict = Depends(wiki_dep)):
+    """Make every page's summary again by the schema's summary rules, from the page text as it stands. No AI call is
+    made and no page text changes; a changed summary is saved as a new page version."""
+    return await summaries.recompute(wiki, body.dry_run)
 
 
 @router.get("/jobs/{job_id}")

@@ -675,6 +675,31 @@ def _untitled_heads(content: str, title: str, src: dict, chk=None, examples: str
     return sorted(first, key=first.get)
 
 
+async def page_summaries(wiki_id, chk, sections: list[dict], now: dict[str, dict], slugs: list[str]) -> dict[str, str]:
+    """The summaries of the pages slugs, from their text as it is saved: the schema's subtopic summary, drawn across the
+    page's headings, and its page summary for every other page (what it holds); where neither gives one, the page's
+    own, kept to length (a subtopic page) or as it is. A section index page and a synthesis page keep theirs. now: every
+    page of the wiki as it will stand (slug -> type, title, content_md, summary). No AI call is made."""
+    heads_src = await _source_paths(wiki_id, checks.footnote_form(chk)) if chk and chk.summary_lead else {}
+    examples = _examples_name(sections, chk)
+    titles = {sl: p["title"] for sl, p in now.items()}
+    section_pages = frozenset(sl for sl, p in now.items() if p["type"] == "topic")  # the wiki's section pages
+    held_terms = {sl: len(checks.defined_terms(p["content_md"], chk)) for sl, p in now.items()}
+    top = max(held_terms, key=held_terms.get, default=None)
+    terms_page = top if top and held_terms[top] * 2 > len({t for p in now.values() for t in checks.defined_terms(p["content_md"], chk)}) else None
+    is_index = lambda sl: any(x.startswith(sl + "-") and p["type"] == "subtopic" for x, p in now.items())
+    out = {}
+    for sl in slugs:
+        p = now[sl]
+        sm = checks.subtopic_summary(p["content_md"], chk, _untitled_heads(p["content_md"], p["title"], heads_src, chk, examples),
+                                     titles) if p["type"] == "subtopic" else None
+        if not sm and p["type"] != "synthesis" and not (p["type"] == "topic" and is_index(sl)):
+            sm = checks.page_summary(p["content_md"], chk, terms=sl == terms_page, source=p["type"] == "source", titles=titles,
+                                     sections=section_pages, skip_heads=frozenset({ALSO_HEADING}))
+        out[sl] = sm or (checks.summary_cut(p["summary"], chk) if p["type"] == "subtopic" else p["summary"])
+    return out
+
+
 def _own_cite(block: str, src: dict) -> re.Match | None:
     """The citation a block's text rests on: the first that ends a sentence (others after it aside), not one inside a
     sentence ("within the scope of [[...]], but ..." refers to another paragraph); the block's first citation where
@@ -1915,26 +1940,11 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         await ctx.progress(citations=citations)
     # summaries, from the text as it is saved: the schema's subtopic summary, drawn across the page's headings, and
     # its page summary for every other page (what it holds); where neither gives one, the page's own, kept to length
-    heads_src = await _source_paths(wiki_id, checks.footnote_form(chk)) if chk and chk.summary_lead else {}
-    now = {sl: p for sl, p in existing.items()} | {o.slug: {"type": o.type, "title": o.title, "content_md": o.content_md} for o in ops}
-    titles = {sl: p["title"] for sl, p in now.items()}
-    section_pages = frozenset(sl for sl, p in now.items() if p["type"] == "topic")  # the wiki's section pages
-    held_terms = {sl: len(checks.defined_terms(p["content_md"], chk)) for sl, p in now.items()}
-    top = max(held_terms, key=held_terms.get, default=None)
-    terms_page = top if top and held_terms[top] * 2 > len({t for p in now.values() for t in checks.defined_terms(p["content_md"], chk)}) else None
-    is_index = lambda sl: any(x.startswith(sl + "-") and p["type"] == "subtopic" for x, p in now.items())
+    now = {sl: p for sl, p in existing.items()} | {o.slug: {"type": o.type, "title": o.title, "content_md": o.content_md,
+                                                           "summary": o.summary} for o in ops}
+    made = await page_summaries(wiki_id, chk, sections, now, [o.slug for o in ops])
     for o in ops:
-        sm = checks.subtopic_summary(o.content_md, chk, _untitled_heads(o.content_md, o.title, heads_src, chk,
-                                                     _examples_name(sections, chk)),
-                                     titles) if o.type == "subtopic" else None
-        if not sm and o.type != "synthesis" and not (o.type == "topic" and is_index(o.slug)):
-            sm = checks.page_summary(o.content_md, chk, terms=o.slug == terms_page, source=o.type == "source", titles=titles,
-                                     sections=section_pages,
-                                     skip_heads=frozenset({ALSO_HEADING}))
-        if sm:
-            o.summary = sm
-        elif o.type == "subtopic":
-            o.summary = checks.summary_cut(o.summary, chk)
+        o.summary = made[o.slug]
     # a page whose write-ups moved to other pages (a section page now an index, a page that holds no claims): what it
     # cited before must be cited on one of the wiki's pages after this upload
     final = {sl: p["content_md"] for sl, p in existing.items()} | {o.slug: o.content_md for o in ops}
@@ -1983,5 +1993,5 @@ async def run_safe(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mod
                 )
             ).fetchone()
         if row:
-            await storage.remove(row["file"])
+            await store.remove_file(row["file"])
         raise
