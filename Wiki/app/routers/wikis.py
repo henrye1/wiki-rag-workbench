@@ -18,7 +18,7 @@ router = APIRouter(tags=["wikis"])
 DEFAULT_SCHEMA = (pathlib.Path(__file__).resolve().parent.parent / "schema_default.md").read_text(encoding="utf-8")
 
 
-AnswerMethod = Literal["search_pick", "browse", "search_browse"]
+AnswerMethod = Literal["search_pick", "browse", "search_browse", "search_browse_2"]
 
 
 class WikiIn(BaseModel):
@@ -34,7 +34,9 @@ class SettingsIn(BaseModel):
                                                     "index, read at once; browse: the model reads the page list, chooses "
                                                     "pages and follows their links until it has enough; search_browse: "
                                                     "browse, with a shortlist from a search of every page's text (scores "
-                                                    "and matching passages) beside the page list")
+                                                    "and matching passages) beside the page list; search_browse_2: "
+                                                    "search_browse, judging enough only after reading the pages chosen, "
+                                                    "with each round's choices and reasons kept in the log")
 
 
 class SchemaIn(BaseModel):

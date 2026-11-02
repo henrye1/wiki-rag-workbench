@@ -58,9 +58,10 @@ async def ask(client: httpx.AsyncClient, system: str, question: str) -> dict:
                            {"question": question, "save": False, "sources": s.sources, "use_saved": s.use_saved})
         sources = [p["slug"] for p in data.get("pages", []) if p.get("cited")]
         extra = {"saved_answers_read": [p["slug"] for p in data.get("pages", []) if p.get("saved")]}  # read with the pages
-    # what the answer was based on (RAG: the passages; wiki: page versions and a hash of the text given) and the AI
-    # calls behind it, with their tokens; missing from runs made before the services reported them
-    recorded = {k: data[k] for k in ("read", "usage") if k in data}
+    # what the answer was based on (RAG: the passages; wiki: page versions and a hash of the text given), the AI calls
+    # behind it, with their tokens, and (wiki, choosing in rounds) each round's choices and reasons; missing from runs
+    # made before the services reported them
+    recorded = {k: data[k] for k in ("read", "usage", "rounds") if k in data}
     return {"answer": data["answer"], "sources": sources, **extra, **recorded, "latency_s": round(time.perf_counter() - t0, 2)}
 
 
@@ -80,7 +81,7 @@ async def describe(client: httpx.AsyncClient) -> dict:
         r.raise_for_status()
         w = r.json()  # its state when the run started: pages, sources and latest applied change
         out["wiki"] = {"url": s.wiki_url, "wiki": {k: w.get(k) for k in ("id", "name", "slug", "pages", "sources", "created_at",
-                                                                         "last_change_id", "last_change_at")}}
+                                                                         "last_change_id", "last_change_at", "answer_method")}}
     except Exception as e:
         out["wiki"] = {"url": s.wiki_url, "error": str(e)}
     return out
