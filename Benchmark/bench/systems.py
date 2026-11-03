@@ -50,7 +50,8 @@ async def ask(client: httpx.AsyncClient, system: str, question: str) -> dict:
     t0 = time.perf_counter()
     if system in RAGS:
         data = await _post(client, f"{s.rag_url}/collections/{quote(s.rag_collection, safe='')}/query", s.rag_api_key,
-                           {"question": question, "sources": s.sources, "retrieval": RETRIEVAL[system]})
+                           {"question": question, "sources": s.sources, "retrieval": RETRIEVAL[system],
+                            "include_editorial": s.rag_include_editorial})
         sources = [c.get("para_ref") or c.get("chunk_id") for c in data.get("citations", [])]
         extra = {}
     else:

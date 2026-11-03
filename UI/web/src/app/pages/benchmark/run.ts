@@ -21,10 +21,12 @@ const LABEL: Record<string, string> = { rag: 'RAG (per topic)', rag_q: 'RAG (per
           <p class="compared"><b>{{ c.rag_collection || '—' }}</b><span class="muted">&nbsp;vs&nbsp;</span><b>{{ c.wiki || '—' }}</b> ·
             Sources: <span class="pill">{{ c.sources === 'standard' ? 'Standard only' : c.sources === 'all' ? 'All' : '—' }}</span>
             · Saved answers: <span class="pill">{{ c.use_saved === true ? 'On' : c.use_saved === false ? 'Off' : 'not recorded' }}</span>
-            <span class="muted small">(the same for every system)</span></p>
+            <span class="muted small">(the same for every system)</span>
+            · RAG editorial text: <span class="pill">{{ c.rag_editorial === true ? 'On' : c.rag_editorial === false ? 'Off' : 'not recorded' }}</span></p>
         }
         <p class="muted">Judge {{ d.config.judge_model }} ({{ d.config.judge_effort }}{{ d.config.judge_backend ? ', ' + d.config.judge_backend : '' }}) · {{ d.config.runs }} run(s) per topic ·
-          RAG: {{ ragDocs(d) }} · Wiki: {{ d.config.systems?.wiki?.wiki?.pages ?? '?' }} pages · commit {{ d.config.git_commit ?? '—' }}</p>
+          RAG: {{ ragDocs(d) }} · Wiki: {{ d.config.systems?.wiki?.wiki?.pages ?? '?' }} pages · commit {{ d.config.git_commit ?? '—' }}
+          @if (d.config.context_checks?.version; as v) { · Context checks {{ v }}{{ d.config.context_checks.rescored ? ' (re-scored ' + d.config.context_checks.rescored.at.slice(0, 10) + ', was ' + d.config.context_checks.rescored.from + ')' : '' }} }</p>
         <p class="muted small">Rubric: {{ rubricLabel(d) }}</p>
         @for (p of pairs(d); track p) {
           <div class="card gaps">
