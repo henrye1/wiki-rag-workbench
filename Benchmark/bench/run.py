@@ -466,7 +466,8 @@ async def main():
                 store.log(f"Faithfulness and context recall failed ({type(e).__name__}: {e}); they show as not measured")
             try:  # standard-only similarity: the graded pairs judged again against the standard points only
                 await std_similarity.compute(store.data, s.use_batch, store.save, store.log)
-            except Exception as e:
+            except Exception as e:  # kept with the run, so its page says why; a resume judges again
+                store.data["standard_similarity"] = {"version": std_similarity.VERSION, "status": "failed", "error": f"{type(e).__name__}: {e}"}
                 store.log(f"Standard-only similarity failed ({type(e).__name__}: {e}); it shows as not measured")
         await metrics.compute(store.data, s.mode)  # graded answers keep their tests; the summary is refreshed
         store.data["errors"] = errors

@@ -370,7 +370,7 @@ export class BenchRuns {
     const v = sim?.by_system?.[sys]?.mean;
     const g = sim?.gap;
     const f = (n: number) => (n > 0 ? '+' : n < 0 ? '−' : '') + Math.abs(n).toFixed(2);
-    const std = v == null ? 'std sim not measured'
+    const std = v == null ? (x.std_similarity_failed ? `std sim failed: ${x.std_similarity_failed}` : 'std sim not measured')
       : `std sim ${v}` + (sys !== 'wiki' && g?.diff != null ? ` (wiki ${f(g.diff)}${g.ci ? `, ${f(g.ci[0])} to ${f(g.ci[1])}` : ''})` : '');
     const c = x.contradictions?.[sys];
     return `${std} · ` + (c ? `contra ${c.mean.toFixed(2)} · none ${c.none}/${c.n}` : 'contradictions not measured');

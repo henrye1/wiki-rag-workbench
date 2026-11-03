@@ -239,8 +239,9 @@ export class BenchRun {
     const no = (reason: string) => ({ ok: false, text: 'not measured', reason });
     if (k === 'std_similarity') {
       const v = this.stdSim(d, pair)?.by_system?.[sys];
-      if (v?.mean == null) return no(d.config?.mode === 'quick' ? 'Quick mode: standard-only similarity runs only in Full mode'
-                                                                : 'standard-only similarity was not run on this run');
+      if (v?.mean == null) return no(d.extras?.std_similarity_failed ? `failed: ${d.extras.std_similarity_failed}`
+                                     : d.config?.mode === 'quick' ? 'Quick mode: standard-only similarity runs only in Full mode'
+                                     : 'standard-only similarity was not run on this run');
       return { ok: true, text: `${v.mean}/10`, reason: `${v.n_topics} topic(s)` };
     }
     const c = sys === 'wiki' && pair !== 'rag' ? d.extras?.pairs?.[pair]?.contradictions?.wiki : d.extras?.contradictions?.[sys];

@@ -35,7 +35,8 @@ DONE_SQL = """(select count(*) from jsonb_each(coalesce(results->'topics', '{}':
 CONTRA = {"rag": "systems.rag", "wiki": "systems.wiki", "rag_q": "systems.rag_q", "wiki_q": "pairs.rag_q.wiki"}
 EXTRAS_SQL = ", ".join(
     [f"jsonb_path_query_array(results, '$.topics.*.runs.*.{path}.contradictions.size()') as contra_{k}" for k, path in CONTRA.items()]
-    + ["results->'standard_similarity'->'summary' as std_sim", "results->'standard_similarity'->'pairs'->'rag_q'->'summary' as std_sim_q"])
+    + ["results->'standard_similarity'->'summary' as std_sim", "results->'standard_similarity'->'pairs'->'rag_q'->'summary' as std_sim_q",
+       "case when results->'standard_similarity'->>'status' = 'failed' then results->'standard_similarity'->>'error' end as std_sim_failed"])
 
 
 def _contra(counts: list | None) -> dict | None:
@@ -48,10 +49,12 @@ def _contra(counts: list | None) -> dict | None:
 
 def _extras(row: dict) -> dict:
     """Per system: contradictions and standard-only similarity; the wiki's figures in the RAG (per question) pair under
-    pairs.rag_q. A measure a run does not have is None (the page shows "not measured")."""
+    pairs.rag_q. A measure a run does not have is None (the page shows "not measured"); std_similarity_failed is why the
+    step failed, if it did."""
     sim, sim_q = row.get("std_sim") or {}, row.get("std_sim_q") or {}
     return {
         "contradictions": {k: _contra(row.get(f"contra_{k}")) for k in ("rag", "wiki", "rag_q")},
+        "std_similarity_failed": row.get("std_sim_failed"),
         "std_similarity": {"by_system": sim.get("by_system"), "gap": sim.get("gap")} if sim else None,
         "pairs": {"rag_q": {"contradictions": {"wiki": _contra(row.get("contra_wiki_q")), "rag_q": _contra(row.get("contra_rag_q"))},
                             "std_similarity": {"by_system": sim_q.get("by_system"), "gap": sim_q.get("gap")} if sim_q else None}},
