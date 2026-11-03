@@ -137,32 +137,26 @@ import { poller } from '../../shared/poll';
         @if (selected().length === 2) { <button mat-stroked-button (click)="compare()"><mat-icon>compare_arrows</mat-icon> Compare selected</button> }
         @else { <span class="muted small">Tick two runs to compare</span> }
       </div>
-      <table class="simple">
-        <thead><tr><th></th><th>Run</th><th>Compared</th><th title="Sources · saved answers · topics × runs · mode, then the rubric and the judge">Setup</th><th>RAG (per topic) sim / cov</th><th>RAG (per question) sim / cov</th><th>Wiki sim / cov</th><th title="Standard-only similarity: the wiki minus RAG (per topic) and RAG (per question), with the 95% interval">Std sim gap<br><span class="muted">wiki − RAG</span></th><th title="Wins against RAG (per topic): RAG / wiki / tie">Wins<br><span class="muted">r / w / t</span></th><th>Status</th><th></th></tr></thead>
+      <table class="simple runs-table">
+        <thead><tr><th></th><th>Run</th><th>Compared</th><th>Setup</th><th>RAG (per topic)</th><th>RAG (per question)</th><th>Wiki</th>
+          <th title="Standard-only similarity, wiki minus RAG (per topic) / wiki minus RAG (per question)">Std sim gap</th><th title="Wins against RAG (per topic): RAG / wiki / tie">Wins</th><th>Status</th><th></th></tr></thead>
         <tbody>
           @for (r of list(); track r.id) {
             <tr>
               <td><mat-checkbox [checked]="selected().includes(r.id)" (change)="toggle(r.id)" /></td>
-              <td><a [routerLink]="[r.id]">{{ r.id }}</a><div class="muted small">{{ r.started | date: 'medium' }}</div></td>
-              <td class="small">{{ r.rag_collection || '—' }}<span class="muted"> vs </span>{{ r.wiki || '—' }}</td>
-              <td class="small setup">
-                <div>{{ r.mode === 'full' ? 'Full' : r.mode === 'quick' ? 'Quick' : '—' }} · {{ r.topics }} × {{ r.runs }}</div>
-                <div class="muted">Sources {{ sourcesLabel(r.sources) }} · saved answers {{ r.use_saved === true ? 'on' : r.use_saved === false ? 'off' : '—' }}</div>
-                <div class="muted" [title]="r.rubric?.title ?? ''">Rubric {{ r.rubric?.label ?? '—' }}@if (r.rubric?.topics) { · {{ r.rubric.approved }}/{{ r.rubric.topics }} approved }</div>
-                <div class="muted" [title]="r.judge?.title ?? ''">{{ r.judge?.label ?? '—' }}</div>
-              </td>
+              <td><a [routerLink]="[r.id]">{{ r.id }}</a><div class="muted small">{{ r.started | date: 'd MMM, HH:mm' }}</div></td>
+              <td class="small">{{ r.rag_collection || '—' }}<div class="muted">vs {{ r.wiki || '—' }}</div></td>
+              <td class="small nowrap" [title]="setupTitle(r)">{{ r.mode === 'full' ? 'Full' : r.mode === 'quick' ? 'Quick' : '—' }} · {{ r.topics }}×{{ r.runs }}</td>
               @if (r.summary?.by_system; as b) {
-                <td><b>{{ b.rag.similarity.mean }}</b> / {{ b.rag.coverage.mean }}%@let x_rag = line(r, 'rag');<div class="more" [title]="x_rag.title">Std sim {{ x_rag.std }}</div><div class="more">Contra {{ x_rag.contra }}</div></td>
-                <td>@if (b.rag_q) { <b>{{ b.rag_q.similarity.mean }}</b> / {{ b.rag_q.coverage.mean }}%@let x_rag_q = line(r, 'rag_q');<div class="more" [title]="x_rag_q.title">Std sim {{ x_rag_q.std }}</div><div class="more">Contra {{ x_rag_q.contra }}</div> } @else { <span class="muted">—</span> }</td>
-                <td><b>{{ b.wiki.similarity.mean }}</b> / {{ b.wiki.coverage.mean }}%@let x_wiki = line(r, 'wiki');<div class="more" [title]="x_wiki.title">Std sim {{ x_wiki.std }}</div><div class="more">Contra {{ x_wiki.contra }}</div></td>
-                <td class="more">
-                  @for (p of ['rag', 'rag_q']; track p) {
-                    @let g = gap(r, p);
-                    @if (g) { <div [title]="g.title">{{ p === 'rag' ? 'topic' : 'question' }} <b>{{ g.diff }}</b>&nbsp;<span class="muted">{{ g.ci }}</span></div> }
-                  }
-                  @if (!gap(r, 'rag') && !gap(r, 'rag_q')) { <span class="muted">not measured</span> }
-                </td>
-                <td class="nowrap">{{ r.summary.wins_by_run.rag }} / {{ r.summary.wins_by_run.wiki }} / {{ r.summary.wins_by_run.tie }}</td>
+                @for (sys of ['rag', 'rag_q', 'wiki']; track sys) {
+                  <td>@if (b[sys]; as v) {
+                    <b>{{ v.similarity.mean | number: '1.2-2' }}</b><span class="muted">&nbsp;/&nbsp;{{ v.coverage.mean | number: '1.0-0' }}%</span>
+                    @let x = line(r, sys);
+                    <div class="more" [title]="x.title">{{ x.short }}</div>
+                  } @else { <span class="muted">—</span> }</td>
+                }
+                <td class="nowrap" [title]="gapTitle(r)">{{ gapShort(r) }}</td>
+                <td class="nowrap">{{ r.summary.wins_by_run.rag }}/{{ r.summary.wins_by_run.wiki }}/{{ r.summary.wins_by_run.tie }}</td>
               } @else { <td colspan="5" class="muted">—</td> }
               <td><span class="pill" [class.ok]="r.progress.status === 'finished'" [class.warn]="r.progress.status === 'running'"
                         [class.bad]="r.progress.status === 'failed' || r.progress.status === 'interrupted'">{{ r.progress.status }}</span></td>
@@ -178,8 +172,7 @@ import { poller } from '../../shared/poll';
           } @empty { <tr><td colspan="11" class="muted empty">No runs yet.</td></tr> }
         </tbody>
       </table>
-      <p class="muted small">Under each system: standard-only similarity (0–10), and contradictions per answer with the share of answers that had none.
-        Std-only sim gap: the wiki minus each RAG column, with its 95% interval. "not measured" where a run does not have the figure.</p>
+      <p class="muted small">Each system: similarity (0–10) / coverage; below it, standard-only similarity and contradictions per answer. Hover for details.</p>
     </div>
   `,
   styles: `
@@ -188,7 +181,7 @@ import { poller } from '../../shared/poll';
     .est { margin: 8px 0; } .est td.n { text-align: right; white-space: nowrap; }
     .runs { width: 90px; } .rubric { margin-top: 16px; } .mono { font-family: monospace; } .sources { display: flex; align-items: center; gap: 8px; } .wiki { width: 240px; } .actions { white-space: nowrap; }
     .files { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; } .small { font-size: 12px; } .head { margin-top: 20px; }
-    .more { font-size: 11px; color: var(--mat-sys-on-surface-variant); white-space: nowrap; margin-top: 2px; } td.more div { margin-top: 0; } .setup { min-width: 190px; } .nowrap { white-space: nowrap; }
+    .more { font-size: 11px; color: var(--mat-sys-on-surface-variant); white-space: nowrap; margin-top: 2px; } td.more div { margin-top: 0; } .nowrap { white-space: nowrap; }
     .progress { margin-top: 12px; } .log { max-height: 160px; overflow: auto; white-space: pre-wrap; margin: 8px 0 0; }
   `,
 })
@@ -369,20 +362,39 @@ export class BenchRuns {
     setTimeout(() => this.poll.start(), 1500);
   }
 
-  /** A system's standard-only similarity (the wiki's from its pair with RAG (per topic)) and contradictions, short. */
+  /** A system's standard-only similarity (the wiki's from its pair with RAG (per topic)) and contradictions: short, and
+   *  in full for the hover. */
   line(r: any, sys: string) {
     const x = r.extras ?? {};
     const v = (sys === 'rag_q' ? x.pairs?.rag_q?.std_similarity : x.std_similarity)?.by_system?.[sys]?.mean;
     const c = x.contradictions?.[sys];
-    return { std: v != null ? String(v) : x.std_similarity_failed ? 'failed' : 'not measured', title: x.std_similarity_failed ? `failed: ${x.std_similarity_failed}` : '',
-             contra: c ? `${c.mean.toFixed(2)} · ${c.none_pct.toFixed(0)}% none` : 'not measured' };
+    const std = v != null ? `std ${v.toFixed(2)}` : x.std_similarity_failed ? 'std failed' : 'std —';
+    return { short: `${std} · contra ${c ? c.mean.toFixed(2) : '—'}`,
+             title: (v != null ? `Standard-only similarity ${v}/10` : x.std_similarity_failed ? `Standard-only similarity failed: ${x.std_similarity_failed}`
+                                                                  : 'Standard-only similarity not measured')
+                    + (c ? ` · ${c.mean.toFixed(2)} contradictions per answer; ${c.none} of ${c.n} answers had none` : ' · contradictions not measured') };
   }
-  /** The wiki-minus-RAG standard-only similarity gap of one pair, with its interval, or null. */
+  /** The wiki-minus-RAG standard-only similarity gaps: per topic / per question, short; intervals and verdicts in the hover. */
+  gapShort(r: any) {
+    const f = (n: number) => (n > 0 ? '+' : n < 0 ? '−' : '') + Math.abs(n).toFixed(2);
+    const gs = ['rag', 'rag_q'].map((p) => this.gap(r, p)).filter(Boolean);
+    return gs.length ? gs.map((g: any) => f(g.diff)).join(' / ') : '—';
+  }
+  gapTitle(r: any) {
+    const f = (n: number) => (n > 0 ? '+' : n < 0 ? '−' : '') + Math.abs(n).toFixed(2);
+    return [['rag', 'RAG (per topic)'], ['rag_q', 'RAG (per question)']].map(([p, label]) => {
+      const g = this.gap(r, p);
+      return g ? `vs ${label}: ${f(g.diff)}` + (g.ci ? `, 95% interval ${f(g.ci[0])} to ${f(g.ci[1])}` : '') + ` (${g.verdict})` : null;
+    }).filter(Boolean).join('\n') || 'not measured';
+  }
   gap(r: any, pair: string) {
     const g = (pair === 'rag_q' ? r.extras?.pairs?.rag_q?.std_similarity : r.extras?.std_similarity)?.gap;
-    if (g?.diff == null) return null;
-    const f = (n: number) => (n > 0 ? '+' : n < 0 ? '−' : '') + Math.abs(n).toFixed(2);
-    return { diff: f(g.diff), ci: g.ci ? `[${f(g.ci[0])}, ${f(g.ci[1])}]` : '', title: g.verdict ?? '' };
+    return g?.diff == null ? null : g;
+  }
+  setupTitle(r: any) {
+    return [`Sources: ${this.sourcesLabel(r.sources)}`, `Saved answers: ${r.use_saved === true ? 'on' : r.use_saved === false ? 'off' : '—'}`,
+            `Rubric: ${r.rubric?.label ?? '—'}${r.rubric?.topics ? ` (${r.rubric.approved}/${r.rubric.topics} approved)` : ''}`,
+            `Judge: ${r.judge?.label ?? '—'}`].join('\n');
   }
   sourcesLabel(s: string | null) { return s === 'standard' ? 'Standard only' : s === 'all' ? 'All' : '—'; }
 
