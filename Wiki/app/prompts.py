@@ -274,8 +274,11 @@ def also_prompt(brief: str, lines: str, what: str = "") -> str:
     """what: what the schema's Also recorded list says is recorded on this section's page."""
     return (
         "The section below is an \"also record here\" section: a paragraph stays on its own section's page and is ALSO "
-        "recorded here. From the paragraphs below, return the ids of those the section brief says are recorded here"
-        + (f" (the schema's Also recorded list: {what})" if what else "") + ". Leave out the others.\n\n"
+        "recorded here. From the paragraphs below, return the ids of those "
+        + (f"that, by their own words, are what the schema's Also recorded list says is recorded here: {what}. The "
+           "section brief is given for context only: a paragraph is not recorded here because the brief's \"Belongs "
+           "here\" covers its subject, and a paragraph that only mentions or comments on such a point does not make it."
+           if what else "the section brief says are recorded here.") + " Leave out the others.\n\n"
         f"<section_brief>\n{brief}\n</section_brief>\n\n<paragraphs>\nid | text\n{lines}\n</paragraphs>"
     )
 

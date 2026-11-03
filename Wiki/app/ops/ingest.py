@@ -1881,7 +1881,10 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                     except Exception as e:
                         log.warning("ingest: page %s also-record backstop failed: %s", slug, e)
                 lines = fold(lines)
-                rec["still"] = sum(1 for i in extra if not_cited("\n".join(lines), [paras[i]]))
+                # a paragraph the writer declined, with its reason, as the page brief allows, is not a failure
+                left = [_ref(paras[i]) for i in extra if not_cited("\n".join(lines), [paras[i]]) and _ref(paras[i]) not in no_line]
+                rec["still"] = len(left)
+                rec["left"] = [f"Paragraph {x} is marked to be also recorded on this page but has no line." for x in dict.fromkeys(left)]
                 check_fixes.append(rec)
             still = list(dict.fromkeys(_ref(paras[i]) for i in extra if not_cited("\n".join(lines), [paras[i]])))
             if out_of := {x: no_line[x] for x in still if x in no_line}:
