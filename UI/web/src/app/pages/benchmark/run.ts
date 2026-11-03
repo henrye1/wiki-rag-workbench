@@ -218,8 +218,8 @@ export class BenchRun {
 
   readonly judged = ['similarity', 'coverage', 'coverage_standard', 'coverage_std_supp'];
 
-  /** Measures read from what the run stored besides its summary: standard-only similarity (added to a finished run by
-   *  `python -m bench.std_similarity`) and the contradictions found in each answer. */
+  /** Measures read from what the run stored besides its summary: standard-only similarity (the last step of every Full
+   *  run; added to older runs by `python -m bench.std_similarity`) and the contradictions found in each answer. */
   readonly extras = ['std_similarity', 'contradictions', 'no_contradiction'];
   /** Counts per answer: shown without a wiki-minus-RAG interval. */
   readonly counted = ['contradictions', 'no_contradiction'];
@@ -239,7 +239,8 @@ export class BenchRun {
     const no = (reason: string) => ({ ok: false, text: 'not measured', reason });
     if (k === 'std_similarity') {
       const v = this.stdSim(d, pair)?.by_system?.[sys];
-      if (v?.mean == null) return no('standard-only similarity was not run on this run');
+      if (v?.mean == null) return no(d.config?.mode === 'quick' ? 'Quick mode: standard-only similarity runs only in Full mode'
+                                                                : 'standard-only similarity was not run on this run');
       return { ok: true, text: `${v.mean}/10`, reason: `${v.n_topics} topic(s)` };
     }
     const c = sys === 'wiki' && pair !== 'rag' ? d.extras?.pairs?.[pair]?.contradictions?.wiki : d.extras?.contradictions?.[sys];

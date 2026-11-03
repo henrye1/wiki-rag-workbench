@@ -1,4 +1,5 @@
-"""Standard-only similarity: an extra measure, added to a finished run without changing anything in it.
+"""Standard-only similarity: every Full run ends with it (bench.run calls compute); it can also be added to a finished
+run without changing anything else in it, with the command below.
 
 The saved answers of both systems are judged again, by the same judge (model, effort, both A/B orders with the run's own
 blind labels, Message Batches with the normal API for the rest), against only the topic's rubric points tagged
@@ -90,22 +91,26 @@ def _summary(scores: dict, rag: str = "rag") -> dict:
             "gap": gaps.gaps(pseudo, rag=rag)["similarity"]}
 
 
-async def run(run_id: str, conn: psycopg.Connection):
+async def compute(data: dict, use_batch: bool, save, log=print) -> None:
+    """Judge every graded pair's saved answers against the standard points and store the result in
+    data["standard_similarity"], calling save() after each step. A run already judged on the same pairs, without errors,
+    is left as it is; a batch submitted before an interruption is picked up again."""
     s = get_settings()
-    row = conn.execute("select results from bench.runs where id = %s", (run_id,)).fetchone()
-    if not row:
-        sys.exit(f"Run {run_id} not found")
-    data = row["results"]
     prev = data.get("standard_similarity") or {}
     reqs, where = _requests(data)
-    print(f"Run {run_id}: {len(reqs)} pairs to judge ({len({w[0] for w in where.values()})} topics with standard points)", flush=True)
-
-    def store(value: dict):
-        conn.execute("update bench.runs set results = jsonb_set(results, '{standard_similarity}', %s) where id = %s", (Jsonb(value), run_id))
+    if prev.get("status") == "done" and prev.get("n_requests") == len(reqs) and not prev.get("errors"):
+        log("Standard-only similarity: already judged")
+        return
+    log(f"Standard-only similarity: {len(reqs)} pairs to judge ({len({w[0] for w in where.values()})} topics with standard points)")
 
     async def on_submit(batch_id):
-        store({"version": VERSION, "batch": batch_id, "status": "judging"})
-    got = await judge.grade_batch(reqs, prev.get("batch") if prev.get("status") == "judging" else None, on_submit, what="standard-only similarity")
+        data["standard_similarity"] = {"version": VERSION, "batch": batch_id, "status": "judging"}
+        await save()
+    if use_batch and reqs:
+        got = await judge.grade_batch(reqs, prev.get("batch") if prev.get("status") == "judging" else None, on_submit, log,
+                                      what="standard-only similarity")
+    else:
+        got = {cid: RuntimeError("not batched") for cid in reqs}
     sem = asyncio.Semaphore(s.concurrency)
 
     async def again(cid):  # what the batch did not return, judged normally (with the refusal fallback)
@@ -134,7 +139,7 @@ async def run(run_id: str, conn: psycopg.Connection):
     per_pair, scores = scores_of("rag")
     value = {"version": VERSION, "status": "done", "judge_model": s.judge_model, "judge_effort": s.judge_effort,
              "reference": "rubric points tagged standard", "scale": "0-10, as similarity",
-             "orders": "both, with the run's blind labels; each answer's score is the mean of the two",
+             "orders": "both, with the run's blind labels; each answer's score is the mean of the two", "n_requests": len(reqs),
              "topics": {n: {"repetitions": per_pair[n], "scores": scores.get(n)} for n in per_pair},
              "summary": _summary(scores) if scores else None, "errors": errors}
     for rag in systems.pairs(data):
@@ -143,18 +148,33 @@ async def run(run_id: str, conn: psycopg.Connection):
         pp, sc = scores_of(rag)
         value.setdefault("pairs", {})[rag] = {"topics": {n: {"repetitions": pp[n], "scores": sc.get(n)} for n in pp},
                                               "summary": _summary(sc, rag) if sc else None}
-    store(value)
+    data["standard_similarity"] = value
+    await save()
     sm = value["summary"]
     if sm:
-        print(f"  rag  standard-only similarity {sm['by_system']['rag']['mean']}/10\n"
-              f"  wiki standard-only similarity {sm['by_system']['wiki']['mean']}/10\n"
-              f"  gap {sm['gap']['diff']} CI {sm['gap']['ci']} -> {sm['gap']['verdict']}"
-              + (f"\n  errors: {errors}" if errors else ""), flush=True)
+        log(f"  rag  standard-only similarity {sm['by_system']['rag']['mean']}/10\n"
+            f"  wiki standard-only similarity {sm['by_system']['wiki']['mean']}/10\n"
+            f"  gap {sm['gap']['diff']} CI {sm['gap']['ci']} -> {sm['gap']['verdict']}"
+            + (f"\n  errors: {errors}" if errors else ""))
     for rag, p in (value.get("pairs") or {}).items():
         if p["summary"]:
             ps = p["summary"]
-            print(f"  {rag} standard-only similarity {ps['by_system'][rag]['mean']}/10 | wiki in this pair "
-                  f"{ps['by_system']['wiki']['mean']}/10 | gap {ps['gap']['diff']} CI {ps['gap']['ci']} -> {ps['gap']['verdict']}", flush=True)
+            log(f"  {rag} standard-only similarity {ps['by_system'][rag]['mean']}/10 | wiki in this pair "
+                f"{ps['by_system']['wiki']['mean']}/10 | gap {ps['gap']['diff']} CI {ps['gap']['ci']} -> {ps['gap']['verdict']}")
+
+
+async def run(run_id: str, conn: psycopg.Connection):
+    """Add the measure to a stored run (batches unless the judge runs on a Claude subscription, which has none)."""
+    row = conn.execute("select results from bench.runs where id = %s", (run_id,)).fetchone()
+    if not row:
+        sys.exit(f"Run {run_id} not found")
+    data = row["results"]
+    print(f"Run {run_id}:", flush=True)
+
+    async def save():
+        conn.execute("update bench.runs set results = jsonb_set(results, '{standard_similarity}', %s) where id = %s",
+                     (Jsonb(data["standard_similarity"]), run_id))
+    await compute(data, get_settings().judge_backend != "claude-code", save, lambda m: print(m, flush=True))
 
 
 async def main():

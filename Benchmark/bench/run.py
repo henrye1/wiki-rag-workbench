@@ -20,7 +20,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from . import checks, context, gaps, judge, metrics, rubric, systems
+from . import checks, context, gaps, judge, metrics, rubric, std_similarity, systems
 from .config import ROOT, get_settings
 from .data import Topic, load
 
@@ -464,6 +464,10 @@ async def main():
                 await context.run_context(store.data, sem, s.use_batch, store.save, store.log)
             except Exception as e:
                 store.log(f"Faithfulness and context recall failed ({type(e).__name__}: {e}); they show as not measured")
+            try:  # standard-only similarity: the graded pairs judged again against the standard points only
+                await std_similarity.compute(store.data, s.use_batch, store.save, store.log)
+            except Exception as e:
+                store.log(f"Standard-only similarity failed ({type(e).__name__}: {e}); it shows as not measured")
         await metrics.compute(store.data, s.mode)  # graded answers keep their tests; the summary is refreshed
         store.data["errors"] = errors
         aggregate(store.data)

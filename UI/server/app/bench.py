@@ -340,12 +340,17 @@ async def estimate(topics: str = "", runs: int = 2, mode: str = "quick", use_bat
             a, _, b = part.partition("-")
             wanted.update(range(int(a), int(b or a) + 1))
     n = len(wanted & {t["number"] for t in all_topics})
-    rows = await _query("""select id, wiki_slug, rag_collection, results->'topics' as topics from bench.runs
+    rows = await _query("""select id, wiki_slug, rag_collection, results->'topics' as topics,
+                                  results->'standard_similarity' as std_sim from bench.runs
                            where results is not null order by created_at desc limit 20""")
     answers = {n: {"same": [], "other": []} for n in RUN_SYSTEMS}
     context = {n: {"same": [], "other": []} for n in RUN_SYSTEMS}  # tokens the answer's own call read and wrote
-    judge_usage, kp_usage, check_usage = [], [], []
+    judge_usage, kp_usage, check_usage, std_usage = [], [], [], []
     for r in rows:
+        sim = r["std_sim"] or {}  # standard-only similarity: one call per pair and order, every pair
+        for part in [sim, *(sim.get("pairs") or {}).values()]:
+            std_usage += [o["usage"] for t in (part.get("topics") or {}).values() for rep in (t.get("repetitions") or {}).values()
+                          for o in rep.values() if o.get("usage")]
         for t in (r["topics"] or {}).values():
             if t.get("key_points_usage"):
                 kp_usage.append(t["key_points_usage"])
@@ -442,6 +447,18 @@ async def estimate(topics: str = "", runs: int = 2, mode: str = "quick", use_bat
             else:
                 items.append({"item": f"Faithfulness + context recall, {label} answers", "count": n * runs, "unit_usd": None,
                               "total_usd": None, "basis": "no answer with recorded tokens yet"})
+    if mode == "full":  # standard-only similarity: each graded pair judged again, both orders, against the standard points
+        label = "Standard-only similarity, both orders, each RAG column against the wiki (Claude Opus 5.5"
+        if sub:
+            items.append({"item": label + ")", "count": gradings, "unit_usd": 0, "total_usd": 0, "basis": SUBSCRIPTION})
+        elif std_usage and jm:
+            unit = statistics.mean(u["input_tokens"] / 1e6 * jm["input"] + u["output_tokens"] / 1e6 * jm["output"] for u in std_usage)
+            unit *= prices.get("batch_discount", 1) if use_batch else 1
+            items.append({"item": label + (", Message Batches: half price)" if use_batch else ")"), "count": gradings, "unit_usd": unit,
+                          "total_usd": unit * gradings, "basis": f"mean of {len(std_usage)} recorded standard-only similarity call(s)"})
+        else:
+            items.append({"item": label + ")", "count": gradings, "unit_usd": None, "total_usd": None,
+                          "basis": "no standard-only similarity call recorded yet"})
     known = [i["total_usd"] for i in items if i["total_usd"] is not None]
     unknown = [i["item"] for i in items if i["total_usd"] is None]
     return {"topics": n, "runs": runs, "mode": mode, "use_batch": use_batch, "items": items, "judge_backend": "claude-code" if sub else "api",
