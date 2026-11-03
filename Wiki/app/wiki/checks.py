@@ -34,7 +34,18 @@ class Checks:
     page_size_limit: int | None = None  # words: a section page over this is split by the source's headings
     resplit_margin: float = 0.0  # after writing, a page is split again only if this share (0.1 = 10%) over the limit
     subtopic_minimum: int | None = None  # words: a smaller group is joined to its neighbour under the same parent
+    join_related: bool = False  # a small group joins its most related group under the same parent, not the one before
     slug_words: int | None = None  # words of an unnumbered heading used in a subtopic slug
+    slug_main: bool = False  # a page holding several headings takes its slug from the one holding most of its words
+    guidance_kinds: list[str] = field(default_factory=list)  # the schema's kind names filed with their requirement
+    summary_heads: int | None = None  # a subtopic summary: the first requirement claim under this many largest headings
+    summary_lead: str = ""  # a subtopic summary opens with this, then the source headings its title does not name
+    summary_sep: str = ""  # between those headings
+    summary_max: int | None = None  # characters: a subtopic summary is no longer, headings first
+    page_summary: bool = False  # every other page's summary: what it holds (terms, listed lines, sections, headings)
+    page_summary_lead: str = ""  # it opens with this
+    page_summary_sep: str = ""  # between those items
+    page_summary_max: int | None = None  # characters: no longer, items first
     unlabelled_forms: dict[str, str] = field(default_factory=dict)  # kind of text without a paragraph label -> its citation form
     no_claim_pages: list[str] = field(default_factory=list)  # pages that hold no claims: slugs, or a kind of page
     no_claim_index: bool = False  # the list names a split section's index page among them
@@ -62,6 +73,8 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "stub_forms": "stub forms", "skipped_headings": "skipped headings", "document_names": "document names", "control_headers": "document control headers",
     "empty_text": "empty section text", "absence": "absence phrases", "papers_apart": "papers kept apart",
     "overview_empty": "overview lines", "section_slug": "section slug",
+    "guidance_kinds": "guidance filed with its requirement", "summary_heads": "subtopic summary",
+    "join_related": "subtopic join", "slug_main": "joined subtopic slug", "page_summary": "page summary",
 }
 
 
@@ -131,11 +144,27 @@ def load(schema_md: str) -> Checks | None:
         elif attr == "no_claim_pages":  # up to the first full stop: page slugs, and kinds of page such as index pages
             c.no_claim_pages = [x.strip() for x in value.split(".")[0].split(",") if x.strip()]
             c.no_claim_index = any(re.search(r"\bindex\b", x, re.I) for x in c.no_claim_pages)
-        elif attr in ("max_takeaways", "examples_section", "page_size_limit", "subtopic_minimum", "slug_words"):
+        elif attr in ("join_related", "slug_main"):  # a setting: on only with the schema's value for it
+            setattr(c, attr, value.strip().rstrip(".").casefold() == {"join_related": "most related", "slug_main": "largest heading"}[attr])
+        elif attr == "guidance_kinds":  # "a, b. What is done with them.": the kind names up to the first full stop
+            c.guidance_kinds = [x.strip().casefold() for x in value.split(".")[0].split(",") if x.strip()]
+        elif attr in ("max_takeaways", "examples_section", "page_size_limit", "subtopic_minimum", "slug_words", "summary_heads"):
             n = re.search(r"\d+", value)
             setattr(c, attr, int(n.group(0)) if n else None)
             if attr == "page_size_limit" and (m := re.search(r"(\d+(?:\.\d+)?)\s*%\s+over", value)):
                 c.resplit_margin = float(m.group(1)) / 100
+            if attr == "summary_heads":  # "<lead>" ... headings ... separated by "<sep>"; at most <n> characters
+                quoted = QUOTED.findall(value)
+                c.summary_lead, c.summary_sep = (quoted + ["", ""])[:2] if len(quoted) >= 2 else ("", "")
+                n = re.search(r"\bat most (\d+) characters\b", value, re.I)
+                c.summary_max = int(n.group(1)) if n else None
+        elif attr == "page_summary":  # "<lead>" ... items ... separated by "<sep>"; at most <n> characters
+            quoted = QUOTED.findall(value)
+            c.page_summary_lead, c.page_summary_sep = (quoted + ["", ""])[:2] if len(quoted) >= 2 else ("", "")
+            n = re.search(r"\bat most ([\d,]+) characters\b", value, re.I)
+            c.page_summary_max = int(n.group(1).replace(",", "")) if n else None
+            c.page_summary = bool(c.page_summary_lead)
+
         else:
             setattr(c, attr, QUOTED.findall(value))
     return c
@@ -302,6 +331,131 @@ def take_claims(text: str, movable=lambda sentence: True, names: set[str] = froz
     return "\n\n".join(blocks), taken
 
 
+def listing_lines(content: str) -> list[str] | None:
+    """A page whose own text (headings aside) is only lines that each point to another page, with words of their own
+    before the link: those lines, in page order. None for any other page."""
+    lines = [l.strip() for l in (content or "").splitlines() if l.strip() and not re.match(r"#{1,6} ", l.strip())]
+    page_links = lambda x: [m for m in store.LINK_RE.finditer(x) if not m.group(1).startswith("source-")]
+    points = lambda l: page_links(l) and re.search(r"[A-Za-z]", BULLET.sub("", l[:page_links(l)[0].start()]))
+    return lines if lines and all(points(l) for l in lines) else None
+
+
+def subtopic_summary(content: str, c: Checks | None, heads: list[str] | None = None,
+                     titles: dict[str, str] | None = None) -> str | None:
+    """The schema's subtopic summary: the first requirement claim (one that opens with none of the schema's openers)
+    under each of the page's largest headings by words, in page order, on one line; a page with one heading gives its
+    first claims, requirement claims first. heads: the source headings its paragraphs sit under that its title does not
+    name, in document order; where the schema gives a lead for them, the summary opens with the lead and those
+    headings, and the whole summary is kept to the schema's length, headings first. None when the schema sets no such rule or the page
+    holds neither claims nor such headings. A page of lines that each point to another page holds no claims of its own:
+    None (the page summary lists them). titles: page titles, naming a link that shows no label."""
+    if not c or not c.summary_heads or listing_lines(content):
+        return None
+    claims = _summary_claims(content, c, titles or {})
+    if not c.summary_lead:
+        return claims
+    cap = c.summary_max or 10**9
+    fit = []
+    for h in heads:  # whole headings, while they fit
+        if len(c.summary_lead + c.summary_sep.join(fit + [h])) + 1 > cap:
+            break
+        fit.append(h)
+    out = c.summary_lead + c.summary_sep.join(fit) + "." if fit else ""
+    for x in SENTENCE_END.split(claims or ""):  # then whole claims, while they fit
+        if not x.strip():
+            continue
+        if len(out) + 1 + len(x.strip()) > cap:
+            break
+        out = f"{out} {x.strip()}".strip()
+    return out or None
+
+
+def summary_cut(text: str, c: Checks | None) -> str:
+    """A subtopic summary kept to the schema's length (where it sets one): cut at a whole word, marked as cut."""
+    if not c or not c.summary_max or len(text or "") <= c.summary_max:
+        return text
+    return text[:c.summary_max].rsplit(" ", 1)[0].rstrip(" ,;:") + "…"
+
+
+def defined_terms(content: str, c: Checks | None) -> list[str]:
+    """The terms a page cites in the schema's defined-term citation form, in page order."""
+    prefix = c.defined_term_form.split("<", 1)[0] if c and "<" in c.defined_term_form else ""
+    if not prefix:
+        return []
+    return list(dict.fromkeys(lab[len(prefix):].strip() for m in store.LINK_RE.finditer(content or "")
+                              if m.group(1).startswith("source-") and (lab := (m.group(2) or "").strip()).startswith(prefix)))
+
+
+def page_summary(content: str, c: Checks | None, *, terms: bool = False, source: bool = False,
+                 titles: dict[str, str] | None = None, sections: frozenset[str] = frozenset(),
+                 skip_heads: frozenset[str] = frozenset()) -> str | None:
+    """The schema's page summary, for a page no other summary rule covers: its lead, then what the page holds, in page
+    order: on the page that defines the wiki's terms (terms), each term it defines; on a source page (source), the
+    sections it informs (the section pages it links, by their titles; sections: their slugs); on a page whose own text is only lines that each point to another page,
+    each line's own words before its link (up to its last colon); otherwise its own headings (skip_heads aside). Then
+    whole requirement claims while they fit, to the schema's length. None when the schema sets no such rule or the
+    page holds none of these: an empty page keeps its line."""
+    if not c or not c.page_summary:
+        return None
+    titles = titles or {}
+    page_links = lambda x: [m for m in store.LINK_RE.finditer(x) if not m.group(1).startswith("source-")]
+    name = lambda m: (m.group(2) or titles.get(m.group(1), m.group(1))).strip()
+    lines = [l.strip() for l in (content or "").splitlines() if l.strip()]
+    heads = [l for l in lines if re.match(r"#{1,6} ", l)]
+    body = [l for l in lines if l not in heads]
+    before = lambda l: BULLET.sub("", l[:page_links(l)[0].start()])  # a listed line's own words, before its link
+    if terms:
+        items = defined_terms(content, c)
+    elif source:
+        items = [titles.get(m.group(1), m.group(1)) for l in body for m in page_links(l) if m.group(1) in sections]
+    elif listed := listing_lines(content):
+        items = [" ".join(before(l).rsplit(":", 1)[0].split()).strip(" ,;:") for l in listed]
+    else:
+        items = [" ".join(store.LINK_RE.sub(name, h.split(" ", 1)[1]).split()) for h in heads if h not in skip_heads]
+    items = [x for x in dict.fromkeys(items) if x]
+    cap = c.page_summary_max or 10**9
+    fit = []
+    for x in items:  # whole items, while they fit
+        if len(c.page_summary_lead + c.page_summary_sep.join(fit + [x])) + 1 > cap:
+            break
+        fit.append(x)
+    out = c.page_summary_lead + c.page_summary_sep.join(fit) + "." if fit else ""
+    plain = lambda x: " ".join(re.sub(r"\s+([.,;:])", r"\1", store.LINK_RE.sub(
+        lambda m: "" if m.group(1).startswith("source-") else name(m), LIST_LABEL.sub("", x))).split())
+    openers = list(_opener_res(c).values())
+    claims = [plain(x) for l in body for x in SENTENCE_END.split(BULLET.sub("", l)) if _is_claim(x)]
+    for x in (x for x in claims if not any(p.match(x) for p in openers)):  # then whole requirement claims, while they fit
+        if len(out) + 1 + len(x) > cap:
+            break
+        out = f"{out} {x}".strip()
+    return out or None
+
+
+def _summary_claims(content: str, c: Checks, titles: dict[str, str] | None = None) -> str | None:
+    """The claims part of the schema's subtopic summary (see subtopic_summary)."""
+    titles = titles or {}
+    plain = lambda x: " ".join(re.sub(r"\s+([.,;:])", r"\1", store.LINK_RE.sub(
+        lambda m: "" if m.group(1).startswith("source-") else (m.group(2) or titles.get(m.group(1), m.group(1))),
+        LIST_LABEL.sub("", x))).split())
+    openers = list(_opener_res(c).values())
+    is_req = lambda x: not any(p.match(plain(x)) for p in openers)
+    parts = []  # (words, claims) under each heading, in page order
+    for block in re.split(r"(?m)^(?=#{1,6} )", content):
+        claims = [x.strip() for line in block.split("\n") if not re.match(r"#{1,6} ", line)
+                  for x in SENTENCE_END.split(BULLET.sub("", line)) if _is_claim(x)]
+        if claims:
+            parts.append((len(block.split()), claims))
+    if not parts:
+        return None
+    if len(parts) == 1:
+        claims = parts[0][1]
+        picked = ([x for x in claims if is_req(x)] + [x for x in claims if not is_req(x)])[: c.summary_heads]
+    else:
+        top = sorted(sorted(range(len(parts)), key=lambda k: -parts[k][0])[: c.summary_heads])
+        picked = [next((x for x in parts[k][1] if is_req(x)), parts[k][1][0]) for k in top]
+    return " ".join(plain(x) for x in picked)
+
+
 def holds_no_claims(c: Checks | None, slug: str, is_index: bool = False) -> bool:
     """Whether the schema says this page holds no claims: it is named, or it is a split section's index page and the
     schema names those."""
@@ -351,6 +505,14 @@ def _cited_sentences(content: str) -> list[str]:
 
 def _same(x: str) -> str:
     return " ".join(re.sub(r"[^\w\[\]|.]+", " ", x.casefold()).split())
+
+
+def heading_failures(content: str) -> list[str]:
+    """A heading line that holds a source citation: a heading and the text under it run together."""
+    return [f'The heading line "{" ".join(l.split()[:12])} ..." holds a citation: it is a heading and its text run '
+            "together. Put the heading on its own line, and its text on the line below."
+            for l in (content or "").splitlines()
+            if re.match(r"#{1,6} ", l) and any(m.group(1).startswith("source-") for m in store.LINK_RE.finditer(l))]
 
 
 def repeat_failures(content: str) -> list[str]:

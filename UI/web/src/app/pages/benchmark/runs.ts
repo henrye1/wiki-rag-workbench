@@ -20,7 +20,8 @@ import { poller } from '../../shared/poll';
   template: `
     <div class="page">
       <h1>Benchmark</h1>
-      <p class="muted">RAG and Wiki answer each topic of the IFRS 9 query set; Claude grades both blind against a human-written IFRS 9 assessment
+      <p class="muted">The Wiki and two RAG columns answer each topic of the IFRS 9 query set: RAG (per topic) searches once for the whole topic,
+        RAG (per question) once per question. Claude grades the Wiki against each RAG column blind, against a human-written IFRS 9 assessment
         (key-point checklist, 0–10 similarity, winner).</p>
       <div class="card">
         <h3>New run</h3>
@@ -137,7 +138,7 @@ import { poller } from '../../shared/poll';
         @else { <span class="muted small">Tick two runs to compare</span> }
       </div>
       <table class="simple">
-        <thead><tr><th></th><th>Run</th><th>Compared</th><th>Sources</th><th>Saved answers</th><th>Topics × runs</th><th>Mode</th><th>Rubric</th><th>Judge</th><th>RAG sim / cov</th><th>Wiki sim / cov</th><th>Wins (rag / wiki / tie)</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th></th><th>Run</th><th>Compared</th><th>Sources</th><th>Saved answers</th><th>Topics × runs</th><th>Mode</th><th>Rubric</th><th>Judge</th><th>RAG (per topic) sim / cov</th><th>RAG (per question) sim / cov</th><th>Wiki sim / cov</th><th>Wins (rag per topic / wiki / tie)</th><th>Status</th><th></th></tr></thead>
         <tbody>
           @for (r of list(); track r.id) {
             <tr>
@@ -151,10 +152,11 @@ import { poller } from '../../shared/poll';
               <td class="small" [title]="r.rubric?.title ?? ''">{{ r.rubric?.label ?? '—' }}@if (r.rubric?.topics) {<span class="muted"> · {{ r.rubric.approved }}/{{ r.rubric.topics }} approved</span>}</td>
               <td class="small" [title]="r.judge?.title ?? ''">{{ r.judge?.label ?? '—' }}</td>
               @if (r.summary?.by_system; as b) {
-                <td><b>{{ b.rag.similarity.mean }}</b> / {{ b.rag.coverage.mean }}%</td>
-                <td><b>{{ b.wiki.similarity.mean }}</b> / {{ b.wiki.coverage.mean }}%</td>
+                <td><b>{{ b.rag.similarity.mean }}</b> / {{ b.rag.coverage.mean }}%<div class="more">{{ more(r, 'rag') }}</div></td>
+                <td>@if (b.rag_q) { <b>{{ b.rag_q.similarity.mean }}</b> / {{ b.rag_q.coverage.mean }}%<div class="more">{{ more(r, 'rag_q') }}</div> } @else { <span class="muted">—</span> }</td>
+                <td><b>{{ b.wiki.similarity.mean }}</b> / {{ b.wiki.coverage.mean }}%<div class="more">{{ more(r, 'wiki') }}</div></td>
                 <td>{{ r.summary.wins_by_run.rag }} / {{ r.summary.wins_by_run.wiki }} / {{ r.summary.wins_by_run.tie }}</td>
-              } @else { <td colspan="3" class="muted">—</td> }
+              } @else { <td colspan="4" class="muted">—</td> }
               <td><span class="pill" [class.ok]="r.progress.status === 'finished'" [class.warn]="r.progress.status === 'running'"
                         [class.bad]="r.progress.status === 'failed' || r.progress.status === 'interrupted'">{{ r.progress.status }}</span></td>
               <td class="actions">
@@ -169,6 +171,8 @@ import { poller } from '../../shared/poll';
           } @empty { <tr><td colspan="10" class="muted empty">No runs yet.</td></tr> }
         </tbody>
       </table>
+      <p class="muted small">Under each system: standard-only similarity (for a RAG column, with the wiki's gap in that pair and its 95% interval) ·
+        contradictions per answer · answers with no contradiction. "not measured" where a run does not have the figure.</p>
     </div>
   `,
   styles: `
@@ -177,6 +181,7 @@ import { poller } from '../../shared/poll';
     .est { margin: 8px 0; } .est td.n { text-align: right; white-space: nowrap; }
     .runs { width: 90px; } .rubric { margin-top: 16px; } .mono { font-family: monospace; } .sources { display: flex; align-items: center; gap: 8px; } .wiki { width: 240px; } .actions { white-space: nowrap; }
     .files { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; } .small { font-size: 12px; } .head { margin-top: 20px; }
+    .more { font-size: 11px; color: var(--mat-sys-on-surface-variant); white-space: nowrap; margin-top: 2px; }
     .progress { margin-top: 12px; } .log { max-height: 160px; overflow: auto; white-space: pre-wrap; margin: 8px 0 0; }
   `,
 })
@@ -357,6 +362,19 @@ export class BenchRuns {
     setTimeout(() => this.poll.start(), 1500);
   }
 
+  /** A system's second line: standard-only similarity (a RAG column's with the wiki-minus-RAG gap and interval of its
+   *  pair; the wiki's from its pair with RAG (per topic)) and its contradictions; "not measured" where a run lacks one. */
+  more(r: any, sys: string) {
+    const x = r.extras ?? {};
+    const sim = sys === 'rag_q' ? x.pairs?.rag_q?.std_similarity : x.std_similarity;
+    const v = sim?.by_system?.[sys]?.mean;
+    const g = sim?.gap;
+    const f = (n: number) => (n > 0 ? '+' : n < 0 ? '−' : '') + Math.abs(n).toFixed(2);
+    const std = v == null ? (x.std_similarity_failed ? `std sim failed: ${x.std_similarity_failed}` : 'std sim not measured')
+      : `std sim ${v}` + (sys !== 'wiki' && g?.diff != null ? ` (wiki ${f(g.diff)}${g.ci ? `, ${f(g.ci[0])} to ${f(g.ci[1])}` : ''})` : '');
+    const c = x.contradictions?.[sys];
+    return `${std} · ` + (c ? `contra ${c.mean.toFixed(2)} · none ${c.none}/${c.n}` : 'contradictions not measured');
+  }
   sourcesLabel(s: string | null) { return s === 'standard' ? 'Standard only' : s === 'all' ? 'All' : '—'; }
 
   async rebuild(r: any) {

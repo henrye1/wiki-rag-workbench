@@ -82,7 +82,9 @@ def _where_it_rests(text: str, slug: str, label: str, ctx: dict) -> str:
 
 def cite_failures(text: str, ctx: dict, chk: checks.Checks | None) -> list[str]:
     """Citations the citation check would flag, and citations that cite something other than a clause. A citation of
-    a location its source lacks names the location the sentence rests on, where one is clear."""
+    a location its source lacks names the location the sentence rests on, where one is clear. A citation that is only
+    a document's name is not sent back: it is put back as plain text before the page is saved (citecheck.names_unlinked)."""
+    text = citecheck.names_unlinked(text, ctx.get("doc_names"))[0]
     _, _, flagged = citecheck.check(text, ctx["matchers"], ctx.get("doc_names"))
     out = [f'The citation [[{src}|{label}]] does not match a paragraph of that source ({reason}); cite the paragraph '
            "it states, by its own label." for (src, label, reason) in flagged]

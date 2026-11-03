@@ -20,7 +20,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from . import checks, context, gaps, judge, metrics, rubric, systems
+from . import checks, context, gaps, judge, metrics, rubric, std_similarity, systems
 from .config import ROOT, get_settings
 from .data import Topic, load
 
@@ -133,15 +133,17 @@ async def answer_topic(t: Topic, runs: int, store: Store, http: httpx.AsyncClien
             if run.get("judgement") or run.get("answers"):
                 continue
             # answers are saved before grading, so a run whose grading failed is graded later without asking again
-            answers = dict(zip(systems.SYSTEMS, await asyncio.gather(*(systems.ask(http, sys_, t.question_text()) for sys_ in systems.SYSTEMS))))
+            names = systems.compared(store.data)
+            answers = dict(zip(names, await asyncio.gather(*(systems.ask(http, sys_, t.question_text()) for sys_ in names))))
             rec["runs"][str(r)] = {"answers": answers, "judgement": False}
             await store.save()
 
 
-def _labels(t: Topic, r: int, order: int = 1) -> dict:
-    """Blind A/B labels: order 1 is the seeded shuffle; order 2 swaps it (each pair is graded both ways)."""
-    seq = list(systems.SYSTEMS)
-    random.Random(f"{get_settings().seed}-{t.number}-{r}").shuffle(seq)  # blind A/B assignment
+def _labels(t: Topic, r: int, order: int = 1, rag: str = "rag") -> dict:
+    """Blind A/B labels of one pair (a RAG system and the wiki): order 1 is the seeded shuffle; order 2 swaps it (each
+    pair is graded both ways). The rag pair keeps the seed it always had; each other pair has its own."""
+    seq = [rag, "wiki"]
+    random.Random(f"{get_settings().seed}-{t.number}-{r}" + ("" if rag == "rag" else f"-{rag}")).shuffle(seq)  # blind A/B assignment
     if order == 2:
         seq.reverse()
     return {"A": seq[0], "B": seq[1]}
@@ -167,42 +169,69 @@ def _avg(xs):
     return round(sum(xs) / len(xs), 2) if xs else None
 
 
-def _record(store: Store, t: Topic, r: int):
-    """Combine the two orders of a pair: scores averaged; a win only when both orders pick the same answer, else a tie."""
-    rec = store.data["topics"][str(t.number)]
-    run = rec["runs"][str(r)]
-    answers, points, by_order = run["answers"], rec["key_points"], run["orders"]
-    o = [by_order[str(k)] for k in ORDERS]
-    per_system = {}
-    for name in systems.SYSTEMS:
-        weights = {p["id"]: sum(WEIGHT[x["systems"][name]["grades"].get(p["id"], "missing")] for x in o) / len(o) for p in points}
-        per_system[name] = {
-            **answers[name],
-            "grades": o[0]["systems"][name]["grades"],  # order 1, as in runs before both orders
-            "grades_by_order": [x["systems"][name]["grades"] for x in o],
-            "point_weight": weights,
-            "similarity": _avg([x["systems"][name]["similarity"] for x in o]),
-            "coverage": _avg([coverage(points, x["systems"][name]["grades"]) for x in o]),
-            "coverage_standard": _avg([coverage(points, x["systems"][name]["grades"], "standard") for x in o]),
-            # Standard + Supporting: only for runs that read all sources (Parts A, B and C)
-            "coverage_std_supp": _avg([coverage(points, x["systems"][name]["grades"], ("standard", "supporting")) for x in o])
-                                 if (store.data.get("config") or {}).get("sources") == "all" else None,
-            "contradictions": list(dict.fromkeys(c for x in o for c in x["systems"][name]["contradictions"])),
-        }
+def _scores(points: list[dict], o: list[dict], name: str, all_sources: bool) -> dict:
+    """One system's scores in one pair, from its gradings in both orders."""
+    return {
+        "grades": o[0]["systems"][name]["grades"],  # order 1, as in runs before both orders
+        "grades_by_order": [x["systems"][name]["grades"] for x in o],
+        "point_weight": {p["id"]: sum(WEIGHT[x["systems"][name]["grades"].get(p["id"], "missing")] for x in o) / len(o) for p in points},
+        "similarity": _avg([x["systems"][name]["similarity"] for x in o]),
+        "coverage": _avg([coverage(points, x["systems"][name]["grades"]) for x in o]),
+        "coverage_standard": _avg([coverage(points, x["systems"][name]["grades"], "standard") for x in o]),
+        # Standard + Supporting: only for runs that read all sources (Parts A, B and C)
+        "coverage_std_supp": _avg([coverage(points, x["systems"][name]["grades"], ("standard", "supporting")) for x in o])
+                             if all_sources else None,
+        "contradictions": list(dict.fromkeys(c for x in o for c in x["systems"][name]["contradictions"])),
+    }
+
+
+def _pair(o: list[dict]) -> dict:
+    """What a pair's two orders decided: a win only when both orders pick the same answer, else a tie."""
     w = {x["winner"] for x in o}
-    winner = w.pop() if len(w) == 1 else "tie"
-    rec["runs"][str(r)] = {
-        "blind_labels": o[0]["blind_labels"], "systems": per_system, "winner": winner,
+    return {
+        "blind_labels": o[0]["blind_labels"], "winner": w.pop() if len(w) == 1 else "tie",
         "winners_by_order": [x["winner"] for x in o],
         "rationale": "\n\n".join(f"Order {k} ({x['blind_labels']['A']} first): {x['rationale']}" for k, x in zip(ORDERS, o)),
-        "point_notes": o[0]["point_notes"], "orders": by_order, "orders_graded": len(o),
-        "judge_model": o[0]["judge_model"],
+        "point_notes": o[0]["point_notes"], "orders_graded": len(o), "judge_model": o[0]["judge_model"],
         "judge_usage": {k: sum(x["judge_usage"][k] for x in o) for k in ("input_tokens", "output_tokens")},
-        "judge_batch": all(x["batch"] for x in o), "judge_backend": o[0].get("backend", "api"), "judgement": True,
+        "judge_batch": all(x["batch"] for x in o), "judge_backend": o[0].get("backend", "api"),
     }
+
+
+def _pair_orders(run: dict, rag: str) -> dict:
+    """A pair's gradings by order: the rag pair's are the run's own `orders`; another pair's are kept under `pair_orders`
+    until the run is recorded, then under `pairs`."""
+    if rag == "rag":
+        return run.setdefault("orders", {})
+    return ((run.get("pairs") or {}).get(rag) or {}).get("orders") or run.setdefault("pair_orders", {}).setdefault(rag, {})
+
+
+def _record(store: Store, t: Topic, r: int):
+    """Combine the two orders of each pair: scores averaged; a win only when both orders pick the same answer, else a tie.
+    The wiki's own scores are from its pair with rag (as in every run before rag_q); its scores in each other pair are
+    kept with that pair, beside that pair's RAG system."""
+    rec = store.data["topics"][str(t.number)]
+    run = rec["runs"][str(r)]
+    answers, points = run["answers"], rec["key_points"]
+    all_sources = (store.data.get("config") or {}).get("sources") == "all"
+    by_pair = {rag: _pair_orders(run, rag) for rag in systems.pairs(store.data)}
+    o = [by_pair["rag"][str(k)] for k in ORDERS]
+    per_system = {name: {**answers[name], **_scores(points, o, name, all_sources)} for name in ("rag", "wiki")}
+    pairs = {}
+    for rag in systems.pairs(store.data):
+        if rag == "rag":
+            continue
+        po = [by_pair[rag][str(k)] for k in ORDERS]
+        per_system[rag] = {**answers[rag], **_scores(points, po, rag, all_sources)}
+        pairs[rag] = {**_pair(po), "orders": by_pair[rag], "wiki": _scores(points, po, "wiki", all_sources)}
+    main = _pair(o)
+    rec["runs"][str(r)] = {**main, "systems": per_system, "orders": by_pair["rag"], "judgement": True,
+                           **({"pairs": pairs} if pairs else {})}
     store.log(f"  topic {t.number:>2} run {r}: rag {per_system['rag']['similarity']}/10 ({per_system['rag']['coverage']}%) "
-              f"| wiki {per_system['wiki']['similarity']}/10 ({per_system['wiki']['coverage']}%) -> {winner}"
-              + ("" if len(set(x["winner"] for x in o)) == 1 else f" (orders disagreed: {', '.join(x['winner'] for x in o)})"))
+              f"| wiki {per_system['wiki']['similarity']}/10 ({per_system['wiki']['coverage']}%) -> {main['winner']}"
+              + ("" if len(set(main["winners_by_order"])) == 1 else f" (orders disagreed: {', '.join(main['winners_by_order'])})")
+              + "".join(f" | {rag} {per_system[rag]['similarity']}/10 ({per_system[rag]['coverage']}%) vs wiki "
+                        f"{p['wiki']['similarity']}/10 -> {p['winner']}" for rag, p in pairs.items()))
 
 
 async def grade_all(topics: list[Topic], store: Store, sem: asyncio.Semaphore) -> dict[int, str]:
@@ -214,22 +243,23 @@ async def grade_all(topics: list[Topic], store: Store, sem: asyncio.Semaphore) -
                if run.get("answers") and not run.get("judgement")]
     if not pending:
         return {}
-    cid = lambda t, r, k: f"t{t.number}-r{r}-o{k}"
-    def args(t, r, k):
-        rec, label = store.data["topics"][str(t.number)], _labels(t, r, k)
+    rags = systems.pairs(store.data)
+    cid = lambda t, r, k, p: f"t{t.number}-r{r}-o{k}" + ("" if p == "rag" else f"-{p}")  # the rag pair keeps its old ids
+    def args(t, r, k, p):
+        rec, label = store.data["topics"][str(t.number)], _labels(t, r, k, p)
         answers = rec["runs"][str(r)]["answers"]
         return rec["key_points"], answers[label["A"]]["answer"], answers[label["B"]]["answer"]
-    def done(t, r, k):
-        return str(k) in (store.data["topics"][str(t.number)]["runs"][str(r)].get("orders") or {})
-    def keep(t, r, k, g):
+    def done(t, r, k, p):
+        return str(k) in _pair_orders(store.data["topics"][str(t.number)]["runs"][str(r)], p)
+    def keep(t, r, k, p, g):
         run = store.data["topics"][str(t.number)]["runs"][str(r)]
-        run.setdefault("orders", {})[str(k)] = _per_order(store.data["topics"][str(t.number)]["key_points"], _labels(t, r, k), g)
-        if all(str(o) in run["orders"] for o in ORDERS):
+        _pair_orders(run, p)[str(k)] = _per_order(store.data["topics"][str(t.number)]["key_points"], _labels(t, r, k, p), g)
+        if all(str(o) in _pair_orders(run, q) for q in rags for o in ORDERS):
             _record(store, t, r)
-    todo = [(t, r, k) for t, r in pending for k in ORDERS if not done(t, r, k)]
+    todo = [(t, r, k, p) for t, r in pending for p in rags for k in ORDERS if not done(t, r, k, p)]
     if s.use_batch and todo:
         prev = store.data.get("grading_batch") or {}
-        reqs = {cid(t, r, k): judge.grade_params(t, *args(t, r, k)) for t, r, k in todo}
+        reqs = {cid(*x): judge.grade_params(x[0], *args(*x)) for x in todo}
         reuse = prev.get("id") if set(prev.get("custom_ids", [])) == set(reqs) else None
 
         async def on_submit(batch_id):
@@ -238,13 +268,14 @@ async def grade_all(topics: list[Topic], store: Store, sem: asyncio.Semaphore) -
         try:
             got = await judge.grade_batch(reqs, reuse, on_submit, store.log)
             left = []
-            for t, r, k in todo:
-                res = got[cid(t, r, k)]
+            for x in todo:
+                res = got[cid(*x)]
                 if isinstance(res, Exception):
-                    left.append((t, r, k))
-                    store.log(f"  topic {t.number} run {r} order {k}: batch grading failed ({type(res).__name__}: {res}); grading normally")
+                    left.append(x)
+                    store.log(f"  topic {x[0].number} run {x[1]} order {x[2]} ({x[3]} pair): batch grading failed "
+                              f"({type(res).__name__}: {res}); grading normally")
                 else:
-                    keep(t, r, k, res)
+                    keep(*x, res)
             todo = left
             store.data.pop("grading_batch", None)
             await store.save()
@@ -252,53 +283,72 @@ async def grade_all(topics: list[Topic], store: Store, sem: asyncio.Semaphore) -
             store.log(f"  grading batch failed ({type(e).__name__}: {e}); grading normally")
     errors: dict[int, str] = {}
 
-    async def one(t, r, k):
+    async def one(t, r, k, p):
         async with sem:
             try:
-                keep(t, r, k, await judge.grade(t, *args(t, r, k)))
+                keep(t, r, k, p, await judge.grade(t, *args(t, r, k, p)))
                 await store.save()
             except Exception as e:
                 errors[t.number] = f"{type(e).__name__}: {e}"
-    await asyncio.gather(*(one(t, r, k) for t, r, k in todo))
+    await asyncio.gather(*(one(*x) for x in todo))
     return errors
 
 
+JUDGED = ("similarity", "coverage", "coverage_standard", "coverage_std_supp")
+
+
 def aggregate(data: dict):
-    totals = {name: {"similarity": [], "coverage": [], "coverage_standard": [], "coverage_std_supp": []} for name in systems.SYSTEMS}
+    names = systems.compared(data)
+    others = [rag for rag in systems.pairs(data) if rag != "rag"]  # pairs beyond rag vs wiki
+    totals = {name: {k: [] for k in JUDGED} for name in names}
+    wiki_vs = {rag: {k: [] for k in JUDGED} for rag in others}  # the wiki's scores in each other pair
     wins = {"rag": 0, "wiki": 0, "tie": 0}
+    wins_vs = {rag: {rag: 0, "wiki": 0, "tie": 0} for rag in others}
     sections: dict[str, dict] = {}
     for rec in data["topics"].values():
         runs = [r for r in rec["runs"].values() if r.get("judgement")]
         if not runs:
             continue
         agg = {}
-        for name in systems.SYSTEMS:
-            agg[name] = {k: _mean_sd([r["systems"][name].get(k) for r in runs]) for k in ("similarity", "coverage", "coverage_standard", "coverage_std_supp")}
+        for name in names:
+            agg[name] = {k: _mean_sd([r["systems"][name].get(k) for r in runs]) for k in JUDGED}
             for k in totals[name]:
                 if agg[name][k]["mean"] is not None:
                     totals[name][k].append(agg[name][k]["mean"])
-            sec = sections.setdefault(rec["section"], {n: [] for n in systems.SYSTEMS})
+            sec = sections.setdefault(rec["section"], {n: [] for n in names})
             sec[name].append(agg[name]["similarity"]["mean"])
         topic_wins = {w: sum(r["winner"] == w for r in runs) for w in wins}
         for w, c in topic_wins.items():
             wins[w] += c
         agg["wins"] = topic_wins
+        for rag in others:
+            vs = {k: _mean_sd([r["pairs"][rag]["wiki"].get(k) for r in runs]) for k in JUDGED}
+            for k in JUDGED:
+                if vs[k]["mean"] is not None:
+                    wiki_vs[rag][k].append(vs[k]["mean"])
+            pw = {w: sum(r["pairs"][rag]["winner"] == w for r in runs) for w in wins_vs[rag]}
+            for w, c in pw.items():
+                wins_vs[rag][w] += c
+            agg.setdefault("pairs", {})[rag] = {"wiki": vs, "wins": pw}
         # Per key point: how often each system covered it fully across runs
         agg["key_point_hit_rate"] = {
             p["id"]: {name: round(sum(r["systems"][name]["point_weight"][p["id"]] if "point_weight" in r["systems"][name]
                                       else WEIGHT[r["systems"][name]["grades"].get(p["id"], "missing")] for r in runs) / len(runs), 2)
-                      for name in systems.SYSTEMS}
+                      for name in names}
             for p in rec["key_points"]
         }
         rec["aggregate"] = agg
     data["summary"] = {
         "topics_scored": len(totals["rag"]["similarity"]),
-        "by_system": {name: {k: _mean_sd(v) for k, v in totals[name].items()} for name in systems.SYSTEMS},
+        "by_system": {name: {k: _mean_sd(v) for k, v in totals[name].items()} for name in names},
         "wins_by_run": wins,
         "by_section_similarity": {sec: {n: _mean_sd(v)["mean"] for n, v in d.items()} for sec, d in sections.items()},
         # every wiki-minus-RAG gap with its 95% confidence interval over topics; crossing zero = no clear difference
         "gaps": gaps.gaps(data, get_settings().seed),
     }
+    if others:  # each other pair: the wiki's scores in it, its wins, and its wiki-minus-RAG gaps
+        data["summary"]["pairs"] = {rag: {"wiki": {k: _mean_sd(v) for k, v in wiki_vs[rag].items()}, "wins_by_run": wins_vs[rag],
+                                          "gaps": gaps.gaps(data, get_settings().seed, rag)} for rag in others}
 
 
 def _new_run(conn: psycopg.Connection, topics: str, runs: int) -> str:
@@ -376,9 +426,14 @@ async def main():
                         "answer_checks": {"model": s.checks_model, "version": checks.VERSION},
                         "context_checks": {"model": s.context_model, "version": context.VERSION} if s.mode == "full" else None, "runs": runs, "seed": s.seed,
                         "topics_selected": [t.number for t in topics], "expected_judgements": len(topics) * runs,
-                        "question_format": "topic title + Q1..Qn, sent identically to RAG /collections/{c}/query and Wiki /wikis/{w}/query",
+                        "question_format": "topic title + Q1..Qn, sent identically to RAG /collections/{c}/query (both RAG columns) and Wiki /wikis/{w}/query",
+                        "systems_compared": list(systems.SYSTEMS),
+                        "system_labels": {n: systems.LABEL[n] for n in systems.SYSTEMS},
+                        "rag_retrieval": {n: systems.RETRIEVAL[n] for n in systems.RAGS},
                         "rag_collection": s.rag_collection, "wiki_slug": s.wiki_slug, "sources": s.sources, "use_saved_answers": s.use_saved,
-                        "mode": s.mode, "grading": ("each pair in both orders (A-B and B-A), averaged; a win only when both agree; "
+                        "mode": s.mode, "grading": ("the wiki answer, asked once, is paired with each RAG column; each pair in both "
+                                                    "orders (A-B and B-A), averaged; a win only when both agree; the wiki's own "
+                                                    "scores are from its pair with RAG (per topic); "
                                                     + ("message batches (half price), normal API for the rest" if s.use_batch else "normal API")),
                         "capture": "read+usage v1",  # each answer records what was read and its AI calls' tokens
                         "systems": await systems.describe(http),
@@ -409,6 +464,11 @@ async def main():
                 await context.run_context(store.data, sem, s.use_batch, store.save, store.log)
             except Exception as e:
                 store.log(f"Faithfulness and context recall failed ({type(e).__name__}: {e}); they show as not measured")
+            try:  # standard-only similarity: the graded pairs judged again against the standard points only
+                await std_similarity.compute(store.data, s.use_batch, store.save, store.log)
+            except Exception as e:  # kept with the run, so its page says why; a resume judges again
+                store.data["standard_similarity"] = {"version": std_similarity.VERSION, "status": "failed", "error": f"{type(e).__name__}: {e}"}
+                store.log(f"Standard-only similarity failed ({type(e).__name__}: {e}); it shows as not measured")
         await metrics.compute(store.data, s.mode)  # graded answers keep their tests; the summary is refreshed
         store.data["errors"] = errors
         aggregate(store.data)
@@ -420,6 +480,9 @@ async def main():
             store.log(f"  {name:<5} similarity {v['similarity']['mean']}/10  coverage {v['coverage']['mean']}%  "
                       f"standard-only coverage {v['coverage_standard']['mean']}%")
         store.log(f"  wins (per run): {sm['wins_by_run']}")
+        for rag, p in (sm.get("pairs") or {}).items():
+            store.log(f"  wiki vs {rag}: wiki similarity {p['wiki']['similarity']['mean']}/10  standard-only coverage "
+                      f"{p['wiki']['coverage_standard']['mean']}%  wins {p['wins_by_run']}")
         if errors:
             store.log(f"  errors: {errors}  (resume with --run-id {run_id})")
         await store.save("finished")

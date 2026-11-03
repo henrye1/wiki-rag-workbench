@@ -29,6 +29,37 @@ MAX_UPLOAD = 20 * 1024 * 1024
 DONE_SQL = """(select count(*) from jsonb_each(coalesce(results->'topics', '{}'::jsonb)) t,
                  jsonb_each(coalesce(t.value->'runs', '{}'::jsonb)) r where (r.value->>'judgement')::boolean is true)::int as done"""
 
+# Contradictions with the reference, counted per answer (each RAG column, and the wiki: in its pair with RAG per topic,
+# and in its pair with RAG per question, where that pair was graded), and the standard-only similarity scores stored by
+# `python -m bench.std_similarity` (with each pair's gap); only these parts of the results are read
+CONTRA = {"rag": "systems.rag", "wiki": "systems.wiki", "rag_q": "systems.rag_q", "wiki_q": "pairs.rag_q.wiki"}
+EXTRAS_SQL = ", ".join(
+    [f"jsonb_path_query_array(results, '$.topics.*.runs.*.{path}.contradictions.size()') as contra_{k}" for k, path in CONTRA.items()]
+    + ["results->'standard_similarity'->'summary' as std_sim", "results->'standard_similarity'->'pairs'->'rag_q'->'summary' as std_sim_q",
+       "case when results->'standard_similarity'->>'status' = 'failed' then results->'standard_similarity'->>'error' end as std_sim_failed"])
+
+
+def _contra(counts: list | None) -> dict | None:
+    """Contradictions per answer and answers with none, over the answers that were checked; None if none were."""
+    if not counts:
+        return None
+    none = sum(1 for c in counts if c == 0)
+    return {"mean": round(statistics.mean(counts), 2), "none": none, "n": len(counts), "none_pct": round(100 * none / len(counts), 1)}
+
+
+def _extras(row: dict) -> dict:
+    """Per system: contradictions and standard-only similarity; the wiki's figures in the RAG (per question) pair under
+    pairs.rag_q. A measure a run does not have is None (the page shows "not measured"); std_similarity_failed is why the
+    step failed, if it did."""
+    sim, sim_q = row.get("std_sim") or {}, row.get("std_sim_q") or {}
+    return {
+        "contradictions": {k: _contra(row.get(f"contra_{k}")) for k in ("rag", "wiki", "rag_q")},
+        "std_similarity_failed": row.get("std_sim_failed"),
+        "std_similarity": {"by_system": sim.get("by_system"), "gap": sim.get("gap")} if sim else None,
+        "pairs": {"rag_q": {"contradictions": {"wiki": _contra(row.get("contra_wiki_q")), "rag_q": _contra(row.get("contra_rag_q"))},
+                            "std_similarity": {"by_system": sim_q.get("by_system"), "gap": sim_q.get("gap")} if sim_q else None}},
+    }
+
 
 def _query(sql: str, params: tuple = (), one: bool = False):
     def run():
@@ -142,7 +173,7 @@ async def list_runs():
     rows = await _query(
         f"""select id, status, updated_at, runs, topics, query_set_name, rag_collection, wiki_slug, sources, use_saved, mode, use_batch, {DONE_SQL},
                    results->'config' as config, results->'summary' as summary, results->'errors' as errors,
-                   jsonb_array_length(coalesce(results->'config'->'topics_selected', '[]'::jsonb)) as n_topics
+                   jsonb_array_length(coalesce(results->'config'->'topics_selected', '[]'::jsonb)) as n_topics, {EXTRAS_SQL}
             from bench.runs order by created_at desc"""
     )
     out, labels, pairs, shas = [], await _labels(), await _masks(), await _run_shas()
@@ -157,7 +188,7 @@ async def list_runs():
             "rag_collection": r["rag_collection"], "wiki": r["wiki_slug"], "sources": r["sources"], "use_saved": r["use_saved"],
             "mode": r["mode"], "use_batch": r["use_batch"],
             "summary": r["summary"], "progress": _progress(r, cfg, _mask(r["errors"], pairs)),
-            "rubric": _rubric_label(cfg), "judge": _judge_label(cfg),
+            "rubric": _rubric_label(cfg), "judge": _judge_label(cfg), "extras": _extras(r),
         })
     return out
 
@@ -188,7 +219,7 @@ async def _row(run_id: str, cols: str) -> dict:
 
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str):
-    row = await _row(run_id, "results, rag_collection, wiki_slug, sources, use_saved")
+    row = await _row(run_id, f"results, rag_collection, wiki_slug, sources, use_saved, {EXTRAS_SQL}")
     row["reference_sha"] = (await _run_shas()).get(run_id)
     data = row["results"] or {}
     pairs = await _masks()
@@ -197,6 +228,7 @@ async def get_run(run_id: str):
             data[k] = _mask(data[k], pairs)
     data["reference_label"] = ((await _labels()).get(row["reference_sha"]) or {}).get("label")
     data["progress"] = _progress(row, data.get("config"), data.get("errors"))
+    data["extras"] = _extras(row)
     # what the run compared, from the run row (results of older runs do not record it)
     data["compared"] = {"rag_collection": row["rag_collection"], "wiki": row["wiki_slug"], "sources": row["sources"], "use_saved": row["use_saved"]}
     return data
@@ -291,6 +323,9 @@ async def judge_info():
 
 
 SUBSCRIPTION = "on your Claude subscription: no API charge, counts toward the plan's usage limits"
+# the systems a new run compares, as Benchmark/bench/systems.py names them (each RAG column is graded against the wiki)
+RUN_SYSTEMS = ("rag", "wiki", "rag_q")
+SYSTEM_LABEL = {"rag": "RAG (per topic)", "rag_q": "RAG (per question)", "wiki": "Wiki"}
 
 
 @router.get("/estimate")
@@ -308,18 +343,25 @@ async def estimate(topics: str = "", runs: int = 2, mode: str = "quick", use_bat
             a, _, b = part.partition("-")
             wanted.update(range(int(a), int(b or a) + 1))
     n = len(wanted & {t["number"] for t in all_topics})
-    rows = await _query("""select id, wiki_slug, rag_collection, results->'topics' as topics from bench.runs
+    rows = await _query("""select id, wiki_slug, rag_collection, results->'topics' as topics,
+                                  results->'standard_similarity' as std_sim from bench.runs
                            where results is not null order by created_at desc limit 20""")
-    answers = {"rag": {"same": [], "other": []}, "wiki": {"same": [], "other": []}}
-    context = {"rag": {"same": [], "other": []}, "wiki": {"same": [], "other": []}}  # tokens the answer's own call read and wrote
-    judge_usage, kp_usage, check_usage = [], [], []
+    answers = {n: {"same": [], "other": []} for n in RUN_SYSTEMS}
+    context = {n: {"same": [], "other": []} for n in RUN_SYSTEMS}  # tokens the answer's own call read and wrote
+    judge_usage, kp_usage, check_usage, std_usage = [], [], [], []
     for r in rows:
+        sim = r["std_sim"] or {}  # standard-only similarity: one call per pair and order, every pair
+        for part in [sim, *(sim.get("pairs") or {}).values()]:
+            std_usage += [o["usage"] for t in (part.get("topics") or {}).values() for rep in (t.get("repetitions") or {}).values()
+                          for o in rep.values() if o.get("usage")]
         for t in (r["topics"] or {}).values():
             if t.get("key_points_usage"):
                 kp_usage.append(t["key_points_usage"])
             for run in (t.get("runs") or {}).values():
-                if run.get("orders"):  # both orders: each order's own grading
+                if run.get("orders"):  # both orders: each order's own grading (every pair's)
                     judge_usage += [o["judge_usage"] for o in run["orders"].values() if not o.get("batch")]
+                    judge_usage += [o["judge_usage"] for p in (run.get("pairs") or {}).values() for o in p["orders"].values()
+                                    if not o.get("batch")]
                 elif run.get("judge_usage") and not run.get("judge_batch"):
                     judge_usage.append(run["judge_usage"])
                 for sysname, a in (run.get("systems") or run.get("answers") or {}).items():
@@ -335,26 +377,30 @@ async def estimate(topics: str = "", runs: int = 2, mode: str = "quick", use_bat
                                 call["input_tokens"] + (call.get("output_tokens") or 0))
     jm = prices.get("claude-opus-5-5")  # the grading model (bench JUDGE_MODEL)
     items = []
-    for sysname, label in (("rag", f"RAG answers ({collection or 'collection'})"), ("wiki", f"Wiki answers ({wiki or 'wiki'})")):
+    for sysname in RUN_SYSTEMS:
+        label = f"{SYSTEM_LABEL[sysname]} answers ({(wiki or 'wiki') if sysname == 'wiki' else (collection or 'collection')})"
         pool = answers[sysname]["same"] or answers[sysname]["other"]
-        basis = (f"mean of {len(pool)} recorded answer(s) of this {'collection' if sysname == 'rag' else 'wiki'}" if answers[sysname]["same"]
-                 else f"mean of {len(pool)} recorded answer(s) of another {'collection' if sysname == 'rag' else 'wiki'}" if pool else None)
+        basis = (f"mean of {len(pool)} recorded answer(s) of this {'wiki' if sysname == 'wiki' else 'collection'}" if answers[sysname]["same"]
+                 else f"mean of {len(pool)} recorded answer(s) of another {'wiki' if sysname == 'wiki' else 'collection'}" if pool else None)
         unit = statistics.mean(pool) if pool else None
         items.append({"item": label, "count": n * runs, "unit_usd": unit, "total_usd": unit * n * runs if unit is not None else None,
                       "basis": basis or "no answer with recorded tokens yet: cannot estimate until a run has recorded some"})
+    gradings = n * runs * 2 * (len(RUN_SYSTEMS) - 1)  # each RAG column's pair with the wiki, in both orders
     if sub:
-        items.append({"item": "Grading, both orders (Claude Opus 5.5)", "count": n * runs * 2, "unit_usd": 0, "total_usd": 0,
-                      "basis": SUBSCRIPTION})
+        items.append({"item": "Grading, both orders, each RAG column against the wiki (Claude Opus 5.5)", "count": gradings,
+                      "unit_usd": 0, "total_usd": 0, "basis": SUBSCRIPTION})
     elif judge_usage and jm:
         unit = statistics.mean(u["input_tokens"] / 1e6 * jm["input"] + u["output_tokens"] / 1e6 * jm["output"] for u in judge_usage)
         if use_batch:
             unit *= prices.get("batch_discount", 1)
-        # each answer pair is graded twice (A-then-B and B-then-A)
-        items.append({"item": "Grading, both orders (Claude Opus 5.5" + (", Message Batches: half price)" if use_batch else ")"),
-                      "count": n * runs * 2, "unit_usd": unit, "total_usd": unit * n * runs * 2,
+        # each answer pair is graded twice (A-then-B and B-then-A), for each RAG column
+        items.append({"item": "Grading, both orders, each RAG column against the wiki (Claude Opus 5.5"
+                              + (", Message Batches: half price)" if use_batch else ")"),
+                      "count": gradings, "unit_usd": unit, "total_usd": unit * gradings,
                       "basis": f"mean of {len(judge_usage)} recorded grading(s)"})
     else:
-        items.append({"item": "Grading, both orders", "count": n * runs * 2, "unit_usd": None, "total_usd": None, "basis": "no recorded grading yet"})
+        items.append({"item": "Grading, both orders, each RAG column against the wiki", "count": gradings, "unit_usd": None,
+                      "total_usd": None, "basis": "no recorded grading yet"})
     last = await _latest_inputs()
     if last:
         sha = hashlib.sha256(last["reference"]).hexdigest()
@@ -372,21 +418,23 @@ async def estimate(topics: str = "", runs: int = 2, mode: str = "quick", use_bat
     label = "Answer checks: completeness, exact match, citation accuracy (Claude Sonnet 5.5, one call per answer)"
     priced = [u["input_tokens"] / 1e6 * prices[m]["input"] + u["output_tokens"] / 1e6 * prices[m]["output"]
               for m, u in check_usage if m in prices]
+    checked = n * runs * len(RUN_SYSTEMS)  # every system's answer
     if sub:
-        items.append({"item": label, "count": n * runs * 2, "unit_usd": 0, "total_usd": 0, "basis": SUBSCRIPTION})
+        items.append({"item": label, "count": checked, "unit_usd": 0, "total_usd": 0, "basis": SUBSCRIPTION})
     elif priced:
         unit = statistics.mean(priced) * (prices.get("batch_discount", 1) if use_batch else 1)
-        items.append({"item": label + (", batch" if use_batch else ""), "count": n * runs * 2, "unit_usd": unit,
-                      "total_usd": unit * n * runs * 2, "basis": f"mean of {len(priced)} recorded answer check(s)"})
+        items.append({"item": label + (", batch" if use_batch else ""), "count": checked, "unit_usd": unit,
+                      "total_usd": unit * checked, "basis": f"mean of {len(priced)} recorded answer check(s)"})
     else:
-        items.append({"item": label, "count": n * runs * 2, "unit_usd": None, "total_usd": None,
+        items.append({"item": label, "count": checked, "unit_usd": None, "total_usd": None,
                       "basis": "no answer check recorded through the API yet"})
     if mode == "full":
         # faithfulness + context recall: one Sonnet call per answer that reads what the answer read. Its input is taken as the
         # tokens the answer's own call read and wrote (recorded); its output as a grading's recorded output per answer.
         cm = prices.get("claude-sonnet-5-5")
         out_per_answer = statistics.mean(u["output_tokens"] for u in judge_usage) / 2 if judge_usage else None
-        for sysname, label in (("rag", "RAG"), ("wiki", "Wiki")):
+        for sysname in RUN_SYSTEMS:
+            label = SYSTEM_LABEL[sysname]
             pool = context[sysname]["same"] or context[sysname]["other"]
             if sub:
                 items.append({"item": f"Faithfulness + context recall, {label} answers", "count": n * runs, "unit_usd": 0,
@@ -402,6 +450,18 @@ async def estimate(topics: str = "", runs: int = 2, mode: str = "quick", use_bat
             else:
                 items.append({"item": f"Faithfulness + context recall, {label} answers", "count": n * runs, "unit_usd": None,
                               "total_usd": None, "basis": "no answer with recorded tokens yet"})
+    if mode == "full":  # standard-only similarity: each graded pair judged again, both orders, against the standard points
+        label = "Standard-only similarity, both orders, each RAG column against the wiki (Claude Opus 5.5"
+        if sub:
+            items.append({"item": label + ")", "count": gradings, "unit_usd": 0, "total_usd": 0, "basis": SUBSCRIPTION})
+        elif std_usage and jm:
+            unit = statistics.mean(u["input_tokens"] / 1e6 * jm["input"] + u["output_tokens"] / 1e6 * jm["output"] for u in std_usage)
+            unit *= prices.get("batch_discount", 1) if use_batch else 1
+            items.append({"item": label + (", Message Batches: half price)" if use_batch else ")"), "count": gradings, "unit_usd": unit,
+                          "total_usd": unit * gradings, "basis": f"mean of {len(std_usage)} recorded standard-only similarity call(s)"})
+        else:
+            items.append({"item": label + ")", "count": gradings, "unit_usd": None, "total_usd": None,
+                          "basis": "no standard-only similarity call recorded yet"})
     known = [i["total_usd"] for i in items if i["total_usd"] is not None]
     unknown = [i["item"] for i in items if i["total_usd"] is None]
     return {"topics": n, "runs": runs, "mode": mode, "use_batch": use_batch, "items": items, "judge_backend": "claude-code" if sub else "api",

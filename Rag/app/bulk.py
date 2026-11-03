@@ -62,17 +62,7 @@ def parse_query_set(text: str) -> tuple[str, list[Topic]]:
 async def _retrieve(topic: Topic, collection_id) -> list[dict]:
     s = get_settings()
     queries = [f"{topic.title}. {', '.join(topic.search_terms)}"] + topic.questions
-    embeddings = await llm.embed(queries, task="RETRIEVAL_QUERY")
-    results = await asyncio.gather(
-        *(retrieval.search(q, s.bulk_k_per_query, embedding=e, collection_id=collection_id) for q, e in zip(queries, embeddings))
-    )
-    # Round-robin merge so every question contributes its best hits before the cap
-    seen: dict[int, dict] = {}
-    for rank in range(s.bulk_k_per_query):
-        for rows in results:
-            if rank < len(rows) and rows[rank]["id"] not in seen and len(seen) < s.bulk_max_chunks:
-                seen[rows[rank]["id"]] = rows[rank]
-    return list(seen.values())
+    return await retrieval.search_each(queries, s.bulk_k_per_query, s.bulk_max_chunks, collection_id=collection_id)
 
 
 def _render(topic: Topic, out: dict, word_count: int) -> str:

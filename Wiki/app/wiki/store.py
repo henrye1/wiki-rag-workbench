@@ -275,9 +275,25 @@ async def discard_changeset(changeset_id: UUID) -> str | None:
                 )
             ).fetchone()
             if row:
-                await storage.remove(row["file"])
+                await remove_file(row["file"], conn)
             return row["slug"] if row else None
     return None
+
+
+async def remove_file(file: dict | None, conn=None):
+    """Remove a source's stored file, unless another source still holds it (a copied wiki's sources share their
+    originals' files). conn: the connection whose transaction removed the source, when not yet committed."""
+    if not file:
+        return
+    q = "select 1 from wiki.sources where meta->'file'->>'bucket' = %s and meta->'file'->>'path' = %s limit 1"
+    args = (file.get("bucket"), file.get("path"))
+    if conn is not None:
+        held = await (await conn.execute(q, args)).fetchone()
+    else:
+        async with get_pool().connection() as c:
+            held = await (await c.execute(q, args)).fetchone()
+    if not held:
+        await storage.remove(file)
 
 
 async def commit(wiki_id: UUID, kind: str, summary: str, ops: list[Op], mode: str,

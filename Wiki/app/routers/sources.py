@@ -10,7 +10,7 @@ from ..config import get_settings
 from ..db import get_pool
 from ..ops import ingest, rename
 from ..sources import extract
-from ..wiki import checks
+from ..wiki import checks, store
 from .deps import Mode, wiki_dep
 
 router = APIRouter(tags=["sources"])
@@ -189,4 +189,4 @@ async def delete_source(slug: str, wiki: dict = Depends(wiki_dep)):
         ).fetchone()
         if not row:
             raise HTTPException(404, "Source not found")
-    await storage.remove(row["file"])
+    await store.remove_file(row["file"])

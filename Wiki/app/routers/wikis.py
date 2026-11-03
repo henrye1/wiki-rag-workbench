@@ -9,8 +9,8 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from psycopg.errors import UniqueViolation
 from pydantic import BaseModel, Field
 
-from .. import storage
 from ..db import get_pool
+from ..ops import copywiki
 from ..wiki import store
 from .deps import wiki_dep
 
@@ -18,7 +18,7 @@ router = APIRouter(tags=["wikis"])
 DEFAULT_SCHEMA = (pathlib.Path(__file__).resolve().parent.parent / "schema_default.md").read_text(encoding="utf-8")
 
 
-AnswerMethod = Literal["search_pick", "browse", "search_browse"]
+AnswerMethod = Literal["search_pick", "browse", "search_browse", "search_browse_2"]
 
 
 class WikiIn(BaseModel):
@@ -34,7 +34,9 @@ class SettingsIn(BaseModel):
                                                     "index, read at once; browse: the model reads the page list, chooses "
                                                     "pages and follows their links until it has enough; search_browse: "
                                                     "browse, with a shortlist from a search of every page's text (scores "
-                                                    "and matching passages) beside the page list")
+                                                    "and matching passages) beside the page list; search_browse_2: "
+                                                    "search_browse, judging enough only after reading the pages chosen, "
+                                                    "with each round's choices and reasons kept in the log")
 
 
 class SchemaIn(BaseModel):
@@ -56,6 +58,22 @@ async def create_wiki(body: WikiIn):
         raise HTTPException(409, "Wiki slug already exists")
     await store.add_log(row["id"], "edit", "Wiki created", body.description)
     return row
+
+
+class CopyIn(BaseModel):
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")
+    name: str
+    description: str | None = Field(None, description="Defaults to the original's")
+
+
+@router.post("/wikis/{w}/copy", status_code=201)
+async def copy_wiki(body: CopyIn, wiki: dict = Depends(wiki_dep)):
+    """Copy the wiki under a new slug: settings, schema, sources, pages with every version, links, flags and search
+    index. The copy's sources share the original's stored files; its log, jobs and changesets start empty. No AI call."""
+    try:
+        return await copywiki.copy(wiki, body.slug, body.name, body.description)
+    except UniqueViolation:
+        raise HTTPException(409, "Wiki slug already exists")
 
 
 @router.get("/wikis")
@@ -94,7 +112,7 @@ async def delete_wiki(wiki: dict = Depends(wiki_dep)):
         ).fetchall()
         await conn.execute("delete from wiki.wikis where id = %s", (wiki["id"],))
     for f in files:
-        await storage.remove(f["file"])
+        await store.remove_file(f["file"])
 
 
 @router.get("/wikis/{w}/schema", response_class=PlainTextResponse)

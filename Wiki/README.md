@@ -31,6 +31,8 @@ copy .env.example .env                  # set API_KEY, GEMINI_API_KEY
 | | |
 |---|---|
 | `POST /wikis`, `GET /wikis`, `GET/DELETE /wikis/{w}` | manage wikis |
+| `POST /wikis/{w}/copy` `{slug, name, description?}` | copy a wiki under a new slug: settings, schema, sources, pages with every version, links, flags and search index (no AI calls; the copy's sources share the original's stored files; log, jobs and changesets start empty) |
+| `POST /wikis/{w}/summaries` `{dry_run?}` | make every page's summary again by the schema's summary rules from the page text as it stands; no AI calls, no text changes; changed summaries are saved as new page versions |
 | `GET/PUT /wikis/{w}/schema` | conventions doc |
 | `POST /wikis/{w}/sources?mode=` | upload file → `{job_id}` |
 | `POST /wikis/{w}/sources/url?mode=`, `/sources/text?mode=` | ingest a URL / pasted text |

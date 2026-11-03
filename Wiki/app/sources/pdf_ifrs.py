@@ -309,6 +309,10 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
                         kind = _example_kind(text, example_re)
                         # only a plain heading introduces the next example; a labelled one ("Scenario 2") is its example's
                         opens = not kind and _example_kind(next_heading.get((pno, y), ""), example_re) == (hold or (0, None))[1]
+                        if accompanying and IG_TITLE_RE.match(text):
+                            # the title of another kind of text (the guidance printed after the examples): no example is
+                            # over it, and it starts its own headings beside the document's top heading
+                            hold, lvl = None, min((p[0] for p in path), default=lvl)
                         if hold and (lvl < hold[0] or (lvl == hold[0] and (kind == hold[1] or opens))):
                             hold = None
                         if hold and lvl == hold[0]:

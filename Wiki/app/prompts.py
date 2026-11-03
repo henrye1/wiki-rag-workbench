@@ -279,13 +279,30 @@ def also_prompt(brief: str, lines: str) -> str:
     )
 
 
-def also_record_prompt(*, slug: str, title: str, items: str, linkable: str, source_slug: str) -> str:
+ALSO_DECLINE_SCHEMA = {
+    **FILL_SCHEMA,
+    "properties": {
+        **FILL_SCHEMA["properties"],
+        "not_recorded": {"type": "array", "description": "The paragraphs given that the page brief does not record here",
+                         "items": {"type": "object", "properties": {"paragraph": {"type": "string"}, "why": {"type": "string"}},
+                                   "required": ["paragraph", "why"]}},
+    },
+    "required": [*FILL_SCHEMA.get("required", []), "not_recorded"],
+}
+
+
+def also_record_prompt(*, slug: str, title: str, items: str, linkable: str, source_slug: str, brief: str | None = None) -> str:
+    """brief: the page's section brief, given when the writer may decline a paragraph the brief does not record here."""
+    decline = (
+        "A paragraph that the page brief below does not record here gets no line: list its paragraph number in "
+        "not_recorded, with the reason in a few words. It stays written up on its main page.\n"
+        f"<page_brief>\n{brief}\n</page_brief>\n" if brief else "")
     return (
         f"Add short entries to the wiki page `{slug}` (\"{title}\"). Each paragraph in <paragraphs> is written up in full on "
-        "its main page (named after it) and is ALSO recorded here, without repeating it.\n"
+        "its main page (named after it) and is ALSO recorded here, without repeating it.\n" + decline +
         f"Every paragraph in <paragraphs> comes from the source [[{source_slug}]]. Cite each one to that source, as "
         f"[[{source_slug}|<paragraph number>]], and never to any other source page.\n"
-        "For each paragraph write exactly ONE line, as a markdown bullet: what the entity decides, presumes, elects or "
+        f"For each paragraph{' it records' if brief else ''} write exactly ONE line, as a markdown bullet: what the entity decides, presumes, elects or "
         "estimates, in a few words, then a link to its main page, then the paragraph's citation, e.g.\n"
         f"- Policy choice: measure the loss allowance at lifetime expected credit losses: see [[main-page-slug]] [[{source_slug}|5.5.15]]\n"
         "Cite each paragraph exactly as the wiki schema requires, with its paragraph number. Nothing else: no heading, no "
@@ -301,6 +318,37 @@ def group_prompt(brief: str, grouped_by: str, groups: str, lines: str) -> str:
         "once, with its group number.\n\n"
         f"<section_brief>\n{brief}\n</section_brief>\n\n<groups>\n{groups}\n</groups>\n\n"
         f"<paragraphs>\nid | heading | text (first words)\n{lines}\n</paragraphs>"
+    )
+
+
+REQUIREMENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "assignments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"id": {"type": "integer"},
+                               "requirement": {"type": "integer", "description": "The requirement's number, or 0 if it applies to none listed"}},
+                "required": ["id", "requirement"],
+            },
+        },
+    },
+    "required": ["assignments"],
+}
+
+
+def requirement_prompt(brief: str, requirements: str, lines: str) -> str:
+    """Guidance paragraphs of a split section, each to the requirement paragraph it applies to (the schema's rule that
+    guidance is filed with its requirement)."""
+    return (
+        "Below are one section's requirement paragraphs and its guidance paragraphs. For each guidance paragraph, choose "
+        "the ONE requirement it applies to: the requirement whose rule it explains, applies, elaborates or says how to "
+        "meet. Judge by what both say, not by the guidance's own heading or its number alone; a paragraph number the "
+        "guidance mentions is a clue, not the answer. Give 0 only if it applies to none of them. Return every id "
+        "exactly once.\n\n"
+        f"<section_brief>\n{brief}\n</section_brief>\n\n<requirements>\nnumber | heading | text (first words)\n{requirements}\n"
+        f"</requirements>\n\n<guidance>\nid | heading | text (first words)\n{lines}\n</guidance>"
     )
 
 

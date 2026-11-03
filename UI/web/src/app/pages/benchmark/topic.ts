@@ -6,6 +6,8 @@ import { Api, enc, errMsg } from '../../core/api';
 import { Markdown } from '../../shared/markdown';
 
 const SYMBOL: Record<string, string> = { full: '✅', partial: '⚠️', missing: '❌' };
+const LABEL: Record<string, string> = { rag: 'RAG (per topic)', rag_q: 'RAG (per question)', wiki: 'Wiki' };
+const SHORT: Record<string, string> = { rag: 'RAG topic', rag_q: 'RAG question', wiki: 'Wiki' };
 
 @Component({
   selector: 'app-bench-topic',
@@ -28,8 +30,9 @@ const SYMBOL: Record<string, string> = { full: '✅', partial: '⚠️', missing
           <table class="simple grid">
             <thead>
               <tr><th>Key point</th>
-                @for (r of runIds(); track r) { <th class="c">RAG r{{ r }}</th> }
-                @for (r of runIds(); track r) { <th class="c">Wiki r{{ r }}</th> }
+                @for (sys of systems(); track sys) {
+                  @for (r of runIds(); track r) { <th class="c">{{ short(sys) }} r{{ r }}</th> }
+                }
               </tr>
             </thead>
             <tbody>
@@ -37,13 +40,15 @@ const SYMBOL: Record<string, string> = { full: '✅', partial: '⚠️', missing
                 <tr>
                   <td><b>{{ p.id }}</b> <span class="pill" [class.ok]="p.kind === 'standard'" [class.sup]="p.kind === 'supporting'" [class.warn]="p.kind !== 'standard' && p.kind !== 'supporting'">{{ tagLabel[p.kind] ?? p.kind }}</span>
                     {{ p.point }}@if (p.ref && p.kind !== 'beyond_standard') { <span class="muted small"> · {{ p.ref }}</span> }</td>
-                  @for (r of runIds(); track r) { <td class="c" [title]="note(r, p.id)">{{ sym(r, 'rag', p.id) }}</td> }
-                  @for (r of runIds(); track r) { <td class="c" [title]="note(r, p.id)">{{ sym(r, 'wiki', p.id) }}</td> }
+                  @for (sys of systems(); track sys) {
+                    @for (r of runIds(); track r) { <td class="c" [title]="note(r, p.id, sys)">{{ sym(r, sys, p.id) }}</td> }
+                  }
                 </tr>
               }
               <tr class="tot"><td>Similarity /10</td>
-                @for (r of runIds(); track r) { <td class="c">{{ t.runs[r].systems.rag.similarity }}</td> }
-                @for (r of runIds(); track r) { <td class="c">{{ t.runs[r].systems.wiki.similarity }}</td> }
+                @for (sys of systems(); track sys) {
+                  @for (r of runIds(); track r) { <td class="c">{{ t.runs[r].systems[sys].similarity }}</td> }
+                }
               </tr>
             </tbody>
           </table>
@@ -58,19 +63,26 @@ const SYMBOL: Record<string, string> = { full: '✅', partial: '⚠️', missing
         </div>
         @if (t.runs[run()]; as r) {
           <div class="card verdict">
-            <b>Winner: {{ r.winner }}</b> <span class="muted">(blind labels: A = {{ r.blind_labels.A }}, B = {{ r.blind_labels.B }})</span>
+            <b>Winner{{ r.pairs ? ', Wiki vs RAG (per topic)' : '' }}: {{ r.winner }}</b> <span class="muted">(blind labels: A = {{ r.blind_labels.A }}, B = {{ r.blind_labels.B }})</span>
             <p>{{ r.rationale }}</p>
           </div>
+          @for (pp of pairList(r); track pp.rag) {
+            <div class="card verdict">
+              <b>Winner, Wiki vs {{ label(pp.rag) }}: {{ pp.p.winner }}</b> <span class="muted">(blind labels: A = {{ pp.p.blind_labels.A }}, B = {{ pp.p.blind_labels.B }};
+                the wiki in this pair: {{ pp.p.wiki.similarity }}/10, {{ pp.p.wiki.coverage }}%)</span>
+              <p>{{ pp.p.rationale }}</p>
+            </div>
+          }
           <div class="two">
-            @for (sys of ['rag', 'wiki']; track sys) {
+            @for (sys of systems(); track sys) {
               <div class="card">
-                <div class="row"><h3 class="grow">{{ sys === 'rag' ? 'RAG' : 'Wiki' }}</h3>
+                <div class="row"><h3 class="grow">{{ label(sys) }}</h3>
                   <span class="pill">{{ r.systems[sys].similarity }}/10</span><span class="pill">{{ r.systems[sys].coverage }}%</span>
                   <span class="muted small">{{ r.systems[sys].latency_s }} s</span></div>
                 @if (r.systems[sys].contradictions.length) {
                   <div class="contra"><b>Contradicts reference:</b><ul>@for (c of r.systems[sys].contradictions; track $index) { <li>{{ c }}</li> }</ul></div>
                 }
-                <app-md [text]="r.systems[sys].answer" [cites]="sys === 'rag'" />
+                <app-md [text]="r.systems[sys].answer" [cites]="sys !== 'wiki'" />
                 <div class="muted small">Sources: {{ r.systems[sys].sources.join(', ') || '—' }}</div>
                 @if (sys === 'wiki') { <div class="muted small">Saved answers read: {{ (r.systems[sys].saved_answers_read ?? []).join(', ') || 'none' }}</div> }
                 @if (r.systems[sys].checks; as ck) {
@@ -161,6 +173,16 @@ export class BenchTopic {
     not_stated: 'not stated', supported: 'supported', not_supported: 'not supported', not_checkable: 'not checkable',
   };
 
+  /** The systems the run compared: runs made before RAG (per question) was added compared RAG (per topic) and the wiki. */
+  systems(): string[] { return this.data()?.config?.systems_compared ?? ['rag', 'wiki']; }
+  label(sys: string) { return LABEL[sys] ?? sys; }
+  short(sys: string) { return SHORT[sys] ?? sys; }
+  pairList(r: any) { return Object.entries<any>(r.pairs ?? {}).map(([rag, p]) => ({ rag, p })); }
+
   sym(run: string, sys: string, pid: string) { return SYMBOL[this.t().runs[run].systems[sys].grades[pid] ?? 'missing']; }
-  note(run: string, pid: string) { return this.t().runs[run].point_notes?.[pid] ?? ''; }
+  /** The judge's note on a point, from the pair the system was graded in (the wiki's from its pair with RAG per topic). */
+  note(run: string, pid: string, sys = 'rag') {
+    const r = this.t().runs[run];
+    return (sys !== 'rag' && sys !== 'wiki' ? r.pairs?.[sys]?.point_notes : r.point_notes)?.[pid] ?? '';
+  }
 }
