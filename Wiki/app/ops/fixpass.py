@@ -1,5 +1,5 @@
 """The check-and-fix pass shared by ingest and re-check: check a page, send it back with the list of failures (at most
-twice), keep a rewrite only when it is better. The words the checks look for come from the schema (wiki/checks.py)."""
+twice), keep a rewrite only when it is better, then quote in full what still fails. The words the checks look for come from the schema (wiki/checks.py)."""
 import logging
 import re
 from uuid import UUID
@@ -119,12 +119,12 @@ def move_claims(slug: str, text: str, home, holds, record: list, names: set[str]
 
 async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, sources_text: str, linkable: str, parse,
                      kind: str, record: list, out_schema=prompts.PAGE_SCHEMA, ok=lambda old, new: True,
-                     may_shrink: bool = False, may_grow: bool = False, clause=lambda cite: True) -> str:
-    """Check the page; if anything fails, send it back with the list, at most twice. A rewrite is kept only if it has
-    fewer failures, loses no citation of a source paragraph (clause tells one from a broken link, which a fix may
-    repair), stays about the same length (a fix changes what was listed, not the whole page; may_shrink when a failure
-    asks for something to be taken out; may_grow when it asks for something to be added that may be long, such as the
-    list of pages an index or the overview must link) and passes ok."""
+                     may_shrink: bool = False, may_grow: bool = False, clause=lambda cite: True, quote=None) -> str:
+    """Check the page; if anything fails, send it back with the list, at most twice. A rewrite is kept when it has fewer
+    failures, loses no citation of a source paragraph (clause tells one from a broken link, which a fix may repair;
+    may_shrink when a failure asks for something to be taken out) and passes ok. A paragraph whose write-up still fails
+    after the second return is then quoted in full (quote, where the caller gives one): the quote itself becomes the
+    claim. may_grow is accepted for callers' sake: a rewrite's length is not limited."""
     rounds = []
     initial = check(text)
     if any(f.startswith(checks.REPEAT) for f in initial):  # the same text twice: its later copies go, word for word
@@ -144,8 +144,7 @@ async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, so
             after = check(new)
             lost = [] if may_shrink else sorted(c for c in checks.cites(text) - checks.cites(new) if clause(c))
             n_old, n_new = len(text.split()), len(new.split())
-            keep = (bool(new.strip()) and len(after) < len(failures) and not lost and ok(text, new)
-                    and (may_grow or n_new <= 1.5 * n_old + 200) and (may_shrink or n_new >= 0.8 * n_old))
+            keep = bool(new.strip()) and len(after) < len(failures) and not lost and ok(text, new)
             rec |= {"kept": keep, "fixed": len(failures) - len(after) if keep else 0, "still": after, "words": [n_old, n_new],
                     **({"lost_citations": lost} if lost else {})}
             if keep:
@@ -156,51 +155,45 @@ async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, so
             log.warning("page %s %s check, round %s failed: %s", slug, kind, rnd, e)
             rec["error"] = f"{type(e).__name__}: {e}"
         rounds.append(rec)
-    if rounds and (left := check(text)):  # still failing: each failing paragraph's write-up alone, as a last try
-        text = await _fix_blocks(schema=schema, slug=slug, title=title, text=text, failures=left, check=check,
-                                 sources_text=sources_text, linkable=linkable, parse=parse, clause=clause, rounds=rounds)
+    if rounds and quote and (left := check(text)):  # still failing after the two returns: the quote becomes the claim
+        text = _quote_failing(text, left, check, quote, rounds)
     if rounds:
-        record.append({"page": slug, "kind": kind, "found": len(initial), "still": len(check(text)),
+        left = check(text)
+        record.append({"page": slug, "kind": kind, "found": len(initial), "still": len(left), "left": left,
                        "rounds": rounds})
     return text
 
 
 PARA_FAILURE = re.compile(r"^Paragraph (.+?) (?:has lettered or numbered parts|states the condition)")  # checks.section_failures
+SENTENCE_FAILURE = re.compile(r"^The sentence citing (.+?) \(\"")  # its opener, from checks.section_failures
 
 
-async def _fix_blocks(*, schema, slug, title, text, failures, check, sources_text, linkable, parse, clause, rounds) -> str:
-    """For each paragraph whose write-up still fails (a part or a condition missing), send back only the blocks that
-    cite it, with its source text and its failures, and replace just those blocks. Kept only if its failures go, no
-    citation of those blocks is lost and the page has no new failure; the rest of the page is untouched."""
-    by_para: dict[str, list[str]] = {}
+def _failing_paragraphs(failures: list[str]) -> dict[str, list[str]]:
+    """The paragraphs the failures name (a part, a condition or an opener missing from its write-up) -> its failures."""
+    out: dict[str, list[str]] = {}
     for f in failures:
         if m := PARA_FAILURE.match(f):
-            by_para.setdefault(m.group(1), []).append(f)
-    for ref, fails in by_para.items():
-        blocks = [b for b in re.split(r"\n\s*\n", text) if b.strip()]
-        mine = [k for k, b in enumerate(blocks) if any(c.split("|", 1)[1] == ref for c in checks.cites(b))]
-        source = [b for b in re.split(r"\n\s*\n", sources_text or "") if (m := LABEL_RE.match(b.strip())) and m.group(1) == ref]
-        if not mine or not source:
+            out.setdefault(m.group(1), []).append(f)
+        elif (m := SENTENCE_FAILURE.match(f)) and "," not in m.group(1):  # a sentence citing one paragraph
+            out.setdefault(re.sub(r"(?:\s*\([^)]*\))+$", "", m.group(1).strip()), []).append(f)
+    return out
+
+
+def _quote_failing(text: str, failures: list[str], check, quote, rounds: list) -> str:
+    """The schema's last step after the two returns: each paragraph whose write-up still fails is written as its own
+    words, quoted in full, with its opener and citation (quote: the page's text with that done, or None where it cannot
+    be). Kept when that paragraph's failures go and nothing else starts failing. No AI call."""
+    for ref, fails in _failing_paragraphs(failures).items():
+        new = quote(text, ref)
+        rec = {"round": "quote", "paragraph": ref, "failures": fails}
+        if new is None:
+            rounds.append(rec | {"kept": False, "reason": "no quote could be written for it"})
             continue
-        old = "\n\n".join(blocks[k] for k in mine)
-        rec = {"round": "block", "paragraph": ref, "failures": fails, "blocks": len(mine)}
-        try:
-            out = await llm.generate_json(prompts.MAINTAINER_SYSTEM, prompts.with_schema(schema, prompts.fix_page_prompt(
-                slug=slug, title=title, content_md=old, failures=fails, linkable=linkable,
-                source_paragraphs="\n\n".join(source))), prompts.PAGE_SCHEMA)
-            new = parse(out["content_md"])
-            lost = sorted(c for c in checks.cites(old) - checks.cites(new) if clause(c))
-            # the new blocks go where the first old one was; the other old ones are taken out
-            page = "\n\n".join(new if k == mine[0] else b for k, b in enumerate(blocks) if k == mine[0] or k not in mine)
-            before, after = check(text), check(page)
-            keep = bool(new.strip()) and not lost and not (set(fails) & set(after)) and not (set(after) - set(before))
-            rec |= {"kept": keep, "fixed": len(before) - len(after) if keep else 0, "still": after,
-                    **({"lost_citations": lost} if lost else {})}
-            if keep:
-                text = page
-            log.info("page %s: write-up of %s sent back alone: %s", slug, ref, "kept" if keep else "discarded")
-        except Exception as e:
-            log.warning("page %s: write-up of %s sent back alone failed: %s", slug, ref, e)
-            rec["error"] = f"{type(e).__name__}: {e}"
+        before, after = check(text), check(new)
+        keep = not (set(fails) & set(after)) and not (set(after) - set(before))
+        rec |= {"kept": keep, "fixed": len(before) - len(after) if keep else 0, "still": after}
+        if keep:
+            text = new
+        log.info("page: paragraph %s quoted in full: %s", ref, "kept" if keep else "discarded")
         rounds.append(rec)
     return text

@@ -28,6 +28,16 @@ import { Markdown } from '../../shared/markdown';
       </div>
       @if (busy()) { <mat-progress-bar mode="indeterminate" /> }
       @if (error()) { <p class="error">{{ error() }}</p> }
+      @if (failingPages(c).length) {
+        <div class="card">
+          <b>Held for review: these pages still fail the schema's checks.</b>
+          <span class="muted"> Applying keeps each failure as a flag on its page.</span>
+          @for (p of failingPages(c); track p) {
+            <p><b>{{ p }}</b></p>
+            <ul>@for (f of c.check_failures[p]; track $index) { <li class="small">{{ f }}</li> }</ul>
+          }
+        </div>
+      }
       @if (outcome(); as o) {
         <div class="card">
           <b>Applied {{ o.applied?.length ?? 0 }}</b>
@@ -61,6 +71,7 @@ import { Markdown } from '../../shared/markdown';
   styles: `.head { margin: 8px 0 12px; } h2 { margin: 0; font: var(--mat-sys-title-large); }`,
 })
 export class WikiChangeset {
+  failingPages(c: any): string[] { return Object.keys(c?.check_failures ?? {}); }
   private api = inject(Api);
   readonly w = input.required<string>();
   readonly id = input.required<string>();

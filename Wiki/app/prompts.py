@@ -270,11 +270,12 @@ ALSO_SCHEMA = {
 }
 
 
-def also_prompt(brief: str, lines: str) -> str:
+def also_prompt(brief: str, lines: str, what: str = "") -> str:
+    """what: what the schema's Also recorded list says is recorded on this section's page."""
     return (
         "The section below is an \"also record here\" section: a paragraph stays on its own section's page and is ALSO "
-        "recorded here. From the paragraphs below, return the ids of those the section brief says are recorded here. "
-        "Leave out the others.\n\n"
+        "recorded here. From the paragraphs below, return the ids of those the section brief says are recorded here"
+        + (f" (the schema's Also recorded list: {what})" if what else "") + ". Leave out the others.\n\n"
         f"<section_brief>\n{brief}\n</section_brief>\n\n<paragraphs>\nid | text\n{lines}\n</paragraphs>"
     )
 
@@ -291,8 +292,10 @@ ALSO_DECLINE_SCHEMA = {
 }
 
 
-def also_record_prompt(*, slug: str, title: str, items: str, linkable: str, source_slug: str, brief: str | None = None) -> str:
-    """brief: the page's section brief, given when the writer may decline a paragraph the brief does not record here."""
+def also_record_prompt(*, slug: str, title: str, items: str, linkable: str, source_slug: str, brief: str | None = None,
+                       what: str = "") -> str:
+    """brief: the page's section brief, given when the writer may decline a paragraph the brief does not record here.
+    what: what the schema's Also recorded list says is recorded on this page (schemas before that list: none)."""
     decline = (
         "A paragraph that the page brief below does not record here gets no line: list its paragraph number in "
         "not_recorded, with the reason in a few words. It stays written up on its main page.\n"
@@ -302,9 +305,12 @@ def also_record_prompt(*, slug: str, title: str, items: str, linkable: str, sour
         "its main page (named after it) and is ALSO recorded here, without repeating it.\n" + decline +
         f"Every paragraph in <paragraphs> comes from the source [[{source_slug}]]. Cite each one to that source, as "
         f"[[{source_slug}|<paragraph number>]], and never to any other source page.\n"
-        f"For each paragraph{' it records' if brief else ''} write exactly ONE line, as a markdown bullet: what the entity decides, presumes, elects or "
-        "estimates, in a few words, then a link to its main page, then the paragraph's citation, e.g.\n"
-        f"- Policy choice: measure the loss allowance at lifetime expected credit losses: see [[main-page-slug]] [[{source_slug}|5.5.15]]\n"
+        + (f"For each paragraph{' it records' if brief else ''} write exactly ONE line, as a markdown bullet: the point "
+           f"recorded here ({what}), named in a few words, then a link to its main page, then the paragraph's citation, as\n"
+           f"- <the point, in a few words>: see [[<main page slug>]] [[{source_slug}|<paragraph number>]]\n" if what else
+           f"For each paragraph{' it records' if brief else ''} write exactly ONE line, as a markdown bullet: what the entity decides, presumes, elects or "
+           "estimates, in a few words, then a link to its main page, then the paragraph's citation, as\n"
+           f"- <the decision point, in a few words>: see [[<main page slug>]] [[{source_slug}|<paragraph number>]]\n") +
         "Cite each paragraph exactly as the wiki schema requires, with its paragraph number. Nothing else: no heading, no "
         "introduction, no full restatement.\n\n"
         f"<linkable_pages>\n{linkable}\n</linkable_pages>\n\n<paragraphs>\n{items}\n</paragraphs>"

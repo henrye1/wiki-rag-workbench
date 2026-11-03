@@ -27,6 +27,8 @@ IG_TITLE_RE = re.compile(r"^Guidance on implementing\b", re.I)  # its title; the
 IG_INTRO = "IG introduction"
 RANGE_DASH = ("\u2013", "\u2014", "-")  # "BC2.17A–" continued by "BC2.17H" on the next line: a range of deleted paragraphs
 EDITORIAL_BRACKETS = re.compile(r"\[(?:Refer|Note|Link|now)\b[^\]]*\]", re.I)
+POINTER_BRACKETS = re.compile(r"\[(?:Refer|Link)\b[^\]]*\]", re.I)  # bare pointers to other text: no content of their own
+INLINE_NOTE = re.compile(r"\[Note:[^\]]*\]", re.I)  # an editorial note printed inside a paragraph's own text
 MARGIN_MAX_X = 150
 HEADER_Y, FOOTER_Y = 110, 720
 
@@ -380,8 +382,9 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
         ref = p.ref
         if p.section == "appendix_a" and ref:
             ref = f"Appendix A: {ref}"
-        body = EDITORIAL_BRACKETS.sub("", _join(p.body))
-        body = clean(body)
+        raw = _join(p.body)
+        p.notes.extend(INLINE_NOTE.findall(raw))  # kept with the paragraph's other notes, never as part of its text
+        body = clean(EDITORIAL_BRACKETS.sub("", raw))
         for r, text in _split_stubs(ref, body, stub_re):
             kind = p.section if r or not accompanying else "intro"  # unlabelled text in a document published with one
             for i, part in enumerate(split_long(text, max_words)):

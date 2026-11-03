@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from uuid import UUID
 
 import numpy as np
+from psycopg.types.json import Jsonb
 
 from .. import llm, storage
 from ..config import get_settings
@@ -122,13 +123,14 @@ class Op:
 
 
 async def create_changeset(
-    wiki_id: UUID, kind: str, summary: str, ops: list[Op], job_id: UUID | None = None, source_id: UUID | None = None
+    wiki_id: UUID, kind: str, summary: str, ops: list[Op], job_id: UUID | None = None, source_id: UUID | None = None,
+    failures: dict[str, list[str]] | None = None,
 ) -> UUID:
     async with get_pool().connection() as conn, conn.transaction():
         cs = await (
             await conn.execute(
-                "insert into wiki.changesets (wiki_id, job_id, source_id, kind, summary) values (%s,%s,%s,%s,%s) returning id",
-                (wiki_id, job_id, source_id, kind, summary),
+                "insert into wiki.changesets (wiki_id, job_id, source_id, kind, summary, check_failures) values (%s,%s,%s,%s,%s,%s) returning id",
+                (wiki_id, job_id, source_id, kind, summary, Jsonb(failures) if failures else None),
             )
         ).fetchone()
         async with conn.cursor() as cur:
@@ -221,6 +223,19 @@ async def apply_changeset(changeset_id: UUID, force: bool = False) -> dict:
             applied.append({"slug": o.slug, "op": action, "version": row["version"]})
         await conn.execute("update wiki.changesets set status='applied', applied_at=now() where id=%s", (changeset_id,))
         applied_slugs = {a["slug"] for a in applied}
+        # the checks a held ingest still failed stay on its pages, as each page's flag, until a later change fixes them
+        failing = cs.get("check_failures") or {}
+        for a in applied:
+            if a["op"] == "delete":
+                continue
+            pid = (await (await conn.execute("select id from wiki.pages where wiki_id = %s and slug = %s", (wiki_id, a["slug"]))).fetchone())["id"]
+            if a["slug"] in failing:
+                await conn.execute(
+                    """insert into wiki.page_flags (page_id, kind, detail) values (%s, 'check_failures', %s)
+                       on conflict (page_id, kind) do update set detail = excluded.detail, updated_at = now()""",
+                    (pid, Jsonb({"failures": failing[a["slug"]], "changeset": str(changeset_id)})))
+            else:
+                await conn.execute("delete from wiki.page_flags where page_id = %s and kind = 'check_failures'", (pid,))
         to_check = await saved.flag_changed(conn, wiki_id, {k: v for k, v in changes.items() if k in applied_slugs},
                                             cs["summary"] or cs["kind"])
         detail = "\n".join(f"- {a['op']} [[{a['slug']}]]" for a in applied)
@@ -297,11 +312,14 @@ async def remove_file(file: dict | None, conn=None):
 
 
 async def commit(wiki_id: UUID, kind: str, summary: str, ops: list[Op], mode: str,
-                 job_id: UUID | None = None, source_id: UUID | None = None) -> dict:
-    """Create a changeset and apply it now (auto) or leave it pending (review)."""
+                 job_id: UUID | None = None, source_id: UUID | None = None, failures: dict[str, list[str]] | None = None) -> dict:
+    """Create a changeset and apply it now (auto) or leave it pending (review). failures: the checks its pages still
+    fail (page -> failures); a changeset with any is held for review whatever the mode, and applying it flags them."""
     if not ops:
         return {"changeset_id": None, "status": "empty"}
-    cs_id = await create_changeset(wiki_id, kind, summary, ops, job_id, source_id)
+    cs_id = await create_changeset(wiki_id, kind, summary, ops, job_id, source_id, failures)
+    if mode == "auto" and failures:
+        return {"changeset_id": str(cs_id), "status": "held", "held_for": failures, "ops": [{"op": o.op, "slug": o.slug} for o in ops]}
     if mode == "auto":
         res = await apply_changeset(cs_id)
         return {**res, "status": "applied"}

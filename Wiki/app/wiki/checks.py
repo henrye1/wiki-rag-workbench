@@ -59,6 +59,19 @@ class Checks:
     papers_apart: bool = False  # a page keeps each paper's text under its own headings; a split stays within one paper
     overview_empty: str = ""  # the word the overview lists a section with when its page holds no claims
     section_slug: str = ""  # the pattern a section page's slug is built from, e.g. <nn>-<section name>
+    kinds_left_out: list[str] | None = None  # reader kinds never stored or written up (None: the schema has no such list)
+    range_ends: bool = False  # a citation of a range cites only the two paragraphs it names
+    also_recorded: dict[int, str] = field(default_factory=dict)  # section number -> what is also recorded on its page
+    concept_terms: bool = False  # a concept page for each defined term
+    concept_heading_pages: int | None = None  # a concept page for each major heading whose lines sit on this many pages
+    concept_line: str = ""  # a concept line's form, its placeholders in order: citation, source heading, page, title
+    concept_defined: str = ""  # a term's page opens with this line, its placeholders: the terms page, the citation
+    concept_match: dict = field(default_factory=dict)  # how a term is found in a sentence
+    concept_slug: str = ""  # a concept page's slug pattern, e.g. <framework>-concept-<term>
+    concept_slug_words: int | None = None  # words of an unnumbered heading used in its concept slug
+    concept_summary_lead: str = ""
+    concept_summary_sep: str = ""
+    concept_summary_max: int | None = None
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
 
 
@@ -75,7 +88,11 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "overview_empty": "overview lines", "section_slug": "section slug",
     "guidance_kinds": "guidance filed with its requirement", "summary_heads": "subtopic summary",
     "join_related": "subtopic join", "slug_main": "joined subtopic slug", "page_summary": "page summary",
+    "kinds_left_out": "kinds left out", "range_ends": "range citations", "also_recorded": "also recorded",
+    "concept_terms": "concept pages", "concept_line": "concept lines", "concept_match": "concept term match",
+    "concept_slug": "concept slug", "concept_summary_lead": "concept summary",
 }
+PLACEHOLDER = re.compile(r"<[^<>]+>")
 
 
 NUMBER_WORDS = {w: n for n, w in enumerate("one two three four five six seven eight nine ten".split(), start=1)}
@@ -158,6 +175,33 @@ def load(schema_md: str) -> Checks | None:
                 c.summary_lead, c.summary_sep = (quoted + ["", ""])[:2] if len(quoted) >= 2 else ("", "")
                 n = re.search(r"\bat most (\d+) characters\b", value, re.I)
                 c.summary_max = int(n.group(1)) if n else None
+        elif attr == "kinds_left_out":  # "a, b": the reader's kind names, up to the first full stop
+            c.kinds_left_out = [x.strip().strip('"') for x in value.split(".")[0].split(",") if x.strip()]
+        elif attr == "range_ends":
+            c.range_ends = bool(re.search(r"\bonly the two\b", value))
+        elif attr == "also_recorded":  # "11 = what; 02 = what": section number -> what is also recorded there
+            c.also_recorded = {int(k): v.strip().rstrip(".") for k, v in _mapping(value).items() if k.strip().isdigit()}
+        elif attr == "concept_terms":  # each defined term; each major heading "... where its lines sit on at least <n> pages"
+            c.concept_terms = bool(re.search(r"\bdefined term\b", value, re.I))
+            n = re.search(r"\bat least (\d+) pages\b", value)
+            c.concept_heading_pages = int(n.group(1)) if n and re.search(r"\bmajor heading\b", value, re.I) else None
+        elif attr == "concept_line":  # "... written <form>, under ..."; a term's page "...: <defined line>."
+            if m := re.search(r"\bwritten (.+?\]\]),", value):
+                c.concept_line = m.group(1)
+            if m := re.search(r"definition:\s*(.+?)\.?$", value):
+                c.concept_defined = m.group(1).strip()
+        elif attr == "concept_match":
+            c.concept_match = {"words": bool(re.search(r"\bwhole words\b", value)), "case": not re.search(r"\bignoring case\b", value),
+                               "longest": bool(re.search(r"\blongest\b", value)), "endings": QUOTED.findall(value)}
+        elif attr == "concept_slug":  # "<pattern>; for a heading ... otherwise its first <n> words"
+            c.concept_slug = value.split(";")[0].strip()
+            n = re.search(r"\bfirst (\d+) words\b", value)
+            c.concept_slug_words = int(n.group(1)) if n else None
+        elif attr == "concept_summary_lead":  # "<lead>" ... separated by "<sep>". At most <n> characters
+            quoted = QUOTED.findall(value)
+            c.concept_summary_lead, c.concept_summary_sep = (quoted + ["", ""])[:2] if len(quoted) >= 2 else ("", "")
+            n = re.search(r"\bat most ([\d,]+) characters\b", value, re.I)
+            c.concept_summary_max = int(n.group(1).replace(",", "")) if n else None
         elif attr == "page_summary":  # "<lead>" ... items ... separated by "<sep>"; at most <n> characters
             quoted = QUOTED.findall(value)
             c.page_summary_lead, c.page_summary_sep = (quoted + ["", ""])[:2] if len(quoted) >= 2 else ("", "")
@@ -206,12 +250,25 @@ def _opener_res(c: Checks) -> dict[str, re.Pattern]:
             for kind, ops in c.openers.items() if ops}
 
 
+ROMAN = r"(?=[ivxlcdm])m{0,3}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})"
+
+
+def _series(token: str) -> str:
+    """What one of the schema's part forms stands for: "i" a roman numeral (i, ii, iv, ...), another letter a letter of
+    the alphabet (a, b, ... aa), digits a number; upper case for an upper-case form."""
+    if token.isdigit():
+        return r"\d{1,3}"
+    if token.lower() == "i":
+        return ROMAN.upper() if token.isupper() else ROMAN
+    return (r"[A-Z]{1,2}" if token.isupper() else r"[a-z]{1,2}") if len(token) == 1 else re.escape(token)
+
+
 def _part_re(c: Checks) -> re.Pattern | None:
-    """The schema's lettered-part forms ("(a)", "(i)") as one pattern: a run of letters or digits stands for any."""
+    """The schema's lettered-part forms ("(a)", "(i)") as one pattern: each form stands for its series (letters,
+    roman numerals, numbers), so a word in brackets is not a part."""
     if not c.part_forms:
         return None
-    pats = {re.sub(r"\\?[A-Za-z]+|\d+", lambda m: "[a-z]{1,5}" if m.group(0).lstrip("\\").islower() else
-                   "[A-Z]{1,5}" if m.group(0).lstrip("\\").isalpha() else r"\d{1,3}", re.escape(f)) for f in c.part_forms}
+    pats = {re.sub(r"\\?[A-Za-z]+|\d+", lambda m: _series(m.group(0).lstrip("\\")), re.escape(f)) for f in c.part_forms}
     return re.compile(r"(?:^|(?<=[\s:;\u2013\u2014]))(" + "|".join(sorted(pats)) + r")(?=\s)")
 
 
@@ -271,6 +328,12 @@ def footnote_form(c: Checks | None) -> str | None:
     """How the schema cites a footnote: the citation form for text without a paragraph label of the kind the schema
     names the reader's footnotes (e.g. editorial note = "ED:<clause>")."""
     return (c.unlabelled_forms.get(c.kinds.get("footnote", "")) or None) if c else None
+
+
+def label_forms(c: Checks | None) -> dict[str, str]:
+    """Each reader kind the schema cites in a form of its own when printed without a paragraph label (e.g. note ->
+    "ED:<clause>", intro -> "<page label>")."""
+    return {k: f for k, v in (c.kinds.items() if c else []) if (f := c.unlabelled_forms.get(v))}
 
 
 def example_label_re(c: Checks) -> re.Pattern | None:
