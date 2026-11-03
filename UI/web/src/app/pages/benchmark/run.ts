@@ -35,7 +35,7 @@ const LABEL: Record<string, string> = { rag: 'RAG (per topic)', rag_q: 'RAG (per
                 @for (k of gapOrder; track k) {
                   @let r = score(d, p, k, p);
                   @let w = score(d, 'wiki', k, p);
-                  @let e = pairGaps(d, p)?.[k];
+                  @let e = gapFor(d, p, k);
                   <tr>
                     <td>{{ gapLabel[k] }}</td>
                     <td class="n" [class.muted]="!r.ok" [title]="r.reason">{{ r.text }}</td>
@@ -47,7 +47,7 @@ const LABEL: Record<string, string> = { rag: 'RAG (per topic)', rag_q: 'RAG (per
                           @else { <span class="muted">{{ e.verdict }}</span> }</td>
                     } @else {
                       <td class="n muted">—</td><td class="n muted">—</td>
-                      <td class="muted small">{{ !r.ok ? r.reason : !w.ok ? w.reason : '' }}</td>
+                      <td class="muted small">{{ !r.ok ? r.reason : !w.ok ? w.reason : counted.includes(k) ? 'no interval: a count per answer' : '' }}</td>
                     }
                   </tr>
                 }
@@ -65,10 +65,16 @@ const LABEL: Record<string, string> = { rag: 'RAG (per topic)', rag_q: 'RAG (per
                 <h3>{{ label(sys) }}</h3>
                 <div class="stat">{{ s.by_system[sys].similarity.mean }}<span class="muted unit">/10</span></div>
                 <div class="muted">similarity (± {{ s.by_system[sys].similarity.sd }})</div>
+                @let ss = extra(d, sys, 'std_similarity', sys === 'rag_q' ? 'rag_q' : 'rag');
+                <div class="kv"><span>Standard-only similarity</span><b [class.muted]="!ss.ok" [title]="ss.reason">{{ ss.text }}</b></div>
                 <div class="kv"><span>Coverage</span><b>{{ s.by_system[sys].coverage.mean }}%</b></div>
                 <div class="kv"><span>Standard-only coverage</span><b>{{ s.by_system[sys].coverage_standard.mean }}%</b></div>
                 <div class="kv"><span>Wins</span><b>{{ sys === 'rag_q' ? s.pairs?.rag_q?.wins_by_run?.rag_q : s.wins_by_run[sys] }}</b></div>
                 @if (sys === 'wiki' && s.pairs?.rag_q) { <div class="muted small">vs RAG (per topic); wins vs RAG (per question): {{ s.pairs.rag_q.wins_by_run.wiki }}</div> }
+                @for (k of counted; track k) {
+                  @let x = extra(d, sys, k);
+                  <div class="kv"><span>{{ cardLabel[k] }}</span><b [class.muted]="!x.ok" [title]="x.reason">{{ x.text }}</b></div>
+                }
               </div>
             }
             <div class="card">
@@ -176,18 +182,22 @@ export class BenchRun {
     effect(() => { this.api.get(`/api/bench/runs/${enc(this.id())}`).then((d) => this.data.set(d)).catch((e) => this.error.set(errMsg(e))); });
   }
 
-  readonly gapOrder = ['similarity', 'coverage', 'coverage_standard', 'coverage_std_supp', 'wins', 'completeness', 'exact_match',
+  readonly gapOrder = ['similarity', 'std_similarity', 'coverage', 'coverage_standard', 'coverage_std_supp', 'wins', 'contradictions',
+                       'no_contradiction', 'completeness', 'exact_match',
                        'exact_match_standard', 'citation_accuracy', 'faithfulness', 'context_recall', 'context_recall_standard', 'latency_s', 'cost_usd'];
   readonly gapLabel: Record<string, string> = {
     similarity: 'Similarity (0–10)', coverage: 'Coverage', coverage_standard: 'Standard-only coverage',
     coverage_std_supp: 'Standard + Supporting coverage', exact_match_standard: 'Standard-only exact match', wins: 'Wins (gap: share of answers)',
     exact_match: 'Exact match', faithfulness: 'Faithfulness', citation_accuracy: 'Citation accuracy', context_recall: 'Context recall', context_recall_standard: 'Standard-only context recall',
     completeness: 'Completeness', latency_s: 'Latency (s, lower is better)', cost_usd: 'Cost per query (lower is better)',
+    std_similarity: 'Standard-only similarity (0–10)', contradictions: 'Contradictions per answer (lower is better)',
+    no_contradiction: 'Answers with no contradiction',
   };
 
   /** One system's score on one test in one pair, or "Not run yet" with the reason. The judged tests and wins come from
    *  the pair's own grading (the wiki is graded once per RAG column); the other tests are per answer. */
   score(d: any, sys: string, k: string, pair = 'rag'): { ok: boolean; text: string; reason: string } {
+    if (this.extras.includes(k)) return this.extra(d, sys, k, pair);
     const no = (reason: string) => ({ ok: false, text: 'Not run yet', reason });
     const added = 'this run was made before this test was added';
     if (!d.summary) return no('the run has not finished');
@@ -208,6 +218,37 @@ export class BenchRun {
 
   readonly judged = ['similarity', 'coverage', 'coverage_standard', 'coverage_std_supp'];
 
+  /** Measures read from what the run stored besides its summary: standard-only similarity (added to a finished run by
+   *  `python -m bench.std_similarity`) and the contradictions found in each answer. */
+  readonly extras = ['std_similarity', 'contradictions', 'no_contradiction'];
+  /** Counts per answer: shown without a wiki-minus-RAG interval. */
+  readonly counted = ['contradictions', 'no_contradiction'];
+  readonly cardLabel: Record<string, string> = {
+    std_similarity: 'Standard-only similarity', contradictions: 'Contradictions per answer', no_contradiction: 'Answers with no contradiction',
+  };
+  /** The wiki-minus-RAG gap and interval of a test in one pair, where the run has one. */
+  gapFor(d: any, pair: string, k: string) {
+    if (k === 'std_similarity') return this.stdSim(d, pair)?.gap;
+    return this.counted.includes(k) ? null : this.pairGaps(d, pair)?.[k];
+  }
+  stdSim(d: any, pair: string) { return pair === 'rag' ? d.extras?.std_similarity : d.extras?.pairs?.[pair]?.std_similarity; }
+
+  /** One system's figure on an extra measure in one pair (the wiki's in the RAG (per question) pair is from that pair's
+   *  grading), or "not measured" with the reason. */
+  extra(d: any, sys: string, k: string, pair = 'rag'): { ok: boolean; text: string; reason: string } {
+    const no = (reason: string) => ({ ok: false, text: 'not measured', reason });
+    if (k === 'std_similarity') {
+      const v = this.stdSim(d, pair)?.by_system?.[sys];
+      if (v?.mean == null) return no('standard-only similarity was not run on this run');
+      return { ok: true, text: `${v.mean}/10`, reason: `${v.n_topics} topic(s)` };
+    }
+    const c = sys === 'wiki' && pair !== 'rag' ? d.extras?.pairs?.[pair]?.contradictions?.wiki : d.extras?.contradictions?.[sys];
+    if (!c) return no('no answer in this run was checked for contradictions');
+    return k === 'contradictions'
+      ? { ok: true, text: c.mean.toFixed(2), reason: `${c.n} answer(s)` }
+      : { ok: true, text: `${c.none} of ${c.n} (${c.none_pct.toFixed(0)}%)`, reason: `${c.n} answer(s)` };
+  }
+
   fmtMetric(k: string, v: number) {
     if (k === 'cost_usd') return `$${v.toFixed(4)}`;
     if (k === 'latency_s') return `${v.toFixed(1)} s`;
@@ -219,7 +260,7 @@ export class BenchRun {
     const a = Math.abs(v);
     if (k === 'cost_usd') return `${sign}$${a.toFixed(4)}`;
     if (k === 'latency_s') return `${sign}${a.toFixed(1)} s`;
-    if (k === 'similarity') return `${sign}${a.toFixed(2)}`;
+    if (k === 'similarity' || k === 'std_similarity') return `${sign}${a.toFixed(2)}`;
     if (k === 'wins') return `${sign}${(a * 100).toFixed(0)} pts`;
     return `${sign}${a.toFixed(1)} pts`;
   }

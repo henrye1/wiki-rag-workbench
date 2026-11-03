@@ -29,6 +29,34 @@ MAX_UPLOAD = 20 * 1024 * 1024
 DONE_SQL = """(select count(*) from jsonb_each(coalesce(results->'topics', '{}'::jsonb)) t,
                  jsonb_each(coalesce(t.value->'runs', '{}'::jsonb)) r where (r.value->>'judgement')::boolean is true)::int as done"""
 
+# Contradictions with the reference, counted per answer (each RAG column, and the wiki: in its pair with RAG per topic,
+# and in its pair with RAG per question, where that pair was graded), and the standard-only similarity scores stored by
+# `python -m bench.std_similarity` (with each pair's gap); only these parts of the results are read
+CONTRA = {"rag": "systems.rag", "wiki": "systems.wiki", "rag_q": "systems.rag_q", "wiki_q": "pairs.rag_q.wiki"}
+EXTRAS_SQL = ", ".join(
+    [f"jsonb_path_query_array(results, '$.topics.*.runs.*.{path}.contradictions.size()') as contra_{k}" for k, path in CONTRA.items()]
+    + ["results->'standard_similarity'->'summary' as std_sim", "results->'standard_similarity'->'pairs'->'rag_q'->'summary' as std_sim_q"])
+
+
+def _contra(counts: list | None) -> dict | None:
+    """Contradictions per answer and answers with none, over the answers that were checked; None if none were."""
+    if not counts:
+        return None
+    none = sum(1 for c in counts if c == 0)
+    return {"mean": round(statistics.mean(counts), 2), "none": none, "n": len(counts), "none_pct": round(100 * none / len(counts), 1)}
+
+
+def _extras(row: dict) -> dict:
+    """Per system: contradictions and standard-only similarity; the wiki's figures in the RAG (per question) pair under
+    pairs.rag_q. A measure a run does not have is None (the page shows "not measured")."""
+    sim, sim_q = row.get("std_sim") or {}, row.get("std_sim_q") or {}
+    return {
+        "contradictions": {k: _contra(row.get(f"contra_{k}")) for k in ("rag", "wiki", "rag_q")},
+        "std_similarity": {"by_system": sim.get("by_system"), "gap": sim.get("gap")} if sim else None,
+        "pairs": {"rag_q": {"contradictions": {"wiki": _contra(row.get("contra_wiki_q")), "rag_q": _contra(row.get("contra_rag_q"))},
+                            "std_similarity": {"by_system": sim_q.get("by_system"), "gap": sim_q.get("gap")} if sim_q else None}},
+    }
+
 
 def _query(sql: str, params: tuple = (), one: bool = False):
     def run():
@@ -142,7 +170,7 @@ async def list_runs():
     rows = await _query(
         f"""select id, status, updated_at, runs, topics, query_set_name, rag_collection, wiki_slug, sources, use_saved, mode, use_batch, {DONE_SQL},
                    results->'config' as config, results->'summary' as summary, results->'errors' as errors,
-                   jsonb_array_length(coalesce(results->'config'->'topics_selected', '[]'::jsonb)) as n_topics
+                   jsonb_array_length(coalesce(results->'config'->'topics_selected', '[]'::jsonb)) as n_topics, {EXTRAS_SQL}
             from bench.runs order by created_at desc"""
     )
     out, labels, pairs, shas = [], await _labels(), await _masks(), await _run_shas()
@@ -157,7 +185,7 @@ async def list_runs():
             "rag_collection": r["rag_collection"], "wiki": r["wiki_slug"], "sources": r["sources"], "use_saved": r["use_saved"],
             "mode": r["mode"], "use_batch": r["use_batch"],
             "summary": r["summary"], "progress": _progress(r, cfg, _mask(r["errors"], pairs)),
-            "rubric": _rubric_label(cfg), "judge": _judge_label(cfg),
+            "rubric": _rubric_label(cfg), "judge": _judge_label(cfg), "extras": _extras(r),
         })
     return out
 
@@ -188,7 +216,7 @@ async def _row(run_id: str, cols: str) -> dict:
 
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str):
-    row = await _row(run_id, "results, rag_collection, wiki_slug, sources, use_saved")
+    row = await _row(run_id, f"results, rag_collection, wiki_slug, sources, use_saved, {EXTRAS_SQL}")
     row["reference_sha"] = (await _run_shas()).get(run_id)
     data = row["results"] or {}
     pairs = await _masks()
@@ -197,6 +225,7 @@ async def get_run(run_id: str):
             data[k] = _mask(data[k], pairs)
     data["reference_label"] = ((await _labels()).get(row["reference_sha"]) or {}).get("label")
     data["progress"] = _progress(row, data.get("config"), data.get("errors"))
+    data["extras"] = _extras(row)
     # what the run compared, from the run row (results of older runs do not record it)
     data["compared"] = {"rag_collection": row["rag_collection"], "wiki": row["wiki_slug"], "sources": row["sources"], "use_saved": row["use_saved"]}
     return data
