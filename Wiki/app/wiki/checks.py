@@ -407,18 +407,19 @@ def routed_to_examples(c: Checks | None, reader_kind: str) -> bool:
 CLOSING_GROUP = re.compile(r"(?:\[\[source-[^\]]+\]\](?:\s*(?:,|;|and)\s*|\s+)?)+(?=[.;:]?\s*(?:$|[A-Z(|*\u2022-]))", re.M)
 
 
-AFTER_LINK = re.compile(r"\]\]([.;:!?]?)\s+(?=[A-Z(])")
+AFTER_LINK = re.compile(r"\]\]([.;:!?]?)\s+(?=([A-Z(]|\[\[))")
 LINK_GROUP_END = re.compile(r"(?:\s*\[\[[^\]]*\]\][,;]?)+$")
 
 
 def sentences_at_links(line: str) -> list[str]:
     """A line cut into sentences where one ends with its citations: after a link, only when sentence punctuation
-    follows the link or comes just before its group of links ("... effect. [[source|6.1.1]] An entity ..."). A link
-    inside a sentence ("of [[IAS 21]] The Effects of ...", "[[source|B6.3.18]]; (b) ...") does not end it."""
+    follows the link or comes just before its group of links ("... effect. [[source|6.1.1]] An entity ..."); a
+    sentence may open with a link, after a link followed by sentence punctuation. A link inside a sentence ("of [[IAS 21]]
+    The Effects of ...", "[[source|B6.3.18]]; (b) ...") does not end it, nor does one link of a group end at the next."""
     out, start = [], 0
     for m in AFTER_LINK.finditer(line):
-        ends = m.group(1) in (".", "!", "?") or (
-            not m.group(1) and re.search(r"[.!?]\s*$", LINK_GROUP_END.sub("", line[start:m.start() + 2])))
+        ends = m.group(1) in (".", "!", "?") or (m.group(2) != "[[" and not m.group(1) and re.search(
+            r"[.!?]\s*$", LINK_GROUP_END.sub("", line[start:m.start() + 2])))
         if ends:
             out.append(line[start:m.end()].rstrip())
             start = m.end()

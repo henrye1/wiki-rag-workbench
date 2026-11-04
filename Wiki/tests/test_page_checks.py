@@ -47,6 +47,8 @@ class SentencesAtLinks(unittest.TestCase):
         "The hedged items are: (a) a layer " + S + "; (b) a part of a volume " + S + ".": 1,  # ";" before a list part
         "For the purposes of " + S + ": (a) an item that was " + S + ".": 1,  # ":" before a list part
         "No links here. Two sentences.": 1,
+        "It is so " + S + ". [[source-x|Doc]] defines it " + S + ".": 2,  # a sentence opening on a link
+        "It aims. " + S + " [[source-x|1.2]] An entity may choose " + S + ".": 2,  # a group of links stays whole
     }
 
     def test_cases(self):
@@ -77,7 +79,7 @@ class Openers(Base):
 class SentenceStart(Base):
     def test_a_sentence_opening_on_a_link_is_checked(self):
         # a sentence that opens with a link ("[[source|Doc]] defines ...") is a sentence, not a list item's continuation
-        text = f"[[{B}|Doc]] defines this as something [[{B}|B1]]."
+        text = f"{OPENER} that [[{A}|1]]. [[{B}|Doc]] defines this as something [[{B}|B1]]."
         self.assertTrue([f for f in check(text, {}) if "B1" in f])
         self.assertEqual([f for f in check(f"{OPENER} that [[{B}|Doc]] defines this [[{B}|B1]].", {}) if "B1" in f], [])
 
