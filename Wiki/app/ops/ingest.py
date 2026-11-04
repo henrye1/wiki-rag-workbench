@@ -2233,6 +2233,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     # a page whose write-ups moved to other pages (a section page now an index, a page that holds no claims): what it
     # cited before must be cited on one of the wiki's pages after this upload
     final = {sl: p["content_md"] for sl, p in existing.items()} | {o.slug: o.content_md for o in ops}
+    final = {sl: md for sl, md in final.items() if sl not in {o.slug for o in ops if o.op == "delete"}}
     on_some_page = set().union(*map(checks.cites, final.values()))
     for o in ops:
         if o.slug in existing and (o.slug in index_of or (chk and o.slug in chk.no_claim_pages)):
