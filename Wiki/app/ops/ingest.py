@@ -347,17 +347,27 @@ def _fix_breaks(text: str) -> str:
 
 
 NUMBERED = re.compile(r"^(?:[A-Z][a-z]+\s+)?(\d+(?:\.\d+)*)\s")  # a numbered heading, "6.4 ..." or "Chapter 6 ..."
+# a heading's own number as a slug takes it: digits, or a letter and digits, joined by full stops ("6.3", "G.2")
+OWN_NUMBER = re.compile(r"^(?:[A-Z][a-z]+\s+)?((?:\d+|[A-Z])(?:\.\d+)+|\d+)\s")
 
 
 REFERS = re.compile(r"\bparagraphs?\s+([0-9][\w.]*|[A-Z]{1,3}\d[\w.]*)")  # "(paragraph 34)", "paragraphs 42A–42H"
 
 
-def _anchored_paths(paras: list[str], heading_paths: list, kinds: dict | None = None) -> list[list[str]]:
+def _listed(chk) -> set[str] | None:
+    """The reader kinds the schema's Paragraph kinds names (guidance, examples, notes): text of no listed kind is the
+    Standard's own."""
+    return set(chk.kinds) if chk and chk.kinds else None
+
+
+def _anchored_paths(paras: list[str], heading_paths: list, kinds: dict | None = None, listed: set[str] | None = None) -> list[list[str]]:
     """Each paragraph's heading path (top heading first). A paragraph under no numbered heading whose label number
     (any letter prefix aside) falls under a numbered heading elsewhere in the source takes that heading's path, so
     guidance in an appendix sits with the requirement it is numbered after (B6.4.2 with "6.4 ..."). Otherwise a
     paragraph whose headings (or, failing those, its text) refer to a paragraph of another kind takes that paragraph's
-    path ("Market risk (paragraph 40)" goes with paragraph 40)."""
+    path ("Market risk (paragraph 40)" goes with paragraph 40). listed: the reader kinds the schema names; where given,
+    only a paragraph of such a kind moves, and only to the Standard's own text (a kind it does not name): a requirement
+    that refers to its guidance stays under its own heading."""
     paths = [[h for _, h in hp] for hp in heading_paths]
     prefix: dict[str, list[str]] = {}
     for p in paths:
@@ -384,10 +394,11 @@ def _anchored_paths(paras: list[str], heading_paths: list, kinds: dict | None = 
             at.setdefault(_ref(para), k)
         for k, para in enumerate(paras):
             own = kinds.get(_ref(para))
-            if not own or any(NUMBERED.match(h) for h in out[k]):
+            if not own or any(NUMBERED.match(h) for h in out[k]) or (listed is not None and own not in listed):
                 continue
             for text in (" ".join(paths[k]), para):  # its headings first, then its text
-                hit = next((at[r] for r in (m.rstrip(".") for m in REFERS.findall(text)) if r in at and kinds.get(r) not in (None, own)), None)
+                hit = next((at[r] for r in (m.rstrip(".") for m in REFERS.findall(text)) if r in at and kinds.get(r) not in (None, own)
+                            and (listed is None or kinds.get(r) not in listed)), None)
                 if hit is not None:
                     out[k] = list(out[hit])
                     break
@@ -539,7 +550,7 @@ def _sub_slug(sec_slug: str, names: list[str], slug_words: int | None, main: str
     """A subtopic slug: the heading's own number where it has one (6.3 -> <section>-6-3), else its first words. main:
     the heading of a joined group that names it (the schema's: the one holding most of its words), else its first."""
     head = main or (names[-1].split(HEADS_SEP)[0] if names else "")
-    if m := NUMBERED.match(head):
+    if m := OWN_NUMBER.match(head):
         return slugify(f"{sec_slug}-{m.group(1).replace('.', '-')}")
     words = head.split()[:slug_words] if slug_words else head.split()
     # no longer than slugify allows, like every slug (links to it are read that way): whole words off the end
@@ -579,14 +590,50 @@ def _add_blocks(md: str, text: str) -> str:
     return _with_also(f"{head}\n\n{text}{sep}{tail}", also_lines)
 
 
-def _index_md(sec_name: str, subs: list[dict], titles: dict[str, str]) -> tuple[str, str]:
+def _example_lines(content: str, titles: dict[str, str], src: dict, chk) -> list[str]:
+    """The examples section's index lines for one subtopic page: one per example it writes up, in page order, giving
+    the example's name, what it illustrates (its heading as the issuer prints it) and the clause of the requirement (the
+    paragraphs of another source, the Standard, that its text refers to), its own clauses listed, not cited."""
+    found: dict[str, dict] = {}
+    for m in store.LINK_RE.finditer(content):
+        if not (m.group(1).startswith("source-") and m.group(2)) or not (info := src.get(m.group(1))):
+            continue
+        lab = re.sub(r"(?:\s*\([^)]*\))+$", "", m.group(2).strip())
+        path = info["own"].get(lab) or []
+        if not (name := checks.example_item(path, info["para"].get(lab, ""), chk)):
+            continue
+        ex = found.setdefault(name, {"labels": {}, "head": "", "refs": []})
+        ex["labels"].setdefault(m.group(1), [])
+        if lab not in ex["labels"][m.group(1)]:
+            ex["labels"][m.group(1)].append(lab)
+        if not ex["head"]:
+            h = next((x for x in path if name in x), "") or info.get("printed", {}).get(lab, "")
+            ex["head"] = re.sub(r"^\s*[\u2013\u2014:-]\s*", "", h.replace(name, "", 1)).strip() if name in h else h.strip()
+        for r in (x.rstrip(".") for x in REFERS.findall(info["para"].get(lab, ""))):
+            for other, oinfo in src.items():
+                if other != m.group(1) and r in oinfo["own"] and (other, r) not in ex["refs"]:
+                    ex["refs"].append((other, r))
+    lines = []
+    for name, ex in found.items():
+        req = "; ".join(f"{titles.get(o, o)} {', '.join(r for oo, r in ex['refs'] if oo == o)}" for o in dict.fromkeys(o for o, _ in ex["refs"]))
+        own = "; ".join(f"{titles.get(sl, sl)} {', '.join(labs)}" for sl, labs in ex["labels"].items())
+        lines.append(f"- {name}" + (f" ({ex['head']})" if ex["head"] else "") + (f": illustrates {req}" if req else "")
+                     + f"; cites {own}")
+    return lines
+
+
+def _index_md(sec_name: str, subs: list[dict], titles: dict[str, str], examples: tuple | None = None) -> tuple[str, str]:
     """A split section's index page, built from its subtopic pages: each page's link and title, and under it each of
-    its headings with the clauses cited there, named with their own source. It links every subtopic page and holds no
-    claims: the clauses are listed, not cited, and nothing a subtopic page states (its summary included) is copied.
-    Returns (content, one-line summary)."""
+    its headings with the clauses cited there, named with their own source; for the examples section (examples: the
+    sources' paragraphs and the schema's checks), one line per example instead (_example_lines). It links every
+    subtopic page and holds no claims: the clauses are listed, not cited, and nothing a subtopic page states (its
+    summary included) is copied. Nothing is cut. Returns (content, one-line summary)."""
     blocks = []
     for p in subs:
         lines = [f"## [[{p['slug']}|{p['title']}]]"]
+        if examples and (ex_lines := _example_lines(p["content_md"], titles, *examples)):
+            blocks.append("\n".join(lines + ex_lines))
+            continue
         for block in re.split(r"(?m)^(?=#{2,4} )", p["content_md"]):
             head = re.match(r"#{2,4} (.*)", block)
             by_src: dict[str, list[str]] = {}
@@ -596,14 +643,14 @@ def _index_md(sec_name: str, subs: list[dict], titles: dict[str, str]) -> tuple[
             if by_src:  # under its heading, or (a page without sub-headings) its opening words
                 name = store.LINK_RE.sub(lambda m: m.group(2) or m.group(1), head.group(1)).strip() if head else \
                     " ".join(store.LINK_RE.sub("", block).split()[:25]) + " ..."
-                lines.append(f"- {name}: cites " + "; ".join(f"{titles.get(src, src)} {', '.join(labs[:40])}"
+                lines.append(f"- {name}: cites " + "; ".join(f"{titles.get(src, src)} {', '.join(labs)}"
                                                              for src, labs in by_src.items()))
         blocks.append("\n".join(x for x in lines if x))
     summary = f"{sec_name}: index of its subtopic pages: " + "; ".join(p["title"].split(": ", 1)[-1] for p in subs)
-    return "\n\n".join(blocks), summary[:500]
+    return "\n\n".join(blocks), summary
 
 
-async def _source_paths(wiki_id, footnote_form: str | None = None) -> dict[str, dict]:
+async def _source_paths(wiki_id, footnote_form: str | None = None, listed: set[str] | None = None) -> dict[str, dict]:
     """Each source's paragraph labels with their heading path (title heading left off), their text and the reader's
     kind of each. A guidance paragraph filed with the requirement it applies to (the source's applies_to) takes that
     requirement's path; a footnote (labelled in footnote_form, the schema's) takes its paragraph's. own: each label's
@@ -619,7 +666,7 @@ async def _source_paths(wiki_id, footnote_form: str | None = None) -> dict[str, 
         hp = (r["meta"] or {}).get("heading_paths") or []
         rk = (r["meta"] or {}).get("kinds") or []
         rk = rk if len(rk) == len(sp) else [""] * len(sp)
-        paths = _drop_title(_anchored_paths(sp, hp if len(hp) == len(sp) else [[] for _ in sp], (r["meta"] or {}).get("para_kinds")))
+        paths = _drop_title(_anchored_paths(sp, hp if len(hp) == len(sp) else [[] for _ in sp], (r["meta"] or {}).get("para_kinds"), listed))
         heads = (r["meta"] or {}).get("headings") or []
         heads = heads if len(heads) == len(sp) else [""] * len(sp)
         out[r["slug"]] = {"path": {}, "own": {}, "rank": rank, "para": {}, "place": {}, "route_kind": {}, "printed": {},
@@ -694,8 +741,9 @@ async def page_summaries(wiki_id, chk, sections: list[dict], now: dict[str, dict
     """The summaries of the pages slugs, from their text as it is saved: the schema's subtopic summary, drawn across the
     page's headings, and its page summary for every other page (what it holds); where neither gives one, the page's
     own, kept to length (a subtopic page) or as it is. A section index page and a synthesis page keep theirs. now: every
-    page of the wiki as it will stand (slug -> type, title, content_md, summary). No AI call is made."""
-    heads_src = await _source_paths(wiki_id, checks.footnote_form(chk)) if chk and chk.summary_lead else {}
+    page of the wiki as it will stand (slug -> type, title, content_md, summary). A concept or entity page keeps the
+    summary its builder gave it (the schema's Concept summary). No AI call is made."""
+    heads_src = await _source_paths(wiki_id, checks.footnote_form(chk), _listed(chk)) if chk and chk.summary_lead else {}
     examples = _examples_name(sections, chk)
     titles = {sl: p["title"] for sl, p in now.items()}
     section_pages = frozenset(sl for sl, p in now.items() if p["type"] == "topic")  # the wiki's section pages
@@ -708,7 +756,7 @@ async def page_summaries(wiki_id, chk, sections: list[dict], now: dict[str, dict
         p = now[sl]
         sm = checks.subtopic_summary(p["content_md"], chk, _untitled_heads(p["content_md"], p["title"], heads_src, chk, examples),
                                      titles) if p["type"] == "subtopic" else None
-        if not sm and p["type"] != "synthesis" and not (p["type"] == "topic" and is_index(sl)):
+        if not sm and p["type"] not in ("synthesis", "concept", "entity") and not (p["type"] == "topic" and is_index(sl)):
             sm = checks.page_summary(p["content_md"], chk, terms=sl == terms_page, source=p["type"] == "source", titles=titles,
                                      sections=section_pages, skip_heads=frozenset({ALSO_HEADING}))
         out[sl] = sm or (checks.summary_cut(p["summary"], chk) if p["type"] == "subtopic" else p["summary"])
@@ -743,7 +791,7 @@ async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dic
             and len(_split_also(pages[sl]["content_md"])[0].split()) > cap]
     if not todo:
         return [], []
-    src = await _source_paths(wiki_id, checks.footnote_form(chk))
+    src = await _source_paths(wiki_id, checks.footnote_form(chk), _listed(chk))
     apart = chk.papers_apart  # each block's path starts with its paper: groups form within one paper only
     ops: dict[str, Op] = {}
     report = []
@@ -838,7 +886,8 @@ async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dic
                for x in dict.fromkeys(subs_of(home) + [x for x in ops if x.startswith(home + "-")]) if x not in gone}
         hp = pages[home]
         order = lambda x: hp["content_md"].find(f"[[{x}") % (len(hp["content_md"]) + 1) if f"[[{x}" in hp["content_md"] else len(hp["content_md"]) + 1
-        content, summary = _index_md(sec["name"], [now[x] for x in sorted(now, key=order)], {k: v["title"] for k, v in src.items()})
+        content, summary = _index_md(sec["name"], [now[x] for x in sorted(now, key=order)], {k: v["title"] for k, v in src.items()},
+                                     (src, chk) if chk and sec["num"] == chk.examples_section else None)
         ops[home] = Op(op="update", slug=home, type="topic", title=hp["title"], summary=summary, content_md=content,
                        tags=hp.get("tags") or [], base_version=hp.get("version"), change_note=f"Index of {len(now)} subtopic pages")
     return list(ops.values()), report
@@ -906,7 +955,7 @@ async def _move_old_write_ups(wiki_id, index_of: dict, sub_of: dict, existing: d
         for r in rows:
             sp = [b.strip() for b in re.split(r"\n\s*\n", r["text"] or "") if b.strip()]
             hp = (r["meta"] or {}).get("heading_paths") or []
-            paths = _drop_title(_anchored_paths(sp, hp if len(hp) == len(sp) else [[] for _ in sp], (r["meta"] or {}).get("para_kinds")))
+            paths = _drop_title(_anchored_paths(sp, hp if len(hp) == len(sp) else [[] for _ in sp], (r["meta"] or {}).get("para_kinds"), _listed(chk)))
             path_of, last = {}, []
             for p, pa in zip(sp, paths):  # a paragraph with no heading of its own is under the one before it
                 last = pa or last
@@ -914,7 +963,7 @@ async def _move_old_write_ups(wiki_id, index_of: dict, sub_of: dict, existing: d
                     path_of[_ref(p)] = last
             src[r["slug"]] = {"title": r["title"], "path": path_of}
         if any((r["meta"] or {}).get("applies_to") for r in rows):  # guidance filed with its requirement
-            filed = await _source_paths(wiki_id)
+            filed = await _source_paths(wiki_id, None, _listed(chk))
             for r in rows:
                 for lab in (r["meta"] or {}).get("applies_to") or {}:
                     if lab in filed[r["slug"]]["path"]:
@@ -1039,6 +1088,21 @@ def _join_parts(texts: list[str]) -> str:
     return "\n\n".join(out)
 
 
+def _line_opener(line: str, source_slug: str, chk, kinds: dict, heads: dict, issuer: str) -> str:
+    """An also-recorded line opening as its paragraph's kind requires (its opener, where it has one and the line does
+    not open with it already): "- <opener> <the point>: see ..."."""
+    m = re.match(r"^(\s*[-*\u2022]\s+)(.*)$", line)
+    cites = [re.sub(r"(?:\s*\([^)]*\))+$", "", x.group(2).strip()) for x in store.LINK_RE.finditer(line)
+             if x.group(1) == source_slug and x.group(2)]
+    if not m or not cites:
+        return line
+    op = _opener_for(chk, kinds.get(cites[0]), "", heads.get(cites[0], ""), issuer)
+    if not op or m.group(2).lower().startswith(op.lower()):
+        return line
+    rest = m.group(2)
+    return f"{m.group(1)}{op} {rest[:1].lower() + rest[1:] if rest[:2] != rest[:2].upper() else rest}"
+
+
 SENTENCES = re.compile(r"(?<=\]\][.;:])\s+(?=[A-Z(])|(?<=\]\])\s+(?=[A-Z(])")  # a page's statements end with their citations
 
 
@@ -1155,6 +1219,48 @@ def _unlink(md: str, valid: set[str]) -> str:
     return store.LINK_RE.sub(lambda m: m.group(0) if slugify(m.group(1)) in valid else (m.group(2) or m.group(1)).strip(), md)
 
 
+async def composed_ops(wiki_id, chk, sections: list[dict], existing: dict[str, dict], ops: list[Op]) -> tuple[list[Op], dict]:
+    """The pages the engine builds from the schema's lists once the other pages are written: concept and entity pages
+    (cleared and written again), and the examples section's index with its list of the issuer's examples printed
+    inside guidance. existing: the wiki's pages (slug -> page); ops: the changes to them so far. No AI call is made.
+    Returns the ops with these added (an op already there for the same page is replaced or extended) and a count."""
+    if not chk:
+        return ops, {}
+    stand = {sl: {"type": p["type"], "title": p["title"], "content_md": p["content_md"]} for sl, p in existing.items()}
+    stand |= {o.slug: {"type": o.type or existing.get(o.slug, {}).get("type"), "title": o.title, "content_md": o.content_md}
+              for o in ops if o.op != "delete"}
+    for o in ops:
+        if o.op == "delete":
+            stand.pop(o.slug, None)
+    sec_page = {sl: sec for sl, p in stand.items() if p["type"] == "topic" and (sec := _section_for(sections, p["title"], sl))}
+    src = await _source_paths(wiki_id, checks.footnote_form(chk), _listed(chk))
+    count = {}
+    if chk.concept_terms or chk.concept_heading_pages or chk.entity_pages:
+        section_of = lambda sl: sec_page.get(max((x for x in sec_page if sl == x or sl.startswith(x + "-")), key=len, default=None))
+        framework = next((sl[: -len(slugify(sec["name"])) - 1] for sl, sec in sec_page.items()
+                          if sl.endswith("-" + slugify(sec["name"]))), "")
+        made = concepts.build(chk, stand, src, sections, section_of, framework, existing)
+        ops = [o for o in ops if o.slug not in {c.slug for c in made}] + made
+        count = {t: sum(o.op != "delete" and o.type == t for o in made) for t in ("concept", "entity")} | \
+                {"removed": sum(o.op == "delete" for o in made)}
+    ex_index = next((sl for sl, x in sec_page.items() if x["num"] == chk.examples_section), None)
+    if ex_index and chk.split.get(chk.examples_section):
+        head, block = concepts.guidance_examples(chk, stand, src)
+        if head:
+            cur = next((o for o in ops if o.slug == ex_index), None)
+            body = stand[ex_index]["content_md"]
+            body = body.split("\n" + head + "\n")[0].rstrip() if ("\n" + head + "\n") in body else body.rstrip()
+            body = body + (f"\n\n{head}\n\n{block}" if block else "")
+            if cur:
+                cur.content_md = body
+            elif body != stand[ex_index]["content_md"] and ex_index in existing:
+                e = existing[ex_index]
+                ops.append(Op(op="update", slug=ex_index, type=e["type"], title=e["title"], summary=e["summary"], content_md=body,
+                              tags=e.get("tags") or [], base_version=e["version"], change_note="Examples inside guidance listed"))
+            count["examples_inside_guidance"] = len([x for x in block.split("\n") if x.strip()]) if block else 0
+    return ops, count
+
+
 async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: str) -> dict:
     s = get_settings()
     wiki_id, schema = wiki["id"], wiki["schema_md"]
@@ -1218,6 +1324,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     # list; a schema before that list marks such a section in its brief instead (and its paragraphs reach the choice
     # cut to their first 200 words, without the schema, as they did then)
     cut_also = not (chk and chk.also_recorded)
+    also_openers = not cut_also  # the schema's Also recorded lines open as their paragraph's kind requires
     also_what = dict(chk.also_recorded) if not cut_also else {x["num"]: "" for x in sections if re.search(r"\bADDITIVE\b", x["brief"])}
     # coverage: a paragraph counts as written up only where a citation names it; a range names only its two ends when the
     # schema says so (its Range citations), so the paragraphs inside one get their own write-up
@@ -1265,19 +1372,17 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             todo = [i for i in todo if i not in owner]
             if not todo:
                 break
-        # Still missing: where most of its paragraph group (e.g. 5.5.x) went, else the closest section brief
-        groups: dict[str, list[int]] = {}
-        for i, p in enumerate(paras):
-            groups.setdefault(_group_key(p, i), []).append(i)
-        name = {x["num"]: f"{x['num']:02d} {x['name']}" for x in sections}
-        brief_vecs = np.asarray(await llm.embed([x["brief"][:8000] for x in targets], task="RETRIEVAL_QUERY")) if todo else None
+        # Still missing after both rounds: a chunk of a paragraph whose other chunks were routed goes with them (it is
+        # the same paragraph); anything else names no section and is discarded and counted, never put on a default page
+        placed_label = {}
+        for i, n in owner.items():
+            placed_label.setdefault(_ref(paras[i]), n)
         for i in todo:
-            votes = [owner[j] for j in groups[_group_key(paras[i], i)] if j in owner and owner[j] in nums]
-            if votes:
-                owner[i], by = max(set(votes), key=votes.count), "its paragraph group"
+            if _ref(paras[i]) and _ref(paras[i]) in placed_label:
+                owner[i] = placed_label[_ref(paras[i])]
             else:
-                owner[i], by = targets[int(np.argmax(brief_vecs @ para_vecs[i]))]["num"], "closest section brief"
-            unassigned.append({"paragraph": _ref(paras[i]) or f"paragraph {i + 1}", "placed_in": name[owner[i]], "by": by})
+                unassigned.append({"paragraph": _ref(paras[i]) or f"paragraph {i + 1}", "discarded": True,
+                                   "words": len(paras[i].split())})
         _same_label_together(paras, owner)  # the chunks of one long paragraph go to one page
         owner.update({i: owner[j] for i, j in foot.items() if j in owner})
         if unassigned:
@@ -1308,7 +1413,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     group_of: dict[int, int] = {}  # paragraph -> the section number of its group
     line_to: dict[int, dict[int, int]] = {}  # split section -> its also-recorded lines -> the section each points to
     hp0 = ex.meta.get("heading_paths") or []
-    paths0 = _drop_title(_anchored_paths(paras, hp0 if len(hp0) == len(paras) else [[] for _ in paras], ex.meta.get("para_kinds")))
+    paths0 = _drop_title(_anchored_paths(paras, hp0 if len(hp0) == len(paras) else [[] for _ in paras], ex.meta.get("para_kinds"), _listed(chk)))
     item_early = {i: x for i in range(len(paras)) if (x := checks.example_item(paths0[i], paras[i], chk))}
     for num, grouped_by in (chk.split.items() if chk and owner else []):
         parent = next((x for x in sections if x["num"] == num), None)
@@ -1373,8 +1478,9 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             continue
         if p["type"] == "synthesis" or existing.get(slug, {}).get("type") == "synthesis":
             continue  # only queries file synthesis pages; an upload never writes or rewrites one
-        if p["type"] == "concept" and chk and (chk.concept_terms or chk.concept_heading_pages):
-            continue  # concept pages are built from the schema's lists after the pages are written, never planned
+        if sections and p["type"] not in ("topic", "overview"):
+            continue  # with fixed sections the planner names section pages and the overview only: composed pages are built
+            # from the schema's lists after the pages are written, never planned
         if existing.get(slug, {}).get("type") == "subtopic":
             continue  # subtopic pages are made from the grouping below, never planned
         seen.add(slug)
@@ -1441,7 +1547,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     item_of: dict[int, str] = {}  # paragraph -> the labelled example it belongs to (the schema's example labels)
     if limit and owner:
         hp = ex.meta.get("heading_paths") or []
-        paths = _drop_title(_anchored_paths(paras, hp if len(hp) == len(paras) else [[] for _ in paras], ex.meta.get("para_kinds")))
+        paths = _drop_title(_anchored_paths(paras, hp if len(hp) == len(paras) else [[] for _ in paras], ex.meta.get("para_kinds"), _listed(chk)))
         words = [len(p.split()) for p in paras]
         split_basis.update(paths=paths, words=words)
         item_of.update({i: x for i in range(len(paras)) if (x := checks.example_item(paths[i], paras[i], chk))})
@@ -1466,7 +1572,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                     continue
                 reqs = [(("here", i), heading(paths[i]), paras[i]) for i in mine if role(i) == "requirement"]
                 if olds:
-                    others = others or await _source_paths(wiki_id, checks.footnote_form(chk))
+                    others = others or await _source_paths(wiki_id, checks.footnote_form(chk), _listed(chk))
                     for x in olds:
                         for c in sorted(checks.cites(existing[x]["content_md"])):
                             src_slug, lab = c.split("|", 1)
@@ -1684,7 +1790,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             if not given and not extra:  # nothing from this source: leave an existing page alone, otherwise say the section is empty
                 if cur:
                     return None
-                return Op(op="create", slug=slug, title=title, type=ptype, summary="Empty: no source content yet", tags=[],
+                return Op(op="create", slug=slug, title=title, type=ptype, tags=[],
+                          summary=chk.empty_summary if chk and chk.empty_summary else "Empty: no source content yet",
                           content_md=chk.empty_text if chk and chk.empty_text else
                           f"This section is empty: no paragraph of [[{source_slug}]] belongs to it.",
                           change_note=f"Created empty: {ex.title} has nothing for this section")
@@ -1822,6 +1929,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
 
             def item(i: int) -> str:
                 link = f"(main page: [[{para_sub.get(i) or main_page.get(owner.get(i), 'overview')}]])"
+                if also_openers and (op := _opener_for(chk, para_kinds.get(_ref(paras[i])), paras[i], head_of.get(_ref(paras[i]), ""), issuer)):
+                    link += f' (its line opens "{op}")'
                 return re.sub(r"^(\[[^\]]+\])", lambda m: f"{m.group(1)} {link}", paras[i], count=1)
 
             def also_lines(reply: str, refs: set[str]) -> list[str]:
@@ -1893,10 +2002,11 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                 missed.append({"page": slug, "paragraphs": still, "reason": "not recorded after two tries and the backstop"})
 
         if (sec or sub) and (old_also or extra):  # earlier uploads' lines first; a line for the same paragraph is replaced
-            new = lines if extra else []
+            new = [_line_opener(ln, source_slug, chk, para_kinds, head_of, issuer) for ln in lines] if extra and also_openers \
+                else lines if extra else []
             replaced = {_also_key(ln) for ln in new}
             content = _with_also(content, [ln for ln in old_also if _also_key(ln) not in replaced] + new)
-        gap_note = not (chk and chk.absence)  # absence phrases in the schema: a page notes no gaps (the report does)
+        gap_note = chk is None  # gaps are listed in the ingest report, not on the page (the schema's Checks say how)
         if gap_note and auto_gaps and given:
             content += _not_covered(content, given, "paragraphs of this section", ranges=spans) or "\n\nNot yet covered: none"
         elif gap_note and len(groups) > 1:
@@ -1918,6 +2028,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     source_focus = f"Source page. One-line summary: {plan['source_summary']}" + (
         "\nRecorded for this source: " + "; ".join(f"{k}: {v}" for k, v in fields.items()) if fields else "")
 
+    index_src = await _source_paths(wiki_id, checks.footnote_form(chk), _listed(chk)) if chk and chk.examples_section else {}
+
     def index_page(sec_slug: str, written: dict) -> Op:
         """A split section's own page: the index of all its subtopic pages, those an earlier upload made included."""
         cur = existing.get(sec_slug)
@@ -1928,7 +2040,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         if cur:  # in the order the page listed them before; new ones after
             subs.sort(key=lambda x: (cur["content_md"].find(f"[[{x}") % (len(cur["content_md"]) + 1)
                                      if f"[[{x}" in cur["content_md"] else len(cur["content_md"]) + 1))
-        content, summary = _index_md(sec_of[sec_slug]["name"], [page(x) for x in subs], cite_ctx["titles"])
+        content, summary = _index_md(sec_of[sec_slug]["name"], [page(x) for x in subs], cite_ctx["titles"],
+                                     (index_src, chk) if chk and sec_of[sec_slug]["num"] == chk.examples_section else None)
         return Op(op="update" if cur else "create", slug=sec_slug, title=cur["title"] if cur else sec_of[sec_slug]["name"],
                   type="topic", summary=summary, content_md=content, tags=cur["tags"] if cur else [],
                   base_version=cur["version"] if cur else None, change_note=f"Index of {len(subs)} subtopic pages")
@@ -1949,10 +2062,17 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                  + (first[0].content_md if first else "") + "\n</source_page>"
                  + ("\nRecorded for this source: " + "; ".join(f"{k}: {v}" for k, v in fields.items()) if fields else ""))
     told = lambda i: facts if facts and checks.absence_allowed_on(chk, i["type"], i["title"]) else ""
+    # a section whose page also records other sections' paragraphs (the schema's Also recorded) is written after the
+    # other sections, so its lines point to pages that are there
+    sec_num = lambda sl: (sec_of.get(sl) or (sub_of.get(sl) or {}).get("sec") or {}).get("num")
+    later = lambda i: sec_num(i["slug"]) in also_what
+    todo = [i for i in items if i["slug"] not in index_of]
     ops = first + [o for o in await llm.gather_limited(
         ([] if chk and chk.absence else [write_safe(source["slug"], ex.title, "source", source_focus, None)])
-        + [write_safe(i["slug"], i["title"], i["type"], i["focus"] + told(i), source["slug"]) for i in items if i["slug"] not in index_of]
+        + [write_safe(i["slug"], i["title"], i["type"], i["focus"] + told(i), source["slug"]) for i in todo if not later(i)]
     ) if o]
+    ops += [o for o in await llm.gather_limited(
+        write_safe(i["slug"], i["title"], i["type"], i["focus"] + told(i), source["slug"]) for i in todo if later(i)) if o]
     if index_of:  # split sections: their own pages become the index of the subtopic pages just written
         written = {o.slug: o for o in ops}
         moved = await _move_old_write_ups(wiki_id, index_of, sub_of, existing, written, ops, sec_of, chk)
@@ -2053,39 +2173,11 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     made = await page_summaries(wiki_id, chk, sections, now, [o.slug for o in ops])
     for o in ops:
         o.summary = made[o.slug]
-    # concept pages (the schema's Concept pages list), built from every page as it will stand, cleared and written again
-    if chk and (chk.concept_terms or chk.concept_heading_pages):
-        stand = {sl: {"type": p["type"], "title": p["title"], "content_md": p["content_md"]} for sl, p in existing.items()}
-        stand |= {o.slug: {"type": o.type or existing.get(o.slug, {}).get("type"), "title": o.title, "content_md": o.content_md}
-                  for o in ops if o.op != "delete"}
-        sec_page = {sl: sec for sl, p in stand.items() if p["type"] == "topic" and (sec := _section_for(sections, p["title"], sl))}
-        section_of = lambda sl: sec_page.get(max((x for x in sec_page if sl == x or sl.startswith(x + "-")), key=len, default=None))
-        framework = next((sl[: -len(slugify(sec["name"])) - 1] for sl, sec in sec_page.items()
-                          if sl.endswith("-" + slugify(sec["name"]))), "")
-        made_concepts = concepts.build(chk, stand, await _source_paths(wiki_id, checks.footnote_form(chk)), sections,
-                                       section_of, framework, existing)
-        ops = [o for o in ops if o.slug not in {c.slug for c in made_concepts}] + made_concepts
-    # the examples section's index also lists the issuer's examples printed inside guidance, filed with their requirement
-    ex_sec = next((x for x in sections if chk and x["num"] == chk.examples_section), None)
-    ex_index = next((sl for sl, x in sec_of.items() if ex_sec and x["num"] == ex_sec["num"]), None)
-    if ex_index and chk and chk.split.get(ex_sec["num"]):
-        stand = {sl: {"type": p["type"], "title": p["title"], "content_md": p["content_md"]} for sl, p in existing.items()}
-        stand |= {o.slug: {"type": o.type or existing.get(o.slug, {}).get("type"), "title": o.title, "content_md": o.content_md}
-                  for o in ops if o.op != "delete"}
-        head, block = concepts.guidance_examples(chk, stand, await _source_paths(wiki_id, checks.footnote_form(chk)))
-        if head and ex_index in stand:
-            cur = next((o for o in ops if o.slug == ex_index), None)
-            body = stand[ex_index]["content_md"]
-            body = body.split("\n" + head + "\n")[0].rstrip() if ("\n" + head + "\n") in body else body.rstrip()
-            body = body + (f"\n\n{head}\n\n{block}" if block else "")
-            if cur:
-                cur.content_md = body
-            elif body != stand[ex_index]["content_md"]:
-                e = existing[ex_index]
-                ops.append(Op(op="update", slug=ex_index, type=e["type"], title=e["title"], summary=e["summary"], content_md=body,
-                              tags=e.get("tags") or [], base_version=e["version"], change_note="Examples inside guidance listed"))
-        await ctx.progress(concepts={"pages": sum(o.op != "delete" for o in made_concepts),
-                                     "removed": sum(o.op == "delete" for o in made_concepts)})
+    # concept and entity pages, and the examples index's list of examples inside guidance: built from every page as it
+    # will stand, cleared and written again
+    ops, made_composed = await composed_ops(wiki_id, chk, sections, existing, ops)
+    if made_composed:
+        await ctx.progress(composed=made_composed)
     # a page whose write-ups moved to other pages (a section page now an index, a page that holds no claims): what it
     # cited before must be cited on one of the wiki's pages after this upload
     final = {sl: p["content_md"] for sl, p in existing.items()} | {o.slug: o.content_md for o in ops}
@@ -2108,6 +2200,9 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             failing.setdefault(m["page"], []).extend(f"Paragraph {x} is not written up on the page." for x in m["paragraphs"])
     for f in citations.get("flagged") or []:
         failing.setdefault(f["page"], []).append(f"The citation [[{f['source']}|{f['label']}]] is flagged: {f['reason']}.")
+    for u in unassigned:  # a paragraph that names no section was discarded: counted, on the source page's entry
+        if u.get("discarded"):
+            failing.setdefault(source["slug"], []).append(f"Paragraph {u['paragraph']} was routed to no section and discarded.")
     failing = {sl: list(dict.fromkeys(fs)) for sl, fs in failing.items() if sl in {o.slug for o in ops}}
     await ctx.progress(stage="commit")
     summary = f"Ingest: {ex.title}"

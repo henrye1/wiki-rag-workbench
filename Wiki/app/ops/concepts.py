@@ -74,7 +74,7 @@ def build(chk, pages: dict[str, dict], sources: dict[str, dict], sections: list[
     give, and a delete for each concept page no longer given. pages: slug -> type, title, content_md (every page);
     sources: _source_paths (each paragraph's heading path, printed heading and kind); section_of: page slug -> its
     section ({num, name}) or None; framework: the prefix the wiki's section slugs carry (e.g. ifrs-9)."""
-    if not chk or not (chk.concept_terms or chk.concept_heading_pages) or not chk.concept_line:
+    if not chk or not (chk.concept_terms or chk.concept_heading_pages or chk.entity_pages) or not chk.concept_line:
         return []
     holders = {sl: p for sl, p in pages.items() if p["type"] in ("topic", "subtopic")}
     order = {sec["num"]: k for k, sec in enumerate(sections)}
@@ -119,6 +119,14 @@ def build(chk, pages: dict[str, dict], sources: dict[str, dict], sections: list[
                     h = path[level]
                     heading_of[(s_slug, lab)] = (h, (m.group(1) if (m := NUMBERED.match(h)) else None))
 
+    # the entities: each designation in one of the schema's Document names forms, other than the wiki's own sources
+    names_re = None
+    if chk.entity_pages and chk.entity_lines and chk.document_names and chk.entity_slug:
+        names_re = re.compile(r"(?<![\w-])(" + "|".join(re.escape(f).replace(re.escape("<n>"), r"\d+[A-Z]?") for f in chk.document_names)
+                              .replace(r"\ ", r"\s+") + r")(?![\w-])")
+    designation = lambda text: " ".join(text.split())
+    own_sources = {designation(m.group(1)) for info in sources.values() for m in (names_re.finditer(info.get("title") or "") if names_re else [])}
+
     # every claim's lines: (concept key) -> [(section order, page, place, citation, heading, label)]
     lines: dict[tuple, list] = {}
     for sl, p in holders.items():
@@ -133,6 +141,9 @@ def build(chk, pages: dict[str, dict], sources: dict[str, dict], sections: list[
                 if rx.search(rest):
                     found.append(("term", t))
                     rest = rx.sub(" ", rest)
+            if names_re:
+                found += [("entity", d) for d in dict.fromkeys(designation(m.group(1)) for m in names_re.finditer(_plain(st)))
+                          if d not in own_sources]
             for src, lab in cites:
                 info = sources.get(src, {})
                 printed = info.get("printed", {}).get(lab) or (info.get("own", {}).get(lab) or [""])[-1] or info.get("title", "")
@@ -147,6 +158,11 @@ def build(chk, pages: dict[str, dict], sources: dict[str, dict], sections: list[
                 continue
             title, slug = key[1], _slug(chk, framework, key[1], key[2])
             first = []
+        elif key[0] == "entity":
+            if len({g[1] for g in got}) < (chk.entity_pages or 1):
+                continue
+            title, first = key[1], []
+            slug = store.slugify(re.sub(r"<[^>]+>$", key[1], chk.entity_slug.replace("<framework>", framework)))
         else:
             if not chk.concept_terms:
                 continue
@@ -172,11 +188,12 @@ def build(chk, pages: dict[str, dict], sources: dict[str, dict], sections: list[
                 break
             summary += add
         cur = existing.get(slug)
-        ops.append(store.Op(op="update" if cur else "create", slug=slug, type="concept", title=title, summary=summary,
+        kind = "entity" if key[0] == "entity" else "concept"
+        ops.append(store.Op(op="update" if cur else "create", slug=slug, type=kind, title=title, summary=summary,
                             content_md="\n\n".join(body), base_version=cur["version"] if cur else None,
-                            change_note="Concept page rebuilt from the pages"))
-    for sl, p in existing.items():  # a concept page no list gives any more goes
-        if p["type"] == "concept" and sl not in made:
+                            change_note=f"{kind.capitalize()} page rebuilt from the pages"))
+    for sl, p in existing.items():  # a concept or entity page no list gives any more goes
+        if p["type"] in ("concept", "entity") and sl not in made:
             ops.append(store.Op(op="delete", slug=sl, base_version=p.get("version"), change_note="Concept no longer listed"))
     return ops
 

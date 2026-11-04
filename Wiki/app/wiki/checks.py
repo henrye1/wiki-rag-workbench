@@ -72,6 +72,10 @@ class Checks:
     concept_summary_lead: str = ""
     concept_summary_sep: str = ""
     concept_summary_max: int | None = None
+    entity_pages: int | None = None  # an entity page for each designation whose lines sit on this many pages
+    entity_lines: bool = False  # its lines and summary as the concept pages'
+    empty_summary: str = ""  # the summary of a section page that holds no claims
+    entity_slug: str = ""  # the slug pattern of an entity page, from the schema's Slugs and links
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
 
 
@@ -91,6 +95,7 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "kinds_left_out": "kinds left out", "range_ends": "range citations", "also_recorded": "also recorded",
     "concept_terms": "concept pages", "concept_line": "concept lines", "concept_match": "concept term match",
     "concept_slug": "concept slug", "concept_summary_lead": "concept summary",
+    "entity_pages": "entity pages", "entity_lines": "entity lines",
 }
 PLACEHOLDER = re.compile(r"<[^<>]+>")
 
@@ -117,6 +122,8 @@ def load(schema_md: str) -> Checks | None:
     get = lambda label: next((v for k, v in items.items() if k.startswith(label)), None)
     label_of = lambda label: next((k for k in items if k.startswith(label)), "")
     c = Checks()
+    if m := re.search(r"<framework>-entity-<[^>]+>", schema_md or ""):
+        c.entity_slug = m.group(0)
     for attr, label in LISTS.items():
         value = get(label)
         if value is None:
@@ -147,8 +154,10 @@ def load(schema_md: str) -> Checks | None:
             forms = [x.strip() for x in value.split("\u00b7")]
             forms[-1] = re.split(r"\.\s+(?=[A-Z])", forms[-1], maxsplit=1)[0]
             setattr(c, attr, [x for x in forms if x])
-        elif attr == "empty_text":
-            c.empty_text = (QUOTED.findall(value) or [""])[0]
+        elif attr == "empty_text":  # "<text>"; its summary "<summary>"
+            quoted = QUOTED.findall(value)
+            c.empty_text = (quoted or [""])[0]
+            c.empty_summary = quoted[1] if len(quoted) > 1 else ""
         elif attr == "absence":  # the phrases; where they are allowed is in the label's brackets
             c.absence = QUOTED.findall(value)
             c.absence_allowed = (re.findall(r"\(([^)]*)\)", label_of(label)) or [""])[0]
@@ -190,6 +199,11 @@ def load(schema_md: str) -> Checks | None:
                 c.concept_line = m.group(1)
             if m := re.search(r"definition:\s*(.+?)\.?$", value):
                 c.concept_defined = m.group(1).strip()
+        elif attr == "entity_pages":  # "... where its lines sit on at least <n> pages"
+            n = re.search(r"\bat least (\d+) pages?\b", value)
+            c.entity_pages = int(n.group(1)) if n else 1
+        elif attr == "entity_lines":  # "as Concept lines; ..."
+            c.entity_lines = bool(re.search(r"\bas concept lines\b", value, re.I))
         elif attr == "concept_match":
             c.concept_match = {"words": bool(re.search(r"\bwhole words\b", value)), "case": not re.search(r"\bignoring case\b", value),
                                "longest": bool(re.search(r"\blongest\b", value)), "endings": QUOTED.findall(value)}

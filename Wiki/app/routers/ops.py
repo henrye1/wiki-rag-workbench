@@ -9,7 +9,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from .. import jobs
 from ..db import get_pool
-from ..ops import lint, query, recheck, summaries, synthesis
+from ..ops import composed, lint, query, recheck, summaries, synthesis
 from ..wiki import store
 from .deps import Mode, wiki_dep
 
@@ -130,6 +130,13 @@ async def run_recheck(body: RecheckIn, wiki: dict = Depends(wiki_dep)):
 
 class SummariesIn(BaseModel):
     dry_run: bool = Field(False, description="Report what would change; save nothing")
+
+
+@router.post("/wikis/{w}/composed")
+async def rebuild_composed(body: SummariesIn, wiki: dict = Depends(wiki_dep)):
+    """Rebuild the concept and entity pages (and the examples index's list of examples inside guidance) from the pages as
+    they stand, by the schema's lists. No AI call; dry_run reports what would change."""
+    return await composed.rebuild(wiki, body.dry_run)
 
 
 @router.post("/wikis/{w}/summaries")

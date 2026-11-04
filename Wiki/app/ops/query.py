@@ -282,7 +282,7 @@ async def answer(wiki: dict, question: str, save: bool = False, mode: str = "aut
         text = await llm.generate(prompts.QUERY_SYSTEM, _prompt(wiki, question, pages, extra))
     result = {"answer": text, "pages": listed(wiki, text, pages + extra), "read": _read_record(pages + extra),
               "usage": list(usage), **({"rounds": rounds} if browses(wiki) else {})}
-    saved = await save_answer(wiki, question, text, mode) if save and pages else None
+    saved = await save_answer(wiki, question, text, mode, sources) if save and pages else None
     if saved:
         result["saved"] = saved
     await store.add_log(wiki["id"], "query", question[:200], _log_md(wiki, sources, pages, extra, rounds)
@@ -296,7 +296,11 @@ async def stream_answer(wiki: dict, question: str, sources: str = "all", use_sav
     return pages + extra, llm.stream(prompts.QUERY_SYSTEM, _prompt(wiki, question, pages, extra))
 
 
-async def save_answer(wiki: dict, question: str, answer_md: str, mode: str) -> dict:
+async def save_answer(wiki: dict, question: str, answer_md: str, mode: str, sources: str = "all") -> dict:
+    """File one answer as a synthesis page: slug <framework>-synthesis-<question-id> (the question's own short id, the
+    same each time the same question is saved, so saving again updates it), with the question and date recorded."""
+    import datetime as dt
+    from . import synthesis
     wiki_id = wiki["id"]
     index = await store.compact_index(wiki_id)
     out = await llm.generate_json(
@@ -304,13 +308,16 @@ async def save_answer(wiki: dict, question: str, answer_md: str, mode: str) -> d
         prompts.with_schema(wiki["schema_md"], prompts.save_answer_prompt(question, answer_md, index)),
         prompts.PAGE_SCHEMA,
     )
-    base = slugify(out["title"])
-    slug, n = base, 2
-    while await store.get_page(wiki_id, slug):
-        slug, n = f"{base}-{n}", n + 1
-    op = Op(op="create", slug=slug, title=out["title"], type="synthesis", summary=out["summary"],
-            content_md=out["content_md"], tags=list(dict.fromkeys([saved.SAVED_TAG, *out["tags"]])),
-            change_note=f"Filed from query: {question[:150]}")
+    qid = hashlib.sha1(" ".join(question.split()).casefold().encode()).hexdigest()
+    names = [p["slug"] for p in await store.list_pages(wiki_id) if p["type"] != "synthesis"]
+    slug = synthesis.slug_for(qid, [{"answer": answer_md}], names, wiki["name"])
+    cur = await store.get_page(wiki_id, slug)
+    if cur and cur["type"] != "synthesis":
+        raise ValueError(f"A {cur['type']} page is already called {slug}")
+    record = synthesis.record([{"searched": question, "date": dt.date.today().isoformat(), "sources": sources}])
+    op = Op(op="update" if cur else "create", slug=slug, title=out["title"], type="synthesis", summary=out["summary"],
+            content_md=f"{record}\n\n{out['content_md'].strip()}", tags=list(dict.fromkeys([saved.SAVED_TAG, *out["tags"]])),
+            base_version=cur["version"] if cur else None, change_note=f"Filed from query: {question[:150]}")
     citations = await citecheck.check_ops(wiki_id, [op])  # every citation must name a source that holds the clause
     res = await store.commit(wiki_id, "query", f"Save answer: {out['title']}", [op], mode)
     return {"slug": slug, "status": res["status"], "changeset_id": res.get("changeset_id"), "citations": citations}

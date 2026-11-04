@@ -107,6 +107,20 @@ async def _mentions(wiki_id: UUID, slugs: list[str], term: str) -> str:
 async def fix(wiki: dict, report: dict, llm_report: dict | None, ctx: JobContext, mode: str) -> dict:
     s = get_settings()
     wiki_id, schema = wiki["id"], wiki["schema_md"]
+    from .ingest import _sections, _unlink
+    if _sections(schema):
+        # a schema with fixed sections makes every page from its controlled lists, never from free text: lint makes no
+        # page; a link to a page that does not exist is written as plain text, as the schema's links rule says
+        valid = {p["slug"] for p in await store.list_pages(wiki_id)}
+        ops = []
+        for slug in sorted({x for b in report["broken_links"] for x in b["linked_from"]}):
+            page = await store.get_page(wiki_id, slug)
+            if page and (text := _unlink(page["content_md"], valid)) != page["content_md"]:
+                ops.append(Op(op="update", slug=slug, title=page["title"], type=page["type"], summary=page["summary"],
+                              content_md=text, tags=page["tags"], base_version=page["version"],
+                              change_note="Lint fix: links to pages that do not exist written as plain text"))
+        await ctx.progress(stage="fix", new_pages=0, link_edits=len(ops))
+        return await store.commit(wiki_id, "lint", "Lint fixes", ops, mode, job_id=ctx.id)
     index = await store.compact_index(wiki_id)
     system = prompts.MAINTAINER_SYSTEM
 
