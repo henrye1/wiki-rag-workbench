@@ -179,8 +179,9 @@ def _covers(label: str, ref: str, ranges: bool = True) -> bool:
     """Whether a citation label (e.g. "4.2.1(a)", "paragraphs B4.1.1–B4.1.26", "<prefix>:credit loss") cites ref. With
     ranges off (the schema's Range citations: a range cites only its two ends), a paragraph inside a range is not cited
     by it."""
-    if ": " in ref:  # a defined term ("<prefix>: <term>"): cited where its term is
-        term = ref.split(":", 1)[1].strip().lower()
+    prefix = _term_prefix.get()
+    if (ref.startswith(prefix) if prefix else ": " in ref):  # a defined term ("<prefix><term>"): cited where its term is
+        term = (ref[len(prefix):] if prefix else ref.split(":", 1)[1]).strip().lower()
         return bool(term) and term in label.lower()
     if re.search(rf"(?<![\w.]){re.escape(ref)}(?![\w]|\.\d)", label):
         return True
@@ -203,7 +204,7 @@ def _uncited(content: str, paras: list[str], ranges: bool = True) -> list[str]:
     out, cited = [], {}
     for p in paras:
         ref = _ref(p)
-        if not ref or re.fullmatch(r"p(age )?\d+", ref):
+        if not ref or (re.fullmatch(r"p(age )?\d+", ref) and not _page_labels_cited.get()):
             continue
         if ref not in cited:
             cited[ref] = any(_covers(label, ref, ranges) for label in labels)
@@ -224,10 +225,20 @@ ALSO_HEADING = "## Also recorded here"  # schemas before the Checks list gave it
 _also_heading = contextvars.ContextVar("also_heading", default=ALSO_HEADING)  # the run's schema's, set by run()
 
 
+_term_prefix = contextvars.ContextVar("term_prefix", default="")  # the schema's defined-term citation form, before <term>
+_page_labels_cited = contextvars.ContextVar("page_labels_cited", default=False)  # text without a label is cited by its page
+
+
 def use_schema_headings(chk) -> None:
-    """The fixed headings this run writes and reads, from the schema's Checks (Also recorded heading)."""
+    """What this run reads from the schema's Checks: the fixed headings it writes (Also recorded heading), the
+    defined-term citation form, and whether text printed without a paragraph label is cited by its page label (then it
+    is written up and checked like any paragraph)."""
     if chk and chk.also_heading:
         _also_heading.set(chk.also_heading)
+    if chk and "<" in chk.defined_term_form:
+        _term_prefix.set(chk.defined_term_form.split("<", 1)[0])
+    if chk and any("<page label>" in f for f in chk.unlabelled_forms.values()):
+        _page_labels_cited.set(True)
 
 
 def _split_also(md: str) -> tuple[str, list[str]]:
@@ -2013,6 +2024,18 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                         no_line |= {x["paragraph"].strip(): x["why"] for x in out.get("not_recorded") or [] if x["paragraph"].strip() in refs}
                     except Exception as e:
                         log.warning("ingest: page %s also-record backstop failed: %s", slug, e)
+                # a paragraph the writer gave neither a line nor a reason: one decision asked for each, a line or a reason
+                for i in [i for i in gaps if not_cited("\n".join(lines), [paras[i]]) and _ref(paras[i]) not in no_line] if brief else []:
+                    try:
+                        d = await llm.generate_json(system, prompts.with_schema(schema, prompts.also_decide_prompt(
+                            slug=slug, title=title, item=item(i), linkable=linkable, source_slug=source_slug, brief=brief,
+                            what=also_what.get(sec["num"], "") if sec else "")), prompts.ALSO_DECIDE_SCHEMA)
+                        if d.get("record") and d.get("line", "").strip():
+                            lines += [ln for ln in also_lines(d["line"], {_ref(paras[i])}) if not not_cited(ln, [paras[i]])]
+                        elif d.get("why", "").strip():
+                            no_line[_ref(paras[i])] = d["why"].strip()
+                    except Exception as e:
+                        log.warning("ingest: page %s also-record decision for %s failed: %s", slug, _ref(paras[i]), e)
                 lines = fold(lines)
                 # a paragraph the writer declined, with its reason, as the page brief allows, is not a failure
                 left = [_ref(paras[i]) for i in extra if not_cited("\n".join(lines), [paras[i]]) and _ref(paras[i]) not in no_line]

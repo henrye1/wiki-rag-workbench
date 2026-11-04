@@ -298,6 +298,30 @@ ALSO_DECLINE_SCHEMA = {
 }
 
 
+ALSO_DECIDE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "record": {"type": "boolean", "description": "Whether the page brief records this paragraph here"},
+        "line": {"type": "string", "description": "Its one line, when it is recorded here; else empty"},
+        "why": {"type": "string", "description": "Why the page brief does not record it here, when it is not; else empty"},
+    },
+    "required": ["record", "line", "why"],
+}
+
+
+def also_decide_prompt(*, slug: str, title: str, item: str, linkable: str, source_slug: str, brief: str, what: str = "") -> str:
+    """One paragraph marked to be also recorded on a page, which got neither a line nor a reason: decide, either way."""
+    return (
+        f"The paragraph below was marked to be ALSO recorded on the wiki page `{slug}` (\"{title}\"), as one short line. "
+        "Decide, by the page brief below" + (f" (what is recorded here: {what})" if what else "") + ": either it is "
+        "recorded here (record = true) and you write its one line, or it is not (record = false) and you say why in a "
+        "few words. Exactly one of the two.\n"
+        f"Its line, if any, is a markdown bullet: the point in a few words, opening as its paragraph's kind requires, "
+        f"then a link to its main page, then [[{source_slug}|<paragraph number>]], cited exactly as the wiki schema requires.\n\n"
+        f"<page_brief>\n{brief}\n</page_brief>\n\n<linkable_pages>\n{linkable}\n</linkable_pages>\n\n<paragraph>\n{item}\n</paragraph>"
+    )
+
+
 def also_record_prompt(*, slug: str, title: str, items: str, linkable: str, source_slug: str, brief: str | None = None,
                        what: str = "") -> str:
     """brief: the page's section brief, given when the writer may decline a paragraph the brief does not record here.
