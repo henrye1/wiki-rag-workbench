@@ -74,6 +74,21 @@ class Openers(Base):
                           if "B1" in f], [])
 
 
+class SentenceStart(Base):
+    def test_a_sentence_opening_on_a_link_is_checked(self):
+        # a sentence that opens with a link ("[[source|Doc]] defines ...") is a sentence, not a list item's continuation
+        text = f"[[{B}|Doc]] defines this as something [[{B}|B1]]."
+        self.assertTrue([f for f in check(text, {}) if "B1" in f])
+        self.assertEqual([f for f in check(f"{OPENER} that [[{B}|Doc]] defines this [[{B}|B1]].", {}) if "B1" in f], [])
+
+    def test_a_list_under_a_list_item_takes_its_lead_in_from_that_item(self):
+        text = (f"The page says:\n*   **Year one:** {OPENER} that it issued rules relating to:\n"
+                f"\u2022 changes in the basis; \u2022 other changes [[{B}|B1]].")
+        self.assertEqual([f for f in check(text, {}) if "B1" in f], [])
+        without = text.replace(f"{OPENER} that it", "It")
+        self.assertTrue([f for f in check(without, {}) if "B1" in f])
+
+
 class Conditions(Base):
     def test_a_held_paragraph_keeps_its_condition(self):
         text = f"An entity does that [[{A}|2]]."

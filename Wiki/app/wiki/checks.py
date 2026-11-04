@@ -800,25 +800,25 @@ def section_failures(content: str, given: list[str], kinds: dict[str, str], sour
     openers = _opener_res(c)
     anywhere = {k: re.compile(r.pattern.replace("^", "(?:^|(?<=[\\s,;:(]))", 1), re.I) for k, r in openers.items()}
     if openers and c.kinds:
-        lead = ""  # the sentence a list continues (it ends with a colon): a list item takes its opener from it
+        lead = ""  # the line a list continues (it ends with a colon, a list item too): a list item takes its opener from it
         for raw in content.split("\n"):
             item = bool(re.match(r"^\s*(?:[-*\u2022]|\([a-z0-9]{1,4}\)|[a-z0-9]{1,3}[.)])\s+", raw))
             line = raw.strip().lstrip("-*\u2022 ").strip()
             if not line or line.startswith("#"):
                 lead = "" if line.startswith("#") else lead
                 continue
-            if not item:
-                lead = line if line.rstrip().endswith(":") else ""
+            ends_lead = line.rstrip().endswith(":")
             for s in sentences_at_links(line):
                 cited = [m.group(2) for m in store.LINK_RE.finditer(s) if m.group(1) == source_slug and m.group(2)]
                 if not cited:
                     continue
-                body = LIST_LABEL.sub("", s, count=1)  # "Interest rate swap**: The implementation guidance states ..."
+                shown = store.LINK_RE.sub(lambda m: (m.group(2) or m.group(1)).strip(), s)  # a link read as the text it shows
+                body = LIST_LABEL.sub("", shown, count=1)  # "Interest rate swap**: The implementation guidance states ..."
                 found = {c.kinds.get(kinds.get(re.sub(r"\(.*$", "", lab).strip(), "")) for lab in cited}
                 kinds_with = sorted(k for k in found if k in openers)
                 if not kinds_with:
                     continue
-                if not s[:1].isupper():  # a list item continuing a lead-in sentence: the lead-in carries its opener
+                if not shown[:1].isupper():  # a list item continuing a lead-in sentence: the lead-in carries its opener
                     if item and lead and not all(anywhere[k].search(lead) for k in kinds_with):
                         failures.append(f"The list item citing {', '.join(cited)} (\"{s[:90]}...\") comes from "
                                         f"{', '.join(kinds_with)}, but the sentence it continues (\"{lead[:90]}...\") does not "
@@ -837,6 +837,8 @@ def section_failures(content: str, given: list[str], kinds: dict[str, str], sour
                     failures.append(f"The sentence citing {', '.join(cited)} (\"{s[:90]}...\") draws on {', '.join(sorted(x or 'the Standard' for x in found))}; "
                                     f"the part from {', '.join(missing)} does not open with its opener "
                                     f"({'; '.join(', '.join(c.openers[k]) for k in missing)}).")
+            if ends_lead or not item:
+                lead = line if ends_lead else ""
     return failures
 
 
