@@ -3,6 +3,7 @@ holds only the mechanics (find a citation, look for the schema's words near it, 
 
 A list the schema does not give switches its check off (the caller logs it); nothing here supplies a default.
 """
+import copy
 import re
 from dataclasses import dataclass, field
 
@@ -62,6 +63,7 @@ class Checks:
     kinds_left_out: list[str] | None = None  # reader kinds never stored or written up (None: the schema has no such list)
     range_ends: bool = False  # a citation of a range cites only the two paragraphs it names
     also_recorded: dict[int, str] = field(default_factory=dict)  # section number -> what is also recorded on its page
+    also_from: dict[int, int] = field(default_factory=dict)  # section number -> the section its lines are picked from
     concept_terms: bool = False  # a concept page for each defined term
     concept_heading_pages: int | None = None  # a concept page for each major heading whose lines sit on this many pages
     concept_line: str = ""  # a concept line's form, its placeholders in order: citation, source heading, page, title
@@ -76,7 +78,13 @@ class Checks:
     entity_lines: bool = False  # its lines and summary as the concept pages'
     empty_summary: str = ""  # the summary of a section page that holds no claims
     entity_slug: str = ""  # the slug pattern of an entity page, from the schema's Slugs and links
+    also_heading: str = ""  # the heading of a page's also-recorded lines
+    related_line: str = ""  # the words that open a subtopic page's line of links to its related pages
+    section_framework: str = ""  # the framework slug a section page's slug opens with
+    entity_summary: bool = False  # an entity page's summary as a concept page's
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
+    unreadable: list[str] = field(default_factory=list)  # lists the schema gives in wording the engine cannot read
+    unknown: list[str] = field(default_factory=list)  # lines of the Checks section that name no list the engine knows
 
 
 LISTS = {  # attribute -> how the schema names the list (its label up to the first word that differs)
@@ -95,7 +103,8 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "kinds_left_out": "kinds left out", "range_ends": "range citations", "also_recorded": "also recorded",
     "concept_terms": "concept pages", "concept_line": "concept lines", "concept_match": "concept term match",
     "concept_slug": "concept slug", "concept_summary_lead": "concept summary",
-    "entity_pages": "entity pages", "entity_lines": "entity lines",
+    "entity_pages": "entity pages", "entity_lines": "entity lines", "entity_summary": "entity summary",
+    "also_heading": "also recorded heading", "related_line": "related pages line",
 }
 PLACEHOLDER = re.compile(r"<[^<>]+>")
 
@@ -124,12 +133,23 @@ def load(schema_md: str) -> Checks | None:
     c = Checks()
     if m := re.search(r"<framework>-entity-<[^>]+>", schema_md or ""):
         c.entity_slug = m.group(0)
+    known = set(LISTS.values())
+    c.unknown = [k for k in items if not any(k.startswith(x) for x in known)]
     for attr, label in LISTS.items():
         value = get(label)
         if value is None:
             c.missing.append(label)
             continue
-        if attr == "kinds":
+        if value.strip().rstrip(".").casefold() == "none":  # the schema does not use this list
+            continue
+        before = copy.copy(getattr(c, attr))
+        if attr == "also_heading":
+            c.also_heading = (QUOTED.findall(value) or [""])[0]
+        elif attr == "related_line":
+            c.related_line = (QUOTED.findall(value) or [""])[0]
+        elif attr == "entity_summary":
+            c.entity_summary = bool(re.search(r"\bas concept summary\b", value, re.I))
+        elif attr == "kinds":
             c.kinds = {k: v.strip().strip('"').casefold() for k, v in _mapping(value).items()}
         elif attr == "openers":
             c.openers = {k: QUOTED.findall(v) for k, v in _mapping(value).items()}
@@ -165,8 +185,12 @@ def load(schema_md: str) -> Checks | None:
             c.papers_apart = True
         elif attr == "overview_empty":  # "... a link to the section's page if it holds claims, or the word "Empty" ..."
             c.overview_empty = (QUOTED.findall(value) or [""])[0]
-        elif attr == "section_slug":
-            c.section_slug = value.strip()
+        elif attr == "section_slug":  # "<pattern>, where the framework is <slug>"
+            c.section_slug = value.split(",")[0].strip()
+            if m := re.search(r"\bwhere the framework is\s+([a-z0-9-]+)", value):
+                c.section_framework = m.group(1)
+            if "<framework>" in c.section_slug and not c.section_framework:
+                c.section_slug = ""
         elif attr == "no_claim_pages":  # up to the first full stop: page slugs, and kinds of page such as index pages
             c.no_claim_pages = [x.strip() for x in value.split(".")[0].split(",") if x.strip()]
             c.no_claim_index = any(re.search(r"\bindex\b", x, re.I) for x in c.no_claim_pages)
@@ -188,8 +212,13 @@ def load(schema_md: str) -> Checks | None:
             c.kinds_left_out = [x.strip().strip('"') for x in value.split(".")[0].split(",") if x.strip()]
         elif attr == "range_ends":
             c.range_ends = bool(re.search(r"\bonly the two\b", value))
-        elif attr == "also_recorded":  # "11 = what; 02 = what": section number -> what is also recorded there
-            c.also_recorded = {int(k): v.strip().rstrip(".") for k, v in _mapping(value).items() if k.strip().isdigit()}
+        elif attr == "also_recorded":  # "11 = what; 01 = of the paragraphs routed to 12, what": number -> what is recorded
+            for k, v in _mapping(value).items():
+                if k.strip().isdigit():
+                    v = v.strip().rstrip(".")
+                    if m := re.match(r"of the paragraphs routed to (\d+),\s*(.+)$", v, re.I | re.S):
+                        c.also_from[int(k)], v = int(m.group(1)), m.group(2)
+                    c.also_recorded[int(k)] = v
         elif attr == "concept_terms":  # each defined term; each major heading "... where its lines sit on at least <n> pages"
             c.concept_terms = bool(re.search(r"\bdefined term\b", value, re.I))
             n = re.search(r"\bat least (\d+) pages\b", value)
@@ -225,6 +254,8 @@ def load(schema_md: str) -> Checks | None:
 
         else:
             setattr(c, attr, QUOTED.findall(value))
+        if getattr(c, attr) in (before, None, "", [], {}, False):
+            c.unreadable.append(label)
     return c
 
 
@@ -344,6 +375,14 @@ def footnote_form(c: Checks | None) -> str | None:
     return (c.unlabelled_forms.get(c.kinds.get("footnote", "")) or None) if c else None
 
 
+def schema_errors(c: Checks | None) -> list[str]:
+    """The Checks lines that are missing, unreadable or unknown: each an error in the ingest report (it holds the upload)."""
+    if not c:
+        return []
+    return ([f"Checks list missing: {x}" for x in c.missing] + [f"Checks list not readable: {x}" for x in c.unreadable]
+            + [f"Checks line names no list the engine knows: {x}" for x in c.unknown])
+
+
 def label_forms(c: Checks | None) -> dict[str, str]:
     """Each reader kind the schema cites in a form of its own when printed without a paragraph label (e.g. note ->
     "ED:<clause>", intro -> "<page label>")."""
@@ -361,6 +400,19 @@ def example_label_re(c: Checks) -> re.Pattern | None:
 def routed_to_examples(c: Checks | None, reader_kind: str) -> bool:
     """Whether the schema routes paragraphs of this reader kind to the examples section."""
     return bool(c and reader_kind and c.kinds.get(reader_kind) in c.routed_kinds)
+
+
+# the group of source citations that ends a sentence (or a list item, a table cell): what the sentence rests on; a
+# source link followed by more of the sentence is a cross-reference in passing (a pointer), not a citation
+CLOSING_GROUP = re.compile(r"(?:\[\[source-[^\]]+\]\](?:\s*(?:,|;|and)\s*|\s+)?)+(?=[.;:]?\s*(?:$|[A-Z(|*\u2022-]))", re.M)
+
+
+def closing_links(text: str) -> list[re.Match]:
+    """The source links of a page that sit in the citation group ending a sentence, list item or table cell."""
+    out = []
+    for g in CLOSING_GROUP.finditer(text or ""):
+        out += [m for m in store.LINK_RE.finditer(g.group(0))]
+    return out
 
 
 def cites(text: str) -> set[str]:
@@ -667,7 +719,8 @@ def section_slug(c: Checks | None, num: int, name: str) -> str:
     section's name); empty when the schema gives no pattern."""
     if not (c and c.section_slug):
         return ""
-    return store.slugify(c.section_slug.replace("<nn>", f"{num:02d}").replace("<section name>", name))
+    return store.slugify(c.section_slug.replace("<framework>", c.section_framework).replace("<nn>", f"{num:02d}")
+                         .replace("<section name>", name))
 
 
 def no_claim_failures(content: str, must_link: set[str], c: Checks | None, names: set[str] = frozenset(),
@@ -711,8 +764,8 @@ def section_failures(content: str, given: list[str], kinds: dict[str, str], sour
     for p in given:
         ref = _label(p)
         body = re.sub(r"^\[[^\]]+\]\s*(?:\([A-Z][^)]*\)\s*)?", "", p)
-        near = "\n".join(b for b in blocks if any(
-            m.group(1) == source_slug and m.group(2) and covers(m.group(2), ref) for m in store.LINK_RE.finditer(b)))
+        near = "\n".join(b for b in blocks if any(  # where the page writes it up: a sentence that cites it as its source
+            m.group(1) == source_slug and m.group(2) and covers(m.group(2), ref) for m in closing_links(b)))
         if not near:
             continue  # not written up at all: the coverage passes deal with that
         if part_re and holds(ref) and len(parts := list(dict.fromkeys(part_re.findall(body)))) >= 2:
@@ -726,18 +779,34 @@ def section_failures(content: str, given: list[str], kinds: dict[str, str], sour
             failures.append(f"Paragraph {ref} states the condition(s) {', '.join(repr(w) for w in lost)}, "
                             "which do not appear where the page writes it up.")
     openers = _opener_res(c)
+    anywhere = {k: re.compile(r.pattern.replace("^", "(?:^|(?<=[\\s,;:(]))", 1), re.I) for k, r in openers.items()}
     if openers and c.kinds:
-        for line in content.split("\n"):
-            line = line.strip().lstrip("-*\u2022 ").strip()
+        lead = ""  # the sentence a list continues (it ends with a colon): a list item takes its opener from it
+        for raw in content.split("\n"):
+            item = bool(re.match(r"^\s*(?:[-*\u2022]|\([a-z0-9]{1,4}\)|[a-z0-9]{1,3}[.)])\s+", raw))
+            line = raw.strip().lstrip("-*\u2022 ").strip()
             if not line or line.startswith("#"):
+                lead = "" if line.startswith("#") else lead
                 continue
+            if not item:
+                lead = line if line.rstrip().endswith(":") else ""
             for s in re.split(r"(?<=\]\])[.;:]?\s+(?=[A-Z(])", line):
                 cited = [m.group(2) for m in store.LINK_RE.finditer(s) if m.group(1) == source_slug and m.group(2)]
-                if not cited or not s[:1].isupper():  # no citation, or a list item continuing a lead-in sentence
+                if not cited:
                     continue
                 body = LIST_LABEL.sub("", s, count=1)  # "Interest rate swap**: The implementation guidance states ..."
                 found = {c.kinds.get(kinds.get(re.sub(r"\(.*$", "", lab).strip(), "")) for lab in cited}
-                if len(found) == 1 and (k := found.pop()) in openers:
+                kinds_with = sorted(k for k in found if k in openers)
+                if not kinds_with:
+                    continue
+                if not s[:1].isupper():  # a list item continuing a lead-in sentence: the lead-in carries its opener
+                    if item and lead and not all(anywhere[k].search(lead) for k in kinds_with):
+                        failures.append(f"The list item citing {', '.join(cited)} (\"{s[:90]}...\") comes from "
+                                        f"{', '.join(kinds_with)}, but the sentence it continues (\"{lead[:90]}...\") does not "
+                                        f"open with the schema's opener for it ({'; '.join(', '.join(c.openers[k]) for k in kinds_with)}).")
+                    continue
+                if len(found) == 1:
+                    k = kinds_with[0]
                     m = openers[k].match(body)
                     if not m:
                         failures.append(f"The sentence citing {', '.join(cited)} (\"{s[:90]}...\") comes from {k} but does not "
@@ -745,6 +814,10 @@ def section_failures(content: str, given: list[str], kinds: dict[str, str], sour
                     elif named := [g.strip() for g in m.groups() if g and g.strip() in labels]:
                         failures.append(f"The sentence citing {', '.join(cited)} (\"{s[:90]}...\") names its example "
                                         f"\"{named[0]}\", which is one of the source's paragraph labels, not the example's name.")
+                elif missing := [k for k in kinds_with if not anywhere[k].search(body)]:  # drawn from clauses of several kinds
+                    failures.append(f"The sentence citing {', '.join(cited)} (\"{s[:90]}...\") draws on {', '.join(sorted(x or 'the Standard' for x in found))}; "
+                                    f"the part from {', '.join(missing)} does not open with its opener "
+                                    f"({'; '.join(', '.join(c.openers[k]) for k in missing)}).")
     return failures
 
 

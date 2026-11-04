@@ -16,6 +16,7 @@ from .config import get_settings
 from .db import close_pool, get_pool, open_pool
 from .routers.sources import attach_file
 from .sources import extract
+from .wiki import checks
 
 
 async def main(wiki_slug: str, source_slug: str, path: str):
@@ -23,18 +24,21 @@ async def main(wiki_slug: str, source_slug: str, path: str):
         sys.exit("File storage is not configured: set SUPABASE_SECRET_KEY")
     f = pathlib.Path(path)
     data = f.read_bytes()
-    ex = extract.from_upload(f.name, data, get_settings().section_words)
     await open_pool()
     try:
         async with get_pool().connection() as conn:
             src = await (
                 await conn.execute(
-                    """select s.id, s.sha256, w.id as wiki_id from wiki.sources s join wiki.wikis w on w.id = s.wiki_id
-                       where w.slug = %s and s.slug = %s""", (wiki_slug, source_slug),
+                    """select s.id, s.sha256, w.id as wiki_id, w.schema_md, s.meta->'document'->>'issuer' as issuer
+                       from wiki.sources s join wiki.wikis w on w.id = s.wiki_id where w.slug = %s and s.slug = %s""",
+                    (wiki_slug, source_slug),
                 )
             ).fetchone()
         if not src:
             sys.exit(f"No source '{source_slug}' in wiki '{wiki_slug}'")
+        # read as an upload to this wiki is read: with its schema's options
+        ex = extract.from_upload(f.name, data, get_settings().section_words, client=src["issuer"] or "",
+                                 **extract.schema_options(checks.load(src["schema_md"] or "")))
         if hashlib.sha256(ex.text.encode("utf-8")).hexdigest() != src["sha256"]:
             sys.exit("This file does not produce the text the source was ingested from: not attached")
         rec = await attach_file(src["id"], storage.object_path("wiki", str(src["wiki_id"]), source_slug, f.name), data, f.name)

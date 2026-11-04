@@ -107,13 +107,14 @@ def _kept(chunks, left_out: list[str], label_forms: dict[str, str]) -> list:
 
 
 def from_pdf(name: str, data: bytes, max_words: int, example_re=None, stub_re=None, footnote_form=None,
-             left_out: list[str] | None = None, label_forms: dict[str, str] | None = None) -> Extracted:
+             left_out: list[str] | None = None, label_forms: dict[str, str] | None = None, term_form: str | None = None) -> Extracted:
     """left_out: the reader kinds the schema leaves out (its "Kinds left out"), and label_forms: its citation form for
     each reader kind printed without a paragraph label. Without the first (schemas before it was given), a Standard
     keeps its binding text and footnotes only, and each paragraph's kind is not recorded block by block."""
     doc = pymupdf.open(stream=data, filetype="pdf")
     meta = {"pages": doc.page_count, **{k: v for k, v in (doc.metadata or {}).items() if v}}
-    chunks, layout = pdf_ifrs.parse_document(doc, stub_re=stub_re, footnote_form=footnote_form, example_re=example_re)
+    chunks, layout = pdf_ifrs.parse_document(doc, stub_re=stub_re, footnote_form=footnote_form, example_re=example_re,
+                                             term_form=term_form)
     if layout == "standard":
         if left_out is None:  # binding text only, labelled by paragraph number so notes can cite it
             chunks = [c for c in chunks if c.source_type in ("standard", "appendix_a", "appendix_b", "footnote")]
@@ -190,6 +191,16 @@ async def from_url(url: str, max_words: int) -> Extracted:
     return Extracted(title, "url", text, _pack(_blocks(text), max_words), {"url": url, "content_type": ctype})
 
 
+def schema_options(chk) -> dict:
+    """What the reader takes from a wiki's schema (its Checks): example labels, stub forms, citation forms and the
+    kinds it leaves out; for from_upload, after the name, data and section size."""
+    from ..wiki import checks
+    return {"example_re": checks.example_label_re(chk) if chk else None, "stub_re": checks.stub_re(chk),
+            "footnote_form": checks.footnote_form(chk), "control_headers": chk.control_headers if chk else None,
+            "left_out": chk.kinds_left_out if chk else None, "label_forms": checks.label_forms(chk),
+            "term_form": chk.defined_term_form if chk else None}
+
+
 def opening_text(name: str, data: bytes, pages: int = 3, chars: int = 6000) -> str:
     """The first pages of an upload as plain text (with a PDF's own title, author and subject), so the document's
     issuer, edition and part can be read from its title page."""
@@ -203,14 +214,14 @@ def opening_text(name: str, data: bytes, pages: int = 3, chars: int = 6000) -> s
 
 def from_upload(name: str, data: bytes, max_words: int, example_re=None, stub_re=None, footnote_form=None,
                 control_headers: list[str] | None = None, client: str = "", left_out: list[str] | None = None,
-                label_forms: dict[str, str] | None = None) -> Extracted:
+                label_forms: dict[str, str] | None = None, term_form: str | None = None) -> Extracted:
     """example_re: the wiki schema's example labels, so the issuer's example headings are kept with their paragraphs.
     stub_re: its stub forms, so a stub inside the text is read as its own paragraph.
     footnote_form: its citation form for a footnote, so footnotes are kept under their paragraph.
     client: who issued the paper, as recorded at upload, so a Word paper's cover line naming them is not its title."""
     low = name.lower()
     if low.endswith(".pdf"):
-        return from_pdf(name, data, max_words, example_re, stub_re, footnote_form, left_out, label_forms)
+        return from_pdf(name, data, max_words, example_re, stub_re, footnote_form, left_out, label_forms, term_form)
     if low.endswith(".docx"):
         return from_docx(name, data, max_words, control_headers, client)
     if low.endswith(TEXT_EXT):

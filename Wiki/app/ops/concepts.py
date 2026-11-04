@@ -132,7 +132,7 @@ def build(chk, pages: dict[str, dict], sources: dict[str, dict], sections: list[
     for sl, p in holders.items():
         sec = section_of(sl)
         for place, st in enumerate(_statements(p["content_md"])):
-            cites = [(m.group(1), lab) for m in store.LINK_RE.finditer(st) if m.group(1).startswith("source-")
+            cites = [(m.group(1), lab) for m in checks.closing_links(st) if m.group(1).startswith("source-")
                      for lab in _labels(m.group(2) or "")]
             if not cites:
                 continue

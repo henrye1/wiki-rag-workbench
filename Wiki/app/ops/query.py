@@ -276,7 +276,7 @@ async def answer(wiki: dict, question: str, save: bool = False, mode: str = "aut
     usage = llm.track_usage()
     pages, extra, rounds = await _read(wiki, question, sources, use_saved)
     if not pages:
-        text = ("The wiki has no Standard (Part A) material relevant to this question." if sources == "standard"
+        text = ("The wiki has no material from the Standard itself relevant to this question." if sources == "standard"
                 else "The wiki has no pages relevant to this question yet.")
     else:
         text = await llm.generate(prompts.QUERY_SYSTEM, _prompt(wiki, question, pages, extra))

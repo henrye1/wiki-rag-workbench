@@ -19,7 +19,7 @@ NOTES_SCHEMA = {
         "summary": {"type": "string", "description": "2-4 sentence summary of this section"},
         "claims": {
             "type": "array",
-            "description": "Statements the source itself ASSERTS as fact (rules, definitions, numbers). Keep location labels like [5.5.3] or [page 4] if present. Never turn a question, request or hypothesis into a claim.",
+            "description": "Statements the source itself ASSERTS as fact (rules, definitions, numbers). Keep location labels like [<paragraph label>] or [page 4] if present. Never turn a question, request or hypothesis into a claim.",
             "items": {"type": "string"},
         },
         "open_questions": {
@@ -123,11 +123,14 @@ def write_page_prompt(
     linkable: str, source_slug: str | None, source_paragraphs: str | None = None,
     background_paragraphs: str | None = None, auto_gaps: bool = False,
     part: tuple[int, int] | None = None, earlier_parts: str = "", fill: bool = False, others_md: str | None = None,
+    open_questions: bool = True,
 ) -> str:
+    """open_questions: whether a page may record the questions a source raises (a schema without fixed sections)."""
     cite = (
         f"The source page is [[{source_slug}]]; cite it exactly as the wiki schema requires. "
-        "Only state as fact what the source paragraphs or the Claims in the material support; material listed under Open "
-        "questions may be recorded as open questions the source raises, never as facts.\n"
+        "Only state as fact what the source paragraphs or the Claims in the material support"
+        + ("; material listed under Open questions may be recorded as open questions the source raises, never as facts.\n"
+           if open_questions else ".\n")
         if source_slug else ""
     )
     if background_paragraphs and source_paragraphs:
@@ -371,8 +374,7 @@ def index_prompt_focus(name: str) -> str:
 def route_prompt(briefs: str, lines: str, outline: str = "", note: str = "") -> str:
     return (
         "Assign each source paragraph to the ONE section whose brief says it belongs there (follow the briefs' hand-off "
-        "rules). That section's page is the only one that writes it up. Return every id exactly once, with its section number. "
-        "Keep a topic together: paragraphs under the same heading go to the same section unless a brief hands one off.\n"
+        "rules). That section's page is the only one that writes it up. Return every id exactly once, with its section number.\n"
         f"{note}\n"
         + (f"<source_outline>\nNumbered headings of the source:\n{outline}\n</source_outline>\n\n" if outline else "")
         + f"<section_briefs>\n{briefs}\n</section_briefs>\n\n<paragraphs>\nid | heading | text\n{lines}\n</paragraphs>"

@@ -214,7 +214,7 @@ def accompanying_kind(ref: str) -> str:
 
 
 def parse_document(doc: pymupdf.Document, max_words: int = 500, stub_re=None, footnote_form=None,
-                   example_re=None) -> tuple[list[Chunk], str]:
+                   example_re=None, term_form: str | None = None) -> tuple[list[Chunk], str]:
     """Read an IFRS PDF. A Standard (Part A) is read exactly as parse() always has; a document published with it
     (illustrative examples, implementation guidance, Basis for Conclusions: Parts B and C) by its own paragraph numbers.
 
@@ -223,8 +223,10 @@ def parse_document(doc: pymupdf.Document, max_words: int = 500, stub_re=None, fo
     by its numbering (IE, IG, BC..., DO in the IFRS margin font), but never read as a Standard.
     stub_re: the wiki schema's stub forms (what a deleted or left-out paragraph says), each read as its own paragraph.
     footnote_form: the schema's citation form for a footnote, which keeps footnotes (see parse).
+    term_form: the schema's citation form for a defined term ("<prefix><term>"), which labels each one (see parse).
     """
-    chunks = parse(doc, max_words, stub_re=stub_re, footnote_form=footnote_form, example_re=example_re) if looks_like_ifrs(doc) else []
+    chunks = parse(doc, max_words, stub_re=stub_re, footnote_form=footnote_form, example_re=example_re,
+                   term_form=term_form) if looks_like_ifrs(doc) else []
     if any(c.source_type == "standard" for c in chunks):
         return chunks, "standard"
     acc = parse(doc, max_words, accompanying=True, stub_re=stub_re, footnote_form=footnote_form, example_re=example_re)
@@ -234,11 +236,12 @@ def parse_document(doc: pymupdf.Document, max_words: int = 500, stub_re=None, fo
 
 
 def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = False, stub_re=None,
-          footnote_form: str | None = None, example_re=None) -> list[Chunk]:
+          footnote_form: str | None = None, example_re=None, term_form: str | None = None) -> list[Chunk]:
     """accompanying=False reads a Standard (Part A); True reads a document published with one (Parts B and C).
     footnote_form: how the wiki's schema cites a footnote ("ED:<clause>"): each footnote is kept, labelled in that form
     with the paragraph whose text carries its marker (or, with no marker found, the one it is printed under); without it
-    footnotes are left out."""
+    footnotes are left out. term_form: how the schema cites a defined term (its Defined-term citation form, e.g.
+    "<prefix><term>"): each glossary entry is labelled in it; without it, by its term alone."""
     section = "intro"
     heading: str | None = None
     heading_buf: list[str] = []
@@ -381,7 +384,7 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
     for p in paras:
         ref = p.ref
         if p.section == "appendix_a" and ref:
-            ref = f"Appendix A: {ref}"
+            ref = term_form.replace("<term>", ref) if term_form and "<term>" in term_form else ref
         raw = _join(p.body)
         p.notes.extend(INLINE_NOTE.findall(raw))  # kept with the paragraph's other notes, never as part of its text
         body = clean(EDITORIAL_BRACKETS.sub("", raw))

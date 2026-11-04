@@ -1,6 +1,7 @@
 """Ingest: source -> notes -> plan -> page writes -> changeset."""
 import asyncio
 import collections
+import contextvars
 import hashlib
 import json
 import logging
@@ -196,7 +197,9 @@ def _covers(label: str, ref: str, ranges: bool = True) -> bool:
 def _uncited(content: str, paras: list[str], ranges: bool = True) -> list[str]:
     """The labelled paragraphs in paras that no citation on the page names (each chunk of an uncited paragraph). Only a
     link to a source cites a paragraph: a link to another wiki page labelled with its number points the reader there."""
-    labels = [m.group(2) for m in store.LINK_RE.finditer(content) if m.group(1).startswith("source-") and m.group(2)]
+    # a paragraph is written up where a sentence cites it as its own source (the citations that end the sentence); a
+    # link to it in passing inside a sentence is a cross-reference and covers nothing
+    labels = [m.group(2) for m in checks.closing_links(content) if m.group(1).startswith("source-") and m.group(2)]
     out, cited = [], {}
     for p in paras:
         ref = _ref(p)
@@ -217,12 +220,19 @@ def _not_covered(content: str, paras: list[str], what: str = "source paragraphs 
     return f"\n\nNot yet covered: ({what} that it does not cite) " + ", ".join(missing)
 
 
-ALSO_HEADING = "## Also recorded here"
+ALSO_HEADING = "## Also recorded here"  # schemas before the Checks list gave it (Also recorded heading)
+_also_heading = contextvars.ContextVar("also_heading", default=ALSO_HEADING)  # the run's schema's, set by run()
+
+
+def use_schema_headings(chk) -> None:
+    """The fixed headings this run writes and reads, from the schema's Checks (Also recorded heading)."""
+    if chk and chk.also_heading:
+        _also_heading.set(chk.also_heading)
 
 
 def _split_also(md: str) -> tuple[str, list[str]]:
     """A page's text without its "Also recorded here" section, and that section's lines."""
-    m = re.search(rf"^{re.escape(ALSO_HEADING)}\s*$", md, re.M)
+    m = re.search(rf"^{re.escape(_also_heading.get())}\s*$", md, re.M)
     if not m:
         return md, []
     rest = md[m.end():]
@@ -237,7 +247,7 @@ def _with_also(body: str, lines: list[str]) -> str:
     """The page text with its "Also recorded here" section, placed before a closing "Not yet covered" note."""
     if not lines:
         return body
-    section = f"{ALSO_HEADING}\n\n" + "\n".join(lines)
+    section = f"{_also_heading.get()}\n\n" + "\n".join(lines)
     m = re.search(r"\n*^Not yet covered:.*\Z", body, re.M | re.S)
     head, tail = (body[: m.start()], body[m.start():].strip()) if m else (body, "")
     return "\n\n".join(x for x in (head.strip(), section, tail) if x)
@@ -758,7 +768,7 @@ async def page_summaries(wiki_id, chk, sections: list[dict], now: dict[str, dict
                                      titles) if p["type"] == "subtopic" else None
         if not sm and p["type"] not in ("synthesis", "concept", "entity") and not (p["type"] == "topic" and is_index(sl)):
             sm = checks.page_summary(p["content_md"], chk, terms=sl == terms_page, source=p["type"] == "source", titles=titles,
-                                     sections=section_pages, skip_heads=frozenset({ALSO_HEADING}))
+                                     sections=section_pages, skip_heads=frozenset({_also_heading.get()}))
         out[sl] = sm or (checks.summary_cut(p["summary"], chk) if p["type"] == "subtopic" else p["summary"])
     return out
 
@@ -1266,6 +1276,10 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     wiki_id, schema = wiki["id"], wiki["schema_md"]
     system = prompts.MAINTAINER_SYSTEM
     chk = checks.load(schema)  # example routing and the page checks read their words from the schema's Checks section
+    use_schema_headings(chk)
+    schema_errors = checks.schema_errors(chk)  # a missing or unreadable Checks list: an error that holds the upload
+    if schema_errors:
+        await ctx.progress(schema_errors=schema_errors)
     if chk is None:
         log.info("ingest: the schema has no Checks section; example routing by label and the page checks are off")
     elif chk.missing:
@@ -1392,7 +1406,10 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     # keeps its own section and is ALSO recorded on such a section's page as one short line
     also: dict[int, list[int]] = {}
     for sec in [x for x in sections if x["num"] in also_what] if owner else []:
-        cand = [i for i in range(len(paras)) if owner.get(i) != sec["num"] and i not in stubs]
+        # the candidates: every other section's paragraphs, or only those of the section the schema's list names
+        src_sec = chk.also_from.get(sec["num"]) if chk else None
+        cand = [i for i in range(len(paras)) if owner.get(i) != sec["num"] and i not in stubs
+                and (src_sec is None or owner.get(i) == src_sec)]
 
         async def pick(batch: list[int], sec=sec) -> list[int]:
             lines = "\n".join(f"{i} | {' '.join(paras[i].split()[:200]) if cut_also else paras[i]}" for i in batch)
@@ -1813,7 +1830,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             part = (n, len(groups)) if len(groups) > 1 else None
             # the current page goes to the first part only: it is integrated once, and a later part (given the parts written
             # so far) adds only what its own paragraphs say
-            prompt = prompts.with_schema(schema, prompts.write_page_prompt(
+            prompt = prompts.with_schema(schema, prompts.write_page_prompt(open_questions=not sections, 
                 slug=slug, title=title, ptype=ptype, focus=focus, existing_md=cur_body if n == 1 and not others else None,
                 material=page_material, linkable=linkable, source_slug=source_slug,
                 source_paragraphs="\n\n".join(group) or None, background_paragraphs="\n\n".join(background) or None,
@@ -1858,7 +1875,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                     try:
                         out = await llm.generate_json(
                             system,
-                            prompts.with_schema(schema, prompts.write_page_prompt(
+                            prompts.with_schema(schema, prompts.write_page_prompt(open_questions=not sections, 
                                 slug=slug, title=title, ptype=ptype, focus=focus, existing_md=None, material=page_material,
                                 linkable=linkable, source_slug=source_slug, source_paragraphs="\n\n".join(group),
                                 auto_gaps=True, fill=True, earlier_parts="\n".join(re.findall(r"^#{2,4} .*$", content, re.M)),
@@ -2086,8 +2103,9 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                     continue
                 text = " ".join(paras[i] for i in sub_of[sl]["paras"])
                 refers = {on_page[lab] for lab in on_page if on_page[lab] != sl and re.search(rf"(?<![\w.]){re.escape(lab)}(?![\w]|\.\d)", text)}
-                if refers := sorted(x for x in refers if f"[[{x}" not in o.content_md):
-                    o.content_md += "\n\nRelated pages in this section: " + ", ".join(f"[[{x}]]" for x in refers)
+                if (line := chk.related_line if chk else "Related pages in this section: ") and \
+                        (refers := sorted(x for x in refers if f"[[{x}" not in o.content_md)):
+                    o.content_md += f"\n\n{line.rstrip()} " + ", ".join(f"[[{x}]]" for x in refers)
             # coverage: every paragraph of the section is on exactly one of its pages, and that page cites it
             mine = [i for sl in subs for i in sub_of[sl]["paras"]]
             uncited = [_ref(paras[i]) for sl in subs if (o := written.get(sl)) for i in sub_of[sl]["paras"] if not_cited(o.content_md, [paras[i]])]
@@ -2205,6 +2223,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             failing.setdefault(m["page"], []).extend(f"Paragraph {x} is not written up on the page." for x in m["paragraphs"])
     for f in citations.get("flagged") or []:
         failing.setdefault(f["page"], []).append(f"The citation [[{f['source']}|{f['label']}]] is flagged: {f['reason']}.")
+    for e in schema_errors:  # the schema's Checks could not all be read: its checks did not all run
+        failing.setdefault(source["slug"], []).append(e)
     for u in unassigned:  # a paragraph that names no section was discarded: counted, on the source page's entry
         if u.get("discarded"):
             failing.setdefault(source["slug"], []).append(f"Paragraph {u['paragraph']} was routed to no section and discarded.")

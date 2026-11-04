@@ -11,7 +11,7 @@ from ..jobs import JobContext
 from ..wiki import checks, store
 from ..wiki.store import Op
 from . import fixpass
-from .ingest import (_covers, _fix_breaks, _index_md, _section_for, _sections, _split_also, _with_also, _without_empty_text,
+from .ingest import (use_schema_headings, _covers, _fix_breaks, _index_md, _section_for, _sections, _split_also, _with_also, _without_empty_text,
                      split_written)
 
 log = logging.getLogger(__name__)
@@ -22,6 +22,7 @@ BASE = lambda label: re.sub(r"(?:\s*\([^)]*\))+$", "", label.strip())  # 5.5.17(
 async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
     wiki_id, schema = wiki["id"], wiki["schema_md"]
     chk = checks.load(schema)
+    use_schema_headings(chk)
     if chk is None:
         return {"skipped": "the schema has no Checks section"}
     sections = _sections(schema)
