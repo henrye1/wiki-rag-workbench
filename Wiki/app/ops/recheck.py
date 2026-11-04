@@ -139,7 +139,7 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
         else:  # a split section's index, composed pages: their citations only
             check, sources_text = cite_check, ""
         new = await fixpass.fix_rounds(
-            schema=schema, slug=p["slug"], title=p["title"], text=body, check=check, sources_text=sources_text,
+            schema=schema, slug=p["slug"], title=p["title"], text=fixpass.normalise_labels(body, cite_ctx), check=check, sources_text=sources_text,
             linkable=linkable, kind=kind, record=record, may_shrink=may_shrink, may_grow=may_grow, clause=lambda c: fixpass.is_clause(c, cite_ctx),
             parse=(lambda r: checks.detail_lines(_fix_breaks(r).strip(), chk)) if kind == "source page" else (lambda r: _fix_breaks(r).strip()))
         content = _with_also(new, also_lines) if also_lines else new

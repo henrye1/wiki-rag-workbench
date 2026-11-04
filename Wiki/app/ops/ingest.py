@@ -1767,8 +1767,10 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     async def write(slug, title, ptype, focus, source_slug):
         async def check_and_fix(kind: str, text: str, check, *, sources_text: str, parse, out_schema=prompts.PAGE_SCHEMA,
                                 ok=lambda old, new: True, may_shrink: bool = False, quote=None) -> str:
-            return await fixpass.fix_rounds(schema=schema, slug=slug, title=title, text=text, check=check,
-                                            sources_text=sources_text, linkable=linkable, parse=parse, kind=kind,
+            # a citation whose label ends with one its source holds takes that label, before anything is checked
+            norm = lambda x: fixpass.normalise_labels(x, cite_ctx)
+            return await fixpass.fix_rounds(schema=schema, slug=slug, title=title, text=norm(text), check=check,
+                                            sources_text=sources_text, linkable=linkable, parse=lambda r: norm(parse(r)), kind=kind,
                                             record=check_fixes, out_schema=out_schema, ok=ok, may_shrink=may_shrink,
                                             clause=lambda c: fixpass.is_clause(c, cite_ctx), quote=quote)
 
@@ -2163,6 +2165,9 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     for o in ops:
         o.content_md = _unlink(o.content_md, valid)
     # every citation must name a source that holds the clause it cites
+    for o in ops:  # every page's citations in the schema's form, those not checked above included
+        if o.content_md:
+            o.content_md = fixpass.normalise_labels(o.content_md, cite_ctx)
     citations = await citecheck.check_ops(wiki_id, ops)
     if citations["corrected"] or citations["flagged"]:
         await ctx.progress(citations=citations)

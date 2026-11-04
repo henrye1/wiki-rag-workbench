@@ -6,7 +6,7 @@ from uuid import UUID
 
 from .. import llm, prompts
 from ..db import get_pool
-from ..wiki import checks, citecheck
+from ..wiki import checks, citecheck, store
 
 log = logging.getLogger(__name__)
 LABEL_RE = re.compile(r"^\[([^\]\n]+)\]", re.M)
@@ -32,6 +32,26 @@ async def cite_context(wiki_id: UUID, section_names: list[str]) -> dict:
             "texts": {sl: {k: "\n\n".join(v) for k, v in t.items()} for sl, t in texts.items()},
             "titles": {r["slug"]: ((r["meta"] or {}).get("document") or {}).get("part") or r["title"] for r in rows},
             "names": names}
+
+
+def normalise_labels(text: str, ctx: dict) -> str:
+    """A citation whose label is not one its source holds, but ends with one it does ("<words> 6.5.8" ends with 6.5.8),
+    is written with that label, as the schema's citation form is: the longest such ending, sub-paragraph letters kept.
+    The labels are the source's own, in the schema's citation forms; no word is matched."""
+    labels = ctx["labels"]
+    bare = lambda x: re.sub(r"(?:\s*\([^)]*\))+$", "", x).strip()
+
+    def fix(m):
+        src, lab = m.group(1), (m.group(2) or "").strip()
+        if src not in labels or not lab or lab in labels[src] or bare(lab) in labels[src]:
+            return m.group(0)
+        words = lab.split()
+        for k in range(1, len(words)):
+            cand = " ".join(words[k:])
+            if cand in labels[src] or bare(cand) in labels[src]:
+                return f"[[{src}|{cand}]]"
+        return m.group(0)
+    return store.LINK_RE.sub(fix, text)
 
 
 def is_clause(cite: str, ctx: dict) -> bool:
