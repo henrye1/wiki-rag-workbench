@@ -1838,7 +1838,12 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                 earlier_parts="\n\n".join(o["content_md"] for o in outs), others_md=others if n == 1 else None,
             ))
             try:
-                out = await llm.generate_json(system, prompt, prompts.PAGE_SCHEMA)
+                try:
+                    out = await llm.generate_json(system, prompt, prompts.PAGE_SCHEMA)
+                except llm.EmptyResponse as e:  # a reply cut off (the model ran on past its output limit) is asked for once more
+                    log.warning("ingest: page %s%s stopped early (%s); retrying once", slug, f" part {n}/{len(groups)}" if part else "", e)
+                    empty_retries.append({"page": slug, "part": n if part else None, "reason": str(e)})
+                    out = await llm.generate_json(system, prompt, prompts.PAGE_SCHEMA)
                 if not out["content_md"].strip():  # an empty reply is retried once
                     log.warning("ingest: page %s%s came back empty; retrying once", slug, f" part {n}/{len(groups)}" if part else "")
                     out = await llm.generate_json(system, prompt, prompts.PAGE_SCHEMA)
@@ -2056,6 +2061,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                            "content_md": written[x].content_md} if x in written else existing[x])
         subs = list(dict.fromkeys(index_of.get(sec_slug, []) + [
             x for x in existing if x.startswith(sec_slug + "-") and existing[x]["type"] == "subtopic"]))
+        subs = [x for x in subs if x in written or x in existing]  # a page whose writing failed is not there to index
         if cur:  # in the order the page listed them before; new ones after
             subs.sort(key=lambda x: (cur["content_md"].find(f"[[{x}") % (len(cur["content_md"]) + 1)
                                      if f"[[{x}" in cur["content_md"] else len(cur["content_md"]) + 1))
@@ -2223,6 +2229,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             failing.setdefault(m["page"], []).extend(f"Paragraph {x} is not written up on the page." for x in m["paragraphs"])
     for f in citations.get("flagged") or []:
         failing.setdefault(f["page"], []).append(f"The citation [[{f['source']}|{f['label']}]] is flagged: {f['reason']}.")
+    for f in failed_pages:  # a page (or part of one) that could not be written: its paragraphs are not written up
+        failing.setdefault(source["slug"], []).append(f"Page {f['slug']} could not be written: {f['error']}")
     for e in schema_errors:  # the schema's Checks could not all be read: its checks did not all run
         failing.setdefault(source["slug"], []).append(e)
     for u in unassigned:  # a paragraph that names no section was discarded: counted, on the source page's entry
