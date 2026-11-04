@@ -774,8 +774,9 @@ def _stub_parts(body: str, part_re: re.Pattern, c: Checks) -> set[str]:
 def section_failures(content: str, given: list[str], kinds: dict[str, str], source_slug: str, c: Checks, covers,
                      labels: set[str] = frozenset(), holds=lambda ref: True) -> list[str]:
     """Where a written page breaks the schema's checks for its own paragraphs: a lettered part of a paragraph whose
-    write-up the page holds (holds: a page citing it as a cross-reference is not checked for its parts) missing near its
-    citation, a condition phrase missing there, and a sentence citing a non-Standard paragraph without its opener."""
+    write-up the page holds missing near its citation, a condition phrase of such a paragraph missing there (holds: a page
+    citing a paragraph only as a cross-reference is not checked for its parts or conditions), and a sentence citing a
+    non-Standard paragraph without its opener."""
     failures = []
     blocks = [b for b in re.split(r"\n\s*\n", content) if b.strip()]
     part_re = _part_re(c)
@@ -792,8 +793,8 @@ def section_failures(content: str, given: list[str], kinds: dict[str, str], sour
                 failures.append(f"Paragraph {ref} has lettered or numbered parts {', '.join(parts)}; "
                                 f"{', '.join(lost)} do not appear on the page.")
         flat_body, flat_near = _flat(body), _flat(near)
-        if lost := [w for w in c.conditions if re.search(rf"\b{re.escape(w.casefold())}\b", flat_body)
-                    and not re.search(rf"\b{re.escape(w.casefold())}\b", flat_near)]:
+        if holds(ref) and (lost := [w for w in c.conditions if re.search(rf"\b{re.escape(w.casefold())}\b", flat_body)
+                                       and not re.search(rf"\b{re.escape(w.casefold())}\b", flat_near)]):
             failures.append(f"Paragraph {ref} states the condition(s) {', '.join(repr(w) for w in lost)}, "
                             "which do not appear where the page writes it up.")
     openers = _opener_res(c)

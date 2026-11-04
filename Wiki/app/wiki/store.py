@@ -85,6 +85,18 @@ async def backlinks(wiki_id: UUID, slug: str) -> list[dict]:
         ).fetchall()
 
 
+async def held_paragraphs(wiki_id: UUID) -> dict[str, dict[str, set[str]]]:
+    """page slug -> source slug -> the paragraphs whose write-up the page holds, where an upload recorded them."""
+    async with get_pool().connection() as conn:
+        rows = await (await conn.execute(
+            """select p.slug page, s.slug source, ps.held from wiki.page_sources ps join wiki.pages p on p.id = ps.page_id
+               join wiki.sources s on s.id = ps.source_id where p.wiki_id = %s and ps.held is not null""", (wiki_id,))).fetchall()
+    out: dict[str, dict[str, set[str]]] = {}
+    for r in rows:
+        out.setdefault(r["page"], {})[r["source"]] = set(r["held"])
+    return out
+
+
 async def page_sources(page_id: UUID) -> list[dict]:
     async with get_pool().connection() as conn:
         return await (
@@ -120,6 +132,7 @@ class Op:
     tags: list[str] = field(default_factory=list)
     base_version: int | None = None
     change_note: str = ""
+    holds: dict[str, list[str]] | None = None  # source slug -> its paragraphs whose write-up the page holds (those named)
 
 
 async def create_changeset(
@@ -135,9 +148,10 @@ async def create_changeset(
         ).fetchone()
         async with conn.cursor() as cur:
             await cur.executemany(
-                """insert into wiki.changeset_ops (changeset_id, op, slug, title, type, summary, content_md, tags, base_version, change_note)
-                   values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                [(cs["id"], o.op, o.slug, o.title, o.type, o.summary, o.content_md, o.tags, o.base_version, o.change_note) for o in ops],
+                """insert into wiki.changeset_ops (changeset_id, op, slug, title, type, summary, content_md, tags, base_version, change_note, holds)
+                   values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                [(cs["id"], o.op, o.slug, o.title, o.type, o.summary, o.content_md, o.tags, o.base_version, o.change_note,
+                  Jsonb(o.holds) if o.holds is not None else None) for o in ops],
             )
     return cs["id"]
 
@@ -220,6 +234,11 @@ async def apply_changeset(changeset_id: UUID, force: bool = False) -> dict:
                 await conn.execute(
                     "insert into wiki.page_sources (page_id, source_id) values (%s,%s) on conflict do nothing", (pid, cs["source_id"])
                 )
+            for src_slug, labels in (o.holds or {}).items():  # the write-ups the page holds, for each source named
+                await conn.execute(
+                    """insert into wiki.page_sources (page_id, source_id, held) select %s, s.id, %s from wiki.sources s
+                       where s.wiki_id = %s and s.slug = %s on conflict (page_id, source_id) do update set held = excluded.held""",
+                    (pid, list(labels), wiki_id, src_slug))
             applied.append({"slug": o.slug, "op": action, "version": row["version"]})
         await conn.execute("update wiki.changesets set status='applied', applied_at=now() where id=%s", (changeset_id,))
         applied_slugs = {a["slug"] for a in applied}

@@ -12,7 +12,7 @@ import numpy as np
 from psycopg.types.json import Jsonb
 
 from .. import llm, prompts, storage
-from . import concepts, fixpass
+from . import concepts, fixpass, pagecheck
 from ..config import get_settings
 from ..db import get_pool
 from ..jobs import JobContext
@@ -1776,6 +1776,14 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     cite_ctx = await fixpass.cite_context(wiki_id, [x["name"] for x in sections])  # this source included
     src_labels = cite_ctx["labels"].get(source["slug"], set())
     cite_failures = lambda text: fixpass.cite_failures(text, cite_ctx, chk)
+    # what each page holds (the paragraphs whose write-up is on it), as recorded; this upload routes this source's
+    held_before = await store.held_paragraphs(wiki_id)
+    page_held: dict[str, dict[str, set[str]]] = {}  # a section or subtopic page written now -> source -> what it holds
+    check_srcs = await pagecheck.sources(wiki_id)
+    check_srcs[source["slug"]] = {"by_label": {}, "kinds": para_kinds}
+    for p in paras:
+        if r := _ref(p):
+            check_srcs[source["slug"]]["by_label"].setdefault(r, []).append(p)
     fill_passes: list[dict] = []  # what each extra writing pass was asked for and returned
     missed: list[dict] = []  # paragraphs still not written up (or not also recorded) after the extra passes
     declined: list[dict] = []  # paragraphs marked "also record here" that the writer said the page's brief does not record
@@ -1835,6 +1843,12 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             background = [re.sub(r"^\[[^\]]+\]\s*", "", p) for p in await relevant(f"{title}\n{focus}", s.page_background_words)]
         else:  # schema without fixed sections: the most relevant paragraphs
             given = await relevant(f"{title}\n{focus}", s.page_part_words if ptype in ("overview", "source") else s.page_source_words)
+        page_check = None  # a section or subtopic page: the page checks, against every source it cites
+        if (sec or sub) and source_slug:
+            page_held[slug] = {x: v for x, v in held_before.get(slug, {}).items() if x != source_slug} | {
+                source_slug: {pagecheck.key_of(check_srcs[source_slug]["by_label"], p) for p in given if _ref(p)}}
+            page_check = pagecheck.section_check(chk=chk, covers=covers, srcs=check_srcs, held=page_held[slug], cite_ctx=cite_ctx,
+                                                 absence_allowed=checks.absence_allowed_on(chk, ptype, title))
         groups = _parts(given, s.page_part_words) or ([] if extra else [[]])  # an empty page is written once
         outs = []
         for n, group in enumerate(groups, start=1):
@@ -1918,9 +1932,9 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
 
         if given and source_slug:
             content = await check_and_fix(
-                "section", content, lambda x: (checks.section_failures(x, given, para_kinds, source_slug, chk, covers, src_labels)
+                "section", content, page_check or (lambda x: (checks.section_failures(x, given, para_kinds, source_slug, chk, covers, src_labels)
                                                if chk else []) + checks.repeat_failures(x) + checks.heading_failures(x) + cite_failures(x)
-                + ([] if checks.absence_allowed_on(chk, ptype, title) else checks.absence_failures(x, chk, "\n\n".join(given))),
+                + ([] if checks.absence_allowed_on(chk, ptype, title) else checks.absence_failures(x, chk, "\n\n".join(given)))),
                 sources_text="\n\n".join(given), parse=lambda r: _fix_breaks(r).strip(),
                 ok=lambda old, new: not ({_ref(p) for p in not_cited(new, given)} - {_ref(p) for p in not_cited(old, given)}),
                 quote=lambda text, ref: _quoted(text, ref, given, source_slug, chk, para_kinds, head_of, issuer))
@@ -1947,7 +1961,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                                      for c in sorted(dropped))
                 old = "\n\n".join(b for b in _blocks(cur_body) if checks.cites(b) & dropped)
                 content = await check_and_fix(
-                    "earlier citations", content, lambda x: fixpass.kept_failures(x, earlier),
+                    "earlier citations", content, lambda x: fixpass.kept_failures(x, earlier) + (page_check(x) if page_check else []),
                     sources_text=f"{texts}\n\nWhat the page said about them before:\n\n{old}",
                     parse=(lambda r: checks.detail_lines(_fix_breaks(r).strip(), chk)) if ptype == "source" and chk
                     else (lambda r: _fix_breaks(r).strip()))
@@ -2150,6 +2164,10 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                 rec["pages"] += [{"slug": sl, "paragraphs": 0, "source_words": 0, "moved_only": True}
                                  for sl in m["new_pages"]]
 
+        for sec_slug, subs in index_of.items():  # an index holds no write-ups: what it held went with its blocks
+            page_held.setdefault(sec_slug, held_before.get(sec_slug, {}))
+            pagecheck.pass_on(page_held, sec_slug, {sl: written[sl].content_md for sl in subs if sl in written}, keep={source["slug"]})
+            page_held[sec_slug][source["slug"]] = set()
         indexes = [index_page(i["slug"], written) for i in items if i["slug"] in index_of]
         ops += indexes
         for o in indexes:  # built to hold no claims and link every subtopic page: checked all the same
@@ -2241,6 +2259,13 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                 missed.append({"page": o.slug, "paragraphs": gone, "reason": "cited before this upload, on no page after it moved"})
     if missed:
         await ctx.progress(missed_paragraphs=missed)
+
+    # every section and subtopic page as it is saved passes the page checks: a later pass (earlier citations put back,
+    # claims moved in, a split) may have changed what the checks above passed. What each page holds is saved with it.
+    held_now = {sl: {x: set(v) for x, v in by.items()} for sl, by in held_before.items()} | page_held
+    pagecheck.held_after_split(held_now, resplit, {o.slug: o.content_md or "" for o in ops})
+    check_fixes += pagecheck.as_saved(ops, existing, held_now, chk=chk, covers=covers, srcs=check_srcs, cite_ctx=cite_ctx,
+                                      body=lambda md: _split_also(md)[0])
 
     # 5. Commit. The schema's checks must pass before an ingest is applied: what still fails (a page check, a paragraph
     # of the source not written up, a flagged citation) holds it for review, by page, whatever the mode
