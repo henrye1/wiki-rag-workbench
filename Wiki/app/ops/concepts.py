@@ -13,7 +13,6 @@ import re
 from ..wiki import checks, store
 
 NUMBERED = re.compile(r"^(\d+(?:\.\d+)+)\s")  # a heading's own number of more than one part ("5.5 Impairment")
-STATEMENT = re.compile(r"(?<=\]\][.;:])\s+(?=[A-Z(])|(?<=\]\])\s+(?=[A-Z(])")  # a statement ends with its citations
 RANGE = re.compile(r"\s*[–—-]\s*")
 
 
@@ -47,12 +46,12 @@ def _fill(template: str, values: list[str]) -> str:
 
 
 def _statements(content: str) -> list[str]:
-    """A page's statements, each ending with its citations: line by line, a line split where a citation ends one."""
+    """A page's statements, line by line, each line cut into its sentences by the one sentence split (checks.sentences)."""
     out = []
     for line in content.split("\n"):
         line = line.strip().lstrip("-*• ").strip()
         if line and not line.startswith("#"):
-            out += [s for s in STATEMENT.split(line) if s.strip()]
+            out += [s for s in checks.sentences(line) if s.strip()]
     return out
 
 

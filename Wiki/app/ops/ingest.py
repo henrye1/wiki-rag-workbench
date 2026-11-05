@@ -1800,6 +1800,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         if (r := _ref(p)) and i < len(ex.meta.get("headings") or []):
             head_of.setdefault(r, (ex.meta.get("headings") or [])[i])
     authority = checks.authority_sentences(ex.text, chk) if chk else []
+    authority_shown = checks.authority_context(ex.text, chk) if chk else []  # with the source's text before each form
     cite_ctx = await fixpass.cite_context(wiki_id, [x["name"] for x in sections])  # this source included
     src_labels = cite_ctx["labels"].get(source["slug"], set())
     cite_failures = lambda text: fixpass.cite_failures(text, cite_ctx, chk)
@@ -1971,12 +1972,12 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         if ptype == "source" and owner and sec_of and chk and chk.source_parts:
             informed = {sl for sl, x in sec_of.items() if own.get(x["num"]) or also.get(x["num"])}
             args = dict(fields=fields, authority=authority, informed=informed, sections=set(sec_of),
-                        source_slug=source["slug"], c=chk, labels=src_labels)
+                        source_slug=source["slug"], c=chk, labels=src_labels, source_text=ex.text)
             if skipped := checks.source_failures(content, **args)[1]:
                 log.info("ingest: source page %s: not checked: %s", slug, "; ".join(skipped))
             content = await check_and_fix("source page", checks.detail_lines(content, chk),
                                           lambda x: checks.source_failures(x, **args)[0] + cite_failures(x),
-                                          sources_text="\n\n".join(authority),
+                                          sources_text="\n\n".join(authority_shown),
                                           parse=lambda r: checks.detail_lines(_fix_breaks(r).strip(), chk),
                                           may_shrink=True)  # a source page with too many takeaways must lose some
 
@@ -2114,7 +2115,10 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
 
     fields = {k: v for k, v in (ex.meta.get("document") or {}).items() if v}
     source_focus = f"Source page. One-line summary: {plan['source_summary']}" + (
-        "\nRecorded for this source: " + "; ".join(f"{k}: {v}" for k, v in fields.items()) if fields else "")
+        "\nRecorded for this source: " + "; ".join(f"{k}: {v}" for k, v in fields.items()) if fields else "") + (
+        "\nWhere the source states its authority (each under the label of the passage it is in; the text before each "
+        "authority form is shown so the whole sentence can be transcribed word for word, from where it starts):\n"
+        + "\n".join(authority_shown) if authority_shown else "")
 
     index_src = await _source_paths(wiki_id, checks.footnote_form(chk), _listed(chk)) if chk and chk.examples_section else {}
 
