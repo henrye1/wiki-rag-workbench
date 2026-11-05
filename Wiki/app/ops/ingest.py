@@ -164,6 +164,35 @@ def _ref(para: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+async def _route_rounds(todo: list[int], ask, nums: set[int], sizes) -> tuple[dict[int, int], dict[int, list[str]]]:
+    """Routing rounds: each round asks again, in batches of its size, for what the rounds before it left unplaced.
+    ask(batch) -> the model's assignments ([{"id", "section"}]), or None where the call failed. Returns the section each
+    paragraph was placed in, and for each paragraph still unplaced what every round answered for it."""
+    owner: dict[int, int] = {}
+    answers: dict[int, list[str]] = {i: [] for i in todo}
+    for size in sizes:
+        async def one(batch: list[int]):
+            return batch, await ask(batch)
+        for batch, out in await llm.gather_limited(one(todo[i : i + size]) for i in range(0, len(todo), size)):
+            got = {}
+            for a in out or []:
+                if a["id"] in batch:
+                    got.setdefault(a["id"], a["section"])
+            for i in batch:
+                if out is None:
+                    answers[i].append(f"batch of {size}: the call failed")
+                elif i not in got:
+                    answers[i].append(f"batch of {size}: left out")
+                elif got[i] not in nums:
+                    answers[i].append(f"batch of {size}: section {got[i]}, not offered")
+                else:
+                    owner[i] = got[i]
+        todo = [i for i in todo if i not in owner]
+        if not todo:
+            break
+    return owner, {i: answers[i] for i in todo}
+
+
 REF_PAT = r"[A-Z]*\d+(?:\.\d+)*[A-Z]{0,2}"
 
 
@@ -1378,26 +1407,24 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                 "been placed there, and every other paragraph goes to the section that owns it." if ex_sec else "")
         outline = "\n".join(ex.meta.get("outline") or [])
 
-        async def route(batch: list[int]) -> dict[int, int]:
+        async def route(batch: list[int]) -> list[dict] | None:
             # the whole passage: a fact late in a long passage or table weighs in its routing too
             lines = "\n".join(f"{i} | {heads[i] or '-'} | {' '.join(paras[i].split())}" for i in batch)
             try:
                 out = await llm.generate_json(
-                    system, prompts.with_schema(schema, prompts.route_prompt(briefs, lines, outline, note)), prompts.ROUTE_SCHEMA
+                    system, prompts.with_schema(schema, prompts.route_prompt(briefs, lines, outline, note)), prompts.route_schema(nums)
                 )
             except Exception as e:  # unrouted paragraphs are retried, then placed by the fallbacks below
                 log.warning("ingest: routing batch failed: %s", e)
-                return {}
-            return {a["id"]: a["section"] for a in out["assignments"] if a["id"] in batch and a["section"] in nums}
+                return None
+            return out["assignments"]
 
         todo = [i for i in range(len(paras)) if i not in owner and i not in stubs]
-        for size in (s.route_batch, 40):  # second round: only what the first one missed, in smaller batches
-            for d in await llm.gather_limited(route(todo[i : i + size]) for i in range(0, len(todo), size)):
-                owner.update(d)
-            todo = [i for i in todo if i not in owner]
-            if not todo:
-                break
-        # Still missing after both rounds: a chunk of a paragraph whose other chunks were routed goes with them (it is
+        # later rounds: only what the rounds before missed, in smaller batches; the last a few paragraphs at a time
+        routed, answers = await _route_rounds(todo, route, nums, (s.route_batch, 40, s.route_batch_last))
+        owner.update(routed)
+        todo = list(answers)
+        # Still missing after every round: a chunk of a paragraph whose other chunks were routed goes with them (it is
         # the same paragraph); anything else names no section and is discarded and counted, never put on a default page
         placed_label = {}
         for i, n in owner.items():
@@ -1407,7 +1434,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                 owner[i] = placed_label[_ref(paras[i])]
             else:
                 unassigned.append({"paragraph": _ref(paras[i]) or f"paragraph {i + 1}", "discarded": True,
-                                   "words": len(paras[i].split())})
+                                   "words": len(paras[i].split()), "answers": answers[i]})
         _same_label_together(paras, owner)  # the chunks of one long paragraph go to one page
         owner.update({i: owner[j] for i, j in foot.items() if j in owner})
         if unassigned:
@@ -2284,7 +2311,8 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         failing.setdefault(source["slug"], []).append(e)
     for u in unassigned:  # a paragraph that names no section was discarded: counted, on the source page's entry
         if u.get("discarded"):
-            failing.setdefault(source["slug"], []).append(f"Paragraph {u['paragraph']} was routed to no section and discarded.")
+            said = f" (the router answered: {'; '.join(u['answers'])})" if u.get("answers") else ""
+            failing.setdefault(source["slug"], []).append(f"Paragraph {u['paragraph']} was routed to no section and discarded{said}.")
     failing = {sl: list(dict.fromkeys(fs)) for sl, fs in failing.items() if sl in {o.slug for o in ops}}
     await ctx.progress(stage="commit")
     summary = f"Ingest: {ex.title}"

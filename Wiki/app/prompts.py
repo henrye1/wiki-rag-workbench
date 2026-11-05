@@ -264,6 +264,15 @@ ROUTE_SCHEMA = {
 }
 
 
+def route_schema(nums) -> dict:
+    """ROUTE_SCHEMA with the section held to the numbers offered: a section not offered (the examples section) cannot be
+    answered, so no paragraph is dropped for naming one."""
+    items = ROUTE_SCHEMA["properties"]["assignments"]["items"]
+    section = {**items["properties"]["section"], "enum": sorted(nums)}
+    return {**ROUTE_SCHEMA, "properties": {"assignments": {
+        **ROUTE_SCHEMA["properties"]["assignments"], "items": {**items, "properties": {**items["properties"], "section": section}}}}}
+
+
 # ---------- ingest: "also record here" sections (additive) ----------
 
 ALSO_SCHEMA = {

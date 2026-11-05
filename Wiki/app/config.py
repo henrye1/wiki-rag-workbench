@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     page_part_words: int = 4000  # source words per writing call; longer pages are written in parts
     page_background_words: int = 2000  # other sections' paragraphs given to a section page as context only
     route_batch: int = 120  # paragraphs per call when assigning paragraphs to schema sections
+    route_batch_last: int = 5  # the last routing round: what the earlier rounds left unplaced, a few paragraphs per call
     llm_concurrency: int = 4  # parallel LLM calls inside one job
     job_workers: int = 2  # jobs running at once
     query_top_k: int = 8  # answer_method search_pick: pages from the search, of which the top 5 are read
