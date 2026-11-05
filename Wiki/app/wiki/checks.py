@@ -82,6 +82,24 @@ class Checks:
     related_line: str = ""  # the words that open a subtopic page's line of links to its related pages
     section_framework: str = ""  # the framework slug a section page's slug opens with
     entity_summary: bool = False  # an entity page's summary as a concept page's
+    reference_words: list[str] = field(default_factory=list)  # words a source points to its paragraphs with ("paragraph")
+    joining_words: list[str] = field(default_factory=list)  # words joining labels in such a pointer ("and", "to")
+    # the answer side: what an answer is laid out and checked by (Workflow: Answer and check)
+    answer_headings: list[str] = field(default_factory=list)  # in order: the answer, its clause references, what is not
+    # addressed, non-authoritative material
+    answer_none: str = ""  # what a part with nothing in it says
+    non_authoritative: list[str] = field(default_factory=list)  # the schema's kind names kept under the last heading
+    searched_form: str = ""  # how a point left as not addressed ends: <terms> and <definitions page> filled in
+    force_words: dict[str, list[str]] = field(default_factory=dict)  # group -> the words of that force
+    force_strict: str = ""  # the group whose word an answer uses only where a paragraph it cites uses one
+    standard_only: str = ""  # the label of the Sources setting that keeps only the Standard's own text
+    kind_ranking: list[list[str]] = field(default_factory=list)  # highest first; a name no paragraph kind has: the
+    # Standard's own text
+    verdicts: list[str] = field(default_factory=list)  # a client statement's possible verdicts
+    lint_checks: dict[int, str] = field(default_factory=dict)  # Maintain check number -> what lint runs for it
+    lint_not_run: dict[int, str] = field(default_factory=dict)  # Maintain check number -> why lint cannot run it
+    answer_missing: list[str] = field(default_factory=list)  # answer and lint lists the schema does not give: those
+    # steps report them (they never hold an upload)
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
     unreadable: list[str] = field(default_factory=list)  # lists the schema gives in wording the engine cannot read
     unknown: list[str] = field(default_factory=list)  # lines of the Checks section that name no list the engine knows
@@ -104,7 +122,11 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "concept_terms": "concept pages", "concept_line": "concept lines", "concept_match": "concept term match",
     "concept_slug": "concept slug", "concept_summary_lead": "concept summary",
     "entity_pages": "entity pages", "entity_lines": "entity lines", "entity_summary": "entity summary",
-    "also_heading": "also recorded heading", "related_line": "related pages line",
+    "also_heading": "also recorded heading", "related_line": "related pages line", "reference_words": "reference words",
+}
+ANSWER_LISTS = {  # read like LISTS, but used only when answering and by lint: a missing one is reported there
+    "answer_headings": "answer layout", "force_words": "answer force words", "standard_only": "standard only",
+    "kind_ranking": "kind ranking", "verdicts": "client-statement verdicts", "lint_checks": "lint checks",
 }
 PLACEHOLDER = re.compile(r"<[^<>]+>")
 
@@ -133,12 +155,12 @@ def load(schema_md: str) -> Checks | None:
     c = Checks()
     if m := re.search(r"<framework>-entity-<[^>]+>", schema_md or ""):
         c.entity_slug = m.group(0)
-    known = set(LISTS.values())
+    known = set(LISTS.values()) | set(ANSWER_LISTS.values())
     c.unknown = [k for k in items if not any(k.startswith(x) for x in known)]
-    for attr, label in LISTS.items():
+    for attr, label in {**LISTS, **ANSWER_LISTS}.items():
         value = get(label)
         if value is None:
-            c.missing.append(label)
+            (c.answer_missing if attr in ANSWER_LISTS else c.missing).append(label)
             continue
         if value.strip().rstrip(".").casefold() == "none":  # the schema does not use this list
             continue
@@ -251,10 +273,43 @@ def load(schema_md: str) -> Checks | None:
             n = re.search(r"\bat most ([\d,]+) characters\b", value, re.I)
             c.page_summary_max = int(n.group(1).replace(",", "")) if n else None
             c.page_summary = bool(c.page_summary_lead)
+        elif attr == "reference_words":  # "<word> <label>", ...; words joining labels: "<word>", ...
+            quoted = QUOTED.findall(value)
+            c.reference_words = [x.replace("<label>", "").strip() for x in quoted if "<label>" in x]
+            c.joining_words = [x.strip() for x in quoted if "<label>" not in x]
+        elif attr == "answer_headings":  # part = "<heading>"; ... only paragraphs of these kinds ...: a, b. ... says "<none>"
+            parts = value.split(". ", 1)
+            c.answer_headings = [h for k, v in _mapping(parts[0]).items() for h in QUOTED.findall(v)[:1]]
+            rest = parts[1] if len(parts) > 1 else ""
+            if m := re.search(r"\bonly paragraphs of these kinds[^:]*:\s*([^.]+)\.", rest):
+                c.non_authoritative = [x.strip().casefold() for x in m.group(1).split(",") if x.strip()]
+            if m := re.search(r"\bsays [\"\u201c]([^\"\u201d]+)[\"\u201d]", rest):
+                c.answer_none = m.group(1)
+            c.searched_form = next((x for x in QUOTED.findall(rest) if "<terms>" in x), "")
+        elif attr == "force_words":  # group = "w", "w"; ...; "... uses an <group> word only where ..."
+            head = re.split(r"\.\s+(?=[A-Z])", value, maxsplit=1)
+            c.force_words = {k: QUOTED.findall(v) for k, v in _mapping(head[0]).items() if QUOTED.findall(v)}
+            if len(head) > 1 and (m := re.search(r"\buses an? (\w+) word only where\b", head[1])):
+                c.force_strict = m.group(1).casefold() if m.group(1).casefold() in c.force_words else ""
+        elif attr == "standard_only":  # "<label>" = paragraphs of no kind listed in Paragraph kinds ...
+            if re.search(r"\bno kind listed in paragraph kinds\b", value, re.I):
+                c.standard_only = (QUOTED.findall(value) or [""])[0]
+        elif attr == "kind_ranking":  # a; b, c; d: highest first, kinds of one rank joined by commas
+            c.kind_ranking = [[x.strip().casefold() for x in r.split(",") if x.strip()] for r in value.rstrip(".").split(";")]
+            c.kind_ranking = [r for r in c.kind_ranking if r]
+        elif attr == "lint_checks":  # n = what lint runs; n = none (why)
+            for k, v in _mapping(value).items():
+                if k.strip().isdigit():
+                    v = v.strip().rstrip(".")
+                    if m := re.match(r"none\b\s*(?:\((.*)\))?", v, re.I):
+                        c.lint_not_run[int(k)] = m.group(1) or ""
+                    else:
+                        c.lint_checks[int(k)] = v.casefold()
 
         else:
             setattr(c, attr, QUOTED.findall(value))
-        if getattr(c, attr) in (before, None, "", [], {}, False):
+        got = (c.lint_checks or c.lint_not_run) if attr == "lint_checks" else getattr(c, attr)
+        if got in (before, None, "", [], {}, False):
             c.unreadable.append(label)
     return c
 
@@ -387,6 +442,33 @@ def label_forms(c: Checks | None) -> dict[str, str]:
     """Each reader kind the schema cites in a form of its own when printed without a paragraph label (e.g. note ->
     "ED:<clause>", intro -> "<page label>")."""
     return {k: f for k, v in (c.kinds.items() if c else []) if (f := c.unlabelled_forms.get(v))}
+
+
+LABEL_SHAPE = r"[0-9][\w.]*|[A-Z]{1,3}\d[\w.]*"  # a paragraph label as a pointer names it: "34", "42A", "B5.5.17"
+
+
+def reference_re(c: Checks | None) -> re.Pattern | None:
+    """A source pointing to one of its own paragraphs with the schema's Reference words ("paragraphs 42A–42H"): the
+    label it points to is the group. None where the schema gives no Reference words."""
+    if not (c and c.reference_words):
+        return None
+    words = "|".join(map(re.escape, sorted(c.reference_words, key=len, reverse=True)))
+    return re.compile(rf"\b(?:{words})\s+({LABEL_SHAPE})")
+
+
+def reference_filler(c: Checks | None) -> re.Pattern:
+    """What is left of a citation label besides its clauses: brackets, punctuation and the schema's Reference words and
+    their joining words (a label that is only clauses leaves nothing else)."""
+    words = sorted((c.reference_words + c.joining_words) if c else [], key=len, reverse=True)
+    alt = rf"\b(?:{'|'.join(map(re.escape, words))})\b|" if words else ""
+    return re.compile(rf"\([^)]*\)|{alt}[\s,;:.\u2013\-–]+", re.I)
+
+
+def bare_number_re(c: Checks | None) -> re.Pattern:
+    """A label that is only a number (after one of the schema's Reference words, if any): "34", "paragraph 34(a)"."""
+    words = sorted(c.reference_words if c else [], key=len, reverse=True)
+    lead = rf"(?:(?:{'|'.join(map(re.escape, words))})\s*)?" if words else ""
+    return re.compile(rf"{lead}\d+(?:\([^)]*\))*", re.I)
 
 
 def example_label_re(c: Checks) -> re.Pattern | None:

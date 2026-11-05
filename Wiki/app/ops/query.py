@@ -8,7 +8,13 @@ nothing on it has to be read) or search_browse_2 (search_browse, judging "enough
 with each round's choices and reasons kept in the log).
 
 Synthesis pages are never chosen as one of the pages for a question. Saved answers (synthesis pages filed with the
-Save button) relevant to the question are read in addition, as earlier answers to check against those pages."""
+Save button) relevant to the question are read in addition, as earlier answers to check against those pages; one
+flagged as needing checking, or saved with citation problems, is not read.
+
+Where the schema lays answers out (its Answer layout), the answer follows the schema's Workflow: Answer and check
+(answering.py): its instruction is built from the schema, a point it says is not addressed is searched for first, and it
+is checked and sent back once with its failures. The Sources setting "Standard only" keeps the statements citing only
+the Standard's own text, by paragraph kind (Checks: Standard only)."""
 import hashlib
 import logging
 import re
@@ -19,6 +25,8 @@ from ..config import get_settings
 from ..db import get_pool
 from ..wiki import checks, citecheck, saved, search, store
 from ..wiki.store import Op, slugify
+from . import answering, fixpass, pagecheck
+from .ingest import _sections
 
 log = logging.getLogger(__name__)
 
@@ -34,11 +42,10 @@ async def _select_pages(wiki: dict, question: str) -> list[dict]:
     hits = [h for h in hits if h["slug"] not in synth]
     # subtopic pages are not navigation targets: they are reached from their section page's index (and by search)
     index = await store.compact_index(wiki_id, exclude_types=("synthesis", "subtopic"))
-    picked = await llm.generate_json(
-        prompts.MAINTAINER_SYSTEM, prompts.select_prompt(question, index, s.query_max_pages), prompts.SELECT_SCHEMA
-    )
+    picked = [x for part in store.index_parts(index, s.page_list_chars) for x in (await llm.generate_json(
+        prompts.MAINTAINER_SYSTEM, prompts.select_prompt(question, part, s.query_max_pages), prompts.SELECT_SCHEMA))["slugs"]]
     order: list[str] = []
-    for slug in [h["slug"] for h in hits[:5]] + [slugify(x) for x in picked["slugs"]]:
+    for slug in [h["slug"] for h in hits[:5]] + [slugify(x) for x in picked]:
         if slug not in order and slug not in synth:
             order.append(slug)
     order = await _with_subtopics(wiki_id, question, order[: s.query_max_pages + 5])
@@ -126,22 +133,30 @@ async def _select_saved(wiki: dict, question: str) -> list[dict]:
     return [{**by[x], "saved": True} for x in dict.fromkeys(slugify(x) for x in out["slugs"]) if x in by][:2]
 
 
-# "Sources: Standard only": keep only statements cited to a Standard (Part A); a page can also hold material from
-# documents published with it (Parts B and C), which cite their own sources
+# "Sources: Standard only" (the schema's Checks: Standard only): keep only the statements whose citations are all to
+# the Standard's own text, by paragraph kind; a page also holds guidance, examples and notes, of other kinds
 _SOURCE_CITE = re.compile(r"\[\[(source-[^\]|#]+)")
 _STATEMENT = re.compile(r"(?:\[\[source-[^\]]+\]\][\s,;]*)+[.;:]?")  # a statement ends with its citation group
 _HEADING = re.compile(r"^\s*#{1,6} ")
 
 
-async def _standard_slugs(wiki_id) -> set[str]:
-    """Sources read as a Standard (Part A) by the IFRS reader."""
-    async with get_pool().connection() as conn:
-        rows = await (await conn.execute("select slug from wiki.sources where wiki_id = %s and meta->>'parser' = 'ifrs'", (wiki_id,))).fetchall()
-    return {r["slug"] for r in rows}
+class NoStandardOnly(ValueError):
+    """The wiki's schema gives no Standard only list, so the setting cannot be applied."""
 
 
-def standard_only(md: str, standard: set[str]) -> str:
-    """The page text keeping headings and only the statements whose source citations are all to a Standard."""
+async def _own_text(wiki: dict):
+    """keep(slug, label): whether a citation cites the Standard's own text (a paragraph of no kind the schema's
+    Paragraph kinds lists), as the schema's Standard only list sets out."""
+    chk = checks.load(wiki["schema_md"])
+    if not (chk and chk.standard_only):
+        raise NoStandardOnly("This wiki's schema has no Standard only list in its Checks, so answers cannot be limited to "
+                             "the Standard's own text.")
+    srcs = await pagecheck.sources(wiki["id"])
+    return lambda slug, label: answering.kind_of(srcs, chk, slug, label) == ""
+
+
+def standard_only(md: str, keep) -> str:
+    """The page text keeping headings and only the statements whose source citations all pass keep(slug, label)."""
     lines = []
     for line in md.split("\n"):
         if not line.strip() or _HEADING.match(line):
@@ -151,7 +166,7 @@ def standard_only(md: str, standard: set[str]) -> str:
         for m in _STATEMENT.finditer(line):
             parts.append(line[pos : m.end()])
             pos = m.end()
-        kept = [p for p in parts if (cited := set(_SOURCE_CITE.findall(p))) and cited <= standard]
+        kept = [p for p in parts if (cited := answering._source_cites(p)) and all(keep(sl, lab) for sl, lab in cited)]
         if kept:
             lines.append("".join(kept).strip())
     out: list[str] = []  # drop headings left with nothing under them
@@ -167,10 +182,10 @@ def standard_only(md: str, standard: set[str]) -> str:
 async def _restrict(wiki: dict, pages: list[dict], sources: str) -> list[dict]:
     if sources != "standard":
         return pages
-    standard = await _standard_slugs(wiki["id"])
+    keep = await _own_text(wiki)
     out = []
     for p in pages:
-        md = standard_only(p["content_md"], standard)
+        md = standard_only(p["content_md"], keep)
         if _SOURCE_CITE.search(md):
             out.append({**p, "content_md": md})
     return out
@@ -234,10 +249,16 @@ def _rounds_md(rounds: list[dict], reasons: bool = False) -> str:
                            for r in rounds if "read" in r)
 
 
-def _log_md(wiki: dict, sources: str, pages: list[dict], extra: list[dict], rounds: list[dict]) -> str:
+def _log_md(wiki: dict, sources: str, pages: list[dict], extra: list[dict], rounds: list[dict], report: dict | None = None) -> str:
+    one = lambda x: " ".join(str(x).split())
+    checked = ("" if report is None else
+               "".join(f"\nNot addressed, searched for: {one(f['point'])} ({', '.join(f['terms'])}); found: "
+                       + (", ".join(f"[[{x}]]" for x in f["pages"]) or "nothing") for f in report.get("not_addressed_search", []))
+               + f"\nAnswer checks: {len(report['found'])} found, {len(report['left'])} left"
+               + (f" (off: {', '.join(report['checks_off'])})" if report["checks_off"] else ""))
     return (f"Sources: {sources}. Pages read: " + ", ".join(f"[[{p['slug']}]]" for p in pages)
             + (". Saved answers read: " + ", ".join(f"[[{p['slug']}]]" for p in extra) if extra else "")
-            + _rounds_md(rounds, reasons=wiki.get("answer_method") == "search_browse_2"))
+            + _rounds_md(rounds, reasons=wiki.get("answer_method") == "search_browse_2") + checked)
 
 
 def _prompt(wiki: dict, question: str, pages: list[dict], extra: list[dict]) -> str:
@@ -248,7 +269,7 @@ def _prompt(wiki: dict, question: str, pages: list[dict], extra: list[dict]) -> 
 async def read_text(wiki: dict, read: list[dict], sources: str) -> list[dict]:
     """The exact text an answer read, rebuilt from each page's recorded version (and the Sources setting), with whether it
     still matches the hash recorded when the answer was given."""
-    standard = await _standard_slugs(wiki["id"]) if sources == "standard" else None
+    keep = await _own_text(wiki) if sources == "standard" else None
     out = []
     async with get_pool().connection() as conn:
         for r in read:
@@ -258,7 +279,7 @@ async def read_text(wiki: dict, read: list[dict], sources: str) -> list[dict]:
             if not row:
                 out.append({"slug": r.get("slug"), "version": r.get("version"), "text": None, "matches": False, "reason": "version not found"})
                 continue
-            md = standard_only(row["content_md"], standard) if standard is not None else row["content_md"]
+            md = standard_only(row["content_md"], keep) if keep is not None else row["content_md"]
             same = hashlib.sha256(md.encode()).hexdigest() == r.get("sha256")
             out.append({"slug": r.get("slug"), "version": r.get("version"), "saved": bool(r.get("saved")), "text": md, "matches": same,
                         **({} if same else {"reason": "the rebuilt text differs from what was read"})})
@@ -271,29 +292,88 @@ def _read_record(pages: list[dict]) -> list[dict]:
              "words": len(p["content_md"].split()), "sha256": hashlib.sha256(p["content_md"].encode()).hexdigest()} for p in pages]
 
 
+def _nothing(wiki: dict, sources: str) -> str:
+    chk = checks.load(wiki["schema_md"])
+    return (f'Under "{chk.standard_only}", the wiki has no material relevant to this question.' if sources == "standard"
+            else "The wiki has no pages relevant to this question yet.")
+
+
+async def _checked(wiki: dict, chk, question: str, pages: list[dict], extra: list[dict], sources: str) -> tuple[str, list[dict], dict]:
+    """An answer as the schema's Workflow: Answer and check sets out: written under the schema's instruction; each
+    point it says is not addressed searched for in every section and subtopic page, and the answer written again with
+    what was found; then checked, and sent back once with its failures. Returns the answer, the pages read (those the
+    search found included) and the report of its checks."""
+    system, schema = answering.instruction(chk), wiki["schema_md"]
+    srcs = await pagecheck.sources(wiki["id"])
+    cite_ctx = await fixpass.cite_context(wiki["id"], [x["name"] for x in _sections(schema)])
+    report: dict = {"checks_off": answering.checks_off(chk)}
+    text = await llm.generate(system, _prompt(wiki, question, pages, extra))
+    if points := answering.not_addressed_points(answering.split_parts(text, chk)[1][2], chk):
+        try:
+            found, more = await answering.search_not_addressed(wiki, chk, points, {p["slug"] for p in pages},
+                                                               lambda ps: _restrict(wiki, ps, sources))
+            pages = pages + more
+            text = await llm.generate(system, prompts.with_schema(schema, answering.search_prompt(
+                question, _pages_md(pages), text, found, chk)))
+            report["not_addressed_search"] = [{k: f[k] for k in ("point", "terms", "pages")} for f in found]
+        except Exception as e:
+            log.warning("query: searching for the points not addressed failed: %s", e)
+            report["not_addressed_search_error"] = f"{type(e).__name__}: {e}"
+    fails = answering.failures(text, chk, srcs, cite_ctx)
+    report["found"] = fails
+    if fails:
+        try:
+            again = await llm.generate(system, prompts.with_schema(schema, answering.fix_prompt(question, _pages_md(pages), text, fails)))
+            left = answering.failures(again, chk, srcs, cite_ctx)
+            if len(left) <= len(fails):  # the rewrite is kept unless it fails more
+                text, fails = again, left
+        except Exception as e:
+            log.warning("query: the answer's fix pass failed: %s", e)
+            report["fix_error"] = f"{type(e).__name__}: {e}"
+    report["left"] = fails
+    return text, pages, report
+
+
+async def _compose(wiki: dict, question: str, pages: list[dict], extra: list[dict], sources: str) -> tuple[str, list[dict], dict | None]:
+    chk = checks.load(wiki["schema_md"])
+    if not pages:
+        return _nothing(wiki, sources), pages, None
+    if answering.ready(chk):
+        return await _checked(wiki, chk, question, pages, extra, sources)
+    return await llm.generate(prompts.QUERY_SYSTEM, _prompt(wiki, question, pages, extra)), pages, None
+
+
 async def answer(wiki: dict, question: str, save: bool = False, mode: str = "auto", sources: str = "all",
                  use_saved: bool = True) -> dict:
     usage = llm.track_usage()
     pages, extra, rounds = await _read(wiki, question, sources, use_saved)
-    if not pages:
-        text = ("The wiki has no material from the Standard itself relevant to this question." if sources == "standard"
-                else "The wiki has no pages relevant to this question yet.")
-    else:
-        text = await llm.generate(prompts.QUERY_SYSTEM, _prompt(wiki, question, pages, extra))
+    text, pages, report = await _compose(wiki, question, pages, extra, sources)
     result = {"answer": text, "pages": listed(wiki, text, pages + extra), "read": _read_record(pages + extra),
-              "usage": list(usage), **({"rounds": rounds} if browses(wiki) else {})}
+              "usage": list(usage), **({"rounds": rounds} if browses(wiki) else {}),
+              **({"answer_check": report} if report is not None else {})}
     saved = await save_answer(wiki, question, text, mode, sources) if save and pages else None
     if saved:
         result["saved"] = saved
-    await store.add_log(wiki["id"], "query", question[:200], _log_md(wiki, sources, pages, extra, rounds)
+    await store.add_log(wiki["id"], "query", question[:200], _log_md(wiki, sources, pages, extra, rounds, report)
                         + (f"\n\nSaved as [[{saved['slug']}]] ({saved['status']})" if saved else ""))
     return result
 
 
-async def stream_answer(wiki: dict, question: str, sources: str = "all", use_saved: bool = True) -> tuple[list[dict], AsyncIterator[str]]:
+async def _once(text: str) -> AsyncIterator[str]:
+    yield text
+
+
+async def stream_answer(wiki: dict, question: str, sources: str = "all",
+                        use_saved: bool = True) -> tuple[list[dict], AsyncIterator[str], dict | None]:
+    """The pages read, the answer's text as it comes, and its check report. An answer the schema checks is given whole,
+    once checked (it is not streamed as it is written: it may be written again)."""
     pages, extra, rounds = await _read(wiki, question, sources, use_saved)
+    if answering.ready(checks.load(wiki["schema_md"])) or not pages:
+        text, pages, report = await _compose(wiki, question, pages, extra, sources)
+        await store.add_log(wiki["id"], "query", question[:200], _log_md(wiki, sources, pages, extra, rounds, report))
+        return pages + extra, _once(text), report
     await store.add_log(wiki["id"], "query", question[:200], _log_md(wiki, sources, pages, extra, rounds))
-    return pages + extra, llm.stream(prompts.QUERY_SYSTEM, _prompt(wiki, question, pages, extra))
+    return pages + extra, llm.stream(prompts.QUERY_SYSTEM, _prompt(wiki, question, pages, extra)), None
 
 
 async def save_answer(wiki: dict, question: str, answer_md: str, mode: str, sources: str = "all") -> dict:
@@ -314,7 +394,9 @@ async def save_answer(wiki: dict, question: str, answer_md: str, mode: str, sour
     cur = await store.get_page(wiki_id, slug)
     if cur and cur["type"] != "synthesis":
         raise ValueError(f"A {cur['type']} page is already called {slug}")
-    record = synthesis.record([{"searched": question, "date": dt.date.today().isoformat(), "sources": sources}])
+    chk = checks.load(wiki["schema_md"])
+    record = synthesis.record([{"searched": question, "date": dt.date.today().isoformat(), "sources": sources}],
+                              chk.standard_only if chk else "")
     op = Op(op="update" if cur else "create", slug=slug, title=out["title"], type="synthesis", summary=out["summary"],
             content_md=f"{record}\n\n{out['content_md'].strip()}", tags=list(dict.fromkeys([saved.SAVED_TAG, *out["tags"]])),
             base_version=cur["version"] if cur else None, change_note=f"Filed from query: {question[:150]}")

@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     job_workers: int = 2  # jobs running at once
     query_top_k: int = 8  # answer_method search_pick: pages from the search, of which the top 5 are read
     query_max_pages: int = 8  # answer_method search_pick: pages the model picks from the index
+    page_list_chars: int = 60000  # answer_method search_pick: the most of the page list one choosing call is given;
+    # a longer list is given in parts, every page in one
     browse_max_rounds: int = 6  # answer_method browse and search_browse: safety nets only; the model stops when it has enough
     browse_max_pages: int = 30
     browse_max_words: int = 150000  # words of page text read for one question

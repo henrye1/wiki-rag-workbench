@@ -167,8 +167,9 @@ async def get_changeset(changeset_id: UUID) -> tuple[dict, list[dict]]:
     return cs, ops
 
 
-async def apply_changeset(changeset_id: UUID, force: bool = False) -> dict:
-    """Apply a pending changeset. Ops whose page changed since they were written are skipped as conflicts unless force."""
+async def apply_changeset(changeset_id: UUID, force: bool = False, reviewer: str | None = None) -> dict:
+    """Apply a pending changeset. Ops whose page changed since they were written are skipped as conflicts unless force.
+    reviewer: the named reviewer who applies it, recorded with it (a held upload is applied only by one)."""
     cs, op_rows = await get_changeset(changeset_id)
     if cs["status"] != "pending":
         raise ValueError(f"Changeset is {cs['status']}")
@@ -241,6 +242,8 @@ async def apply_changeset(changeset_id: UUID, force: bool = False) -> dict:
                     (pid, list(labels), wiki_id, src_slug))
             applied.append({"slug": o.slug, "op": action, "version": row["version"]})
         await conn.execute("update wiki.changesets set status='applied', applied_at=now() where id=%s", (changeset_id,))
+        if reviewer:
+            await conn.execute("update wiki.changesets set reviewer=%s, reviewed_at=now() where id=%s", (reviewer, changeset_id))
         applied_slugs = {a["slug"] for a in applied}
         # the checks a held ingest still failed stay on its pages, as each page's flag, until a later change fixes them
         failing = cs.get("check_failures") or {}
@@ -288,8 +291,9 @@ async def _reindex_page(conn, wiki_id: UUID, page_id: UUID, md: str, chunks: lis
         )
 
 
-async def discard_changeset(changeset_id: UUID) -> str | None:
-    """Discard a pending changeset. For an ingest, the source is removed too (if no page uses it) so it can be re-ingested."""
+async def discard_changeset(changeset_id: UUID, reviewer: str | None = None) -> str | None:
+    """Discard a pending changeset. For an ingest, the source is removed too (if no page uses it) so it can be re-ingested.
+    reviewer: the named reviewer who discards it, recorded with it."""
     async with get_pool().connection() as conn, conn.transaction():
         cs = await (
             await conn.execute(
@@ -299,6 +303,8 @@ async def discard_changeset(changeset_id: UUID) -> str | None:
         ).fetchone()
         if not cs:
             raise ValueError("Changeset not found or not pending")
+        if reviewer:
+            await conn.execute("update wiki.changesets set reviewer=%s, reviewed_at=now() where id=%s", (reviewer, changeset_id))
         if cs["kind"] == "ingest" and cs["source_id"]:
             row = await (
                 await conn.execute(
@@ -362,18 +368,22 @@ async def render_index(wiki: dict) -> str:
     return "\n".join(lines)
 
 
-async def compact_index(wiki_id: UUID, limit_chars: int = 60000, exclude_types: tuple[str, ...] = ()) -> str:
-    """Compact catalog for LLM prompts: slug | type | title | summary."""
+async def compact_index(wiki_id: UUID, exclude_types: tuple[str, ...] = ()) -> str:
+    """Compact catalog for LLM prompts: slug | type | title | summary, one line per page, every page (never cut: a step
+    that chooses from a list too long for one call is given it in parts, index_parts)."""
     pages = [p for p in await list_pages(wiki_id) if p["type"] not in exclude_types]
-    out, size = [], 0
-    for p in pages:
-        line = f"{p['slug']} | {p['type']} | {p['title']} | {p['summary']}"
-        size += len(line)
-        if size > limit_chars:
-            out.append(f"... ({len(pages) - len(out)} more pages not shown)")
-            break
-        out.append(line)
-    return "\n".join(out) or "(wiki is empty)"
+    return "\n".join(f"{p['slug']} | {p['type']} | {p['title']} | {p['summary']}" for p in pages) or "(wiki is empty)"
+
+
+def index_parts(index: str, max_chars: int) -> list[str]:
+    """A page list in parts of at most max_chars (whole lines; a longer line is a part of its own): every page in one."""
+    parts, cur = [], []
+    for line in index.split("\n"):
+        if cur and sum(len(x) + 1 for x in cur) + len(line) > max_chars:
+            parts.append("\n".join(cur))
+            cur = []
+        cur.append(line)
+    return parts + (["\n".join(cur)] if cur else [])
 
 
 async def render_log(wiki: dict, limit: int = 500) -> str:

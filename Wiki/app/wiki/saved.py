@@ -18,15 +18,19 @@ SAVED_SQL = (
 CITE_RE = re.compile(r"\[\[(source-[^\]|#]+)(?:#[^\]|]*)?\|([^\]]+)\]\]")
 
 
+UNREADABLE = ("citation_problems", "needs_checking")  # flags under which a saved answer is not read as material
+
+
 async def saved_answers(conn, wiki_id: UUID, readable_only: bool = False) -> list[dict]:
-    """Saved answers; readable_only leaves out those saved with citation problems (not read until saved again cleanly)."""
-    blocked = (" and not exists (select 1 from wiki.page_flags f where f.page_id = p.id and f.kind = 'citation_problems')"
+    """Saved answers; readable_only leaves out those flagged (UNREADABLE): saved with citation problems, or needing
+    checking because a page they cite has changed. Neither is read until it is checked or saved again cleanly."""
+    blocked = (" and not exists (select 1 from wiki.page_flags f where f.page_id = p.id and f.kind = any(%s))"
                if readable_only else "")
     return await (
         await conn.execute(
             f"select p.id, p.slug, p.title, p.summary, p.type, p.content_md, p.version, p.updated_at from wiki.pages p "
             f"where p.wiki_id = %s and {SAVED_SQL}{blocked} order by p.updated_at desc",
-            (wiki_id,),
+            (wiki_id, list(UNREADABLE)) if readable_only else (wiki_id,),
         )
     ).fetchall()
 

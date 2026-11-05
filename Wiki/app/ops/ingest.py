@@ -268,6 +268,7 @@ def use_schema_headings(chk) -> None:
         _term_prefix.set(chk.defined_term_form.split("<", 1)[0])
     if chk and any("<page label>" in f for f in chk.unlabelled_forms.values()):
         _page_labels_cited.set(True)
+    _refers.set(checks.reference_re(chk))
 
 
 def _split_also(md: str) -> tuple[str, list[str]]:
@@ -401,7 +402,15 @@ NUMBERED = re.compile(r"^(?:[A-Z][a-z]+\s+)?(\d+(?:\.\d+)*)\s")  # a numbered he
 OWN_NUMBER = re.compile(r"^(?:[A-Z][a-z]+\s+)?((?:\d+|[A-Z])(?:\.\d+)+|\d+)\s")
 
 
-REFERS = re.compile(r"\bparagraphs?\s+([0-9][\w.]*|[A-Z]{1,3}\d[\w.]*)")  # "(paragraph 34)", "paragraphs 42A–42H"
+# a source pointing to its own paragraphs with the schema's Reference words ("(paragraph 34)", "paragraphs 42A–42H"),
+# set by run(); without them no pointer is read
+_refers = contextvars.ContextVar("refers", default=None)
+
+
+def _pointed_to(text: str) -> list[str]:
+    """The labels a text points to with the schema's Reference words, as written."""
+    pat = _refers.get()
+    return pat.findall(text) if pat else []
 
 
 def _listed(chk) -> set[str] | None:
@@ -447,7 +456,7 @@ def _anchored_paths(paras: list[str], heading_paths: list, kinds: dict | None = 
             if not own or any(NUMBERED.match(h) for h in out[k]) or (listed is not None and own not in listed):
                 continue
             for text in (" ".join(paths[k]), para):  # its headings first, then its text
-                hit = next((at[r] for r in (m.rstrip(".") for m in REFERS.findall(text)) if r in at and kinds.get(r) not in (None, own)
+                hit = next((at[r] for r in (m.rstrip(".") for m in _pointed_to(text)) if r in at and kinds.get(r) not in (None, own)
                             and (listed is None or kinds.get(r) not in listed)), None)
                 if hit is not None:
                     out[k] = list(out[hit])
@@ -659,7 +668,7 @@ def _example_lines(content: str, titles: dict[str, str], src: dict, chk) -> list
         if not ex["head"]:
             h = next((x for x in path if name in x), "") or info.get("printed", {}).get(lab, "")
             ex["head"] = re.sub(r"^\s*[\u2013\u2014:-]\s*", "", h.replace(name, "", 1)).strip() if name in h else h.strip()
-        for r in (x.rstrip(".") for x in REFERS.findall(info["para"].get(lab, ""))):
+        for r in (x.rstrip(".") for x in _pointed_to(info["para"].get(lab, ""))):
             for other, oinfo in src.items():
                 if other != m.group(1) and r in oinfo["own"] and (other, r) not in ex["refs"]:
                     ex["refs"].append((other, r))
@@ -793,6 +802,7 @@ async def page_summaries(wiki_id, chk, sections: list[dict], now: dict[str, dict
     own, kept to length (a subtopic page) or as it is. A section index page and a synthesis page keep theirs. now: every
     page of the wiki as it will stand (slug -> type, title, content_md, summary). A concept or entity page keeps the
     summary its builder gave it (the schema's Concept summary). No AI call is made."""
+    use_schema_headings(chk)  # also when called on its own (the composed, summaries and revert steps)
     heads_src = await _source_paths(wiki_id, checks.footnote_form(chk), _listed(chk)) if chk and chk.summary_lead else {}
     examples = _examples_name(sections, chk)
     titles = {sl: p["title"] for sl, p in now.items()}
@@ -829,6 +839,7 @@ async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dic
     usual); a page of labelled examples splits between examples only. A section page becomes the index of its
     subtopic pages; a subtopic page keeps its slug for its first piece. pages: slug -> the page as it now stands
     (slug, type, title, summary, content_md, tags, version). Returns (ops, what was split)."""
+    use_schema_headings(chk)  # also when called on its own (the composed, summaries and revert steps)
     limit = chk.page_size_limit if chk else None
     if not limit:
         return [], []
@@ -872,7 +883,7 @@ async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dic
         related = None
         if chk.join_related and len(blocks) > 1:  # the schema's most related group: by reference, then meaning
             held = [{c.split("|", 1)[1] for c in checks.cites(b)} for b in blocks]
-            named = [{r.rstrip(".") for r in REFERS.findall(store.LINK_RE.sub(" ", b))} for b in blocks]
+            named = [{r.rstrip(".") for r in _pointed_to(store.LINK_RE.sub(" ", b))} for b in blocks]
             related = _related_by(held, named, np.asarray(await llm.embed(blocks)))
         base = _sub_names(p["title"], split=False) if p["type"] == "subtopic" else []
         if any(items):  # labelled examples: whole examples onto pages up to the limit
@@ -1274,6 +1285,7 @@ async def composed_ops(wiki_id, chk, sections: list[dict], existing: dict[str, d
     (cleared and written again), and the examples section's index with its list of the issuer's examples printed
     inside guidance. existing: the wiki's pages (slug -> page); ops: the changes to them so far. No AI call is made.
     Returns the ops with these added (an op already there for the same page is replaced or extended) and a count."""
+    use_schema_headings(chk)  # also when called on its own (the composed, summaries and revert steps)
     if not chk:
         return ops, {}
     stand = {sl: {"type": p["type"], "title": p["title"], "content_md": p["content_md"]} for sl, p in existing.items()}
@@ -1651,7 +1663,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                                        (Jsonb({"applies_to": ex.meta["applies_to"]}), source["id"]))
         for i, j in foot.items():  # a footnote is grouped under its paragraph's headings, not alone under its own
             paths[i] = list(paths[j])
-        related = _related_by([{_ref(p)} - {""} for p in paras], [{r.rstrip(".") for r in REFERS.findall(p)} for p in paras],
+        related = _related_by([{_ref(p)} - {""} for p in paras], [{r.rstrip(".") for r in _pointed_to(p)} for p in paras],
                               para_vecs) if chk.join_related and para_vecs is not None else None
         for num, sl in slug_of.items():
             mine = [i for i, n in sorted(owner.items()) if n == num]
@@ -1701,7 +1713,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
                 if i in req_page:  # guidance whose requirement is on one of these pages
                     sub_fixed[i] = req_page[i]
                     continue
-                refs = [r.rstrip(".") for r in REFERS.findall(" ".join(path) + " " + paras[i])]
+                refs = [r.rstrip(".") for r in _pointed_to(" ".join(path) + " " + paras[i])]
                 by_ref = collections.Counter(x for r in refs for x in mine_too if r in holds[x])
                 match = [x for x, heads in olds.items() if x in mine_too and any(h in path for h in heads)]
                 if by_ref:

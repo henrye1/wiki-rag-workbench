@@ -9,8 +9,8 @@ from sse_starlette.sse import EventSourceResponse
 
 from .. import jobs
 from ..db import get_pool
-from ..ops import composed, lint, query, recheck, summaries, synthesis
-from ..wiki import store
+from ..ops import composed, lint, query, recheck, summaries, synthesis, watchdog
+from ..wiki import checks, store
 from .deps import Mode, wiki_dep
 
 router = APIRouter(tags=["operations"])
@@ -21,7 +21,8 @@ class QueryIn(BaseModel):
     save: bool = Field(False, description="File the answer back into the wiki as a synthesis page")
     mode: Mode = "auto"
     sources: Literal["standard", "all"] = Field(
-        "all", description="standard = only statements cited to the Standard itself (Part A); all = also Parts B and C")
+        "all", description="standard = only statements citing the Standard's own text, by paragraph kind (the schema's "
+                           "Checks: Standard only); all = every statement")
     use_saved: bool = Field(True, description="Also read relevant saved answers (synthesis pages filed with Save), "
                                               "in addition to the pages chosen for the question")
 
@@ -86,17 +87,26 @@ class ReadTextIn(BaseModel):
 @router.post("/wikis/{w}/read-text")
 async def read_text(body: ReadTextIn, wiki: dict = Depends(wiki_dep)):
     """The exact text an earlier answer read (for checking an answer against what it read). Changes nothing."""
-    return await query.read_text(wiki, body.read, body.sources)
+    try:
+        return await query.read_text(wiki, body.read, body.sources)
+    except query.NoStandardOnly as e:
+        raise HTTPException(400, str(e))
 
 
 @router.post("/wikis/{w}/query")
 async def ask(body: QueryIn, wiki: dict = Depends(wiki_dep)):
-    return await query.answer(wiki, body.question, body.save, body.mode, body.sources, body.use_saved)
+    try:
+        return await query.answer(wiki, body.question, body.save, body.mode, body.sources, body.use_saved)
+    except query.NoStandardOnly as e:
+        raise HTTPException(400, str(e))
 
 
 @router.post("/wikis/{w}/query/stream")
 async def ask_stream(body: QueryIn, wiki: dict = Depends(wiki_dep)):
-    pages, tokens = await query.stream_answer(wiki, body.question, body.sources, body.use_saved)
+    try:
+        pages, tokens, report = await query.stream_answer(wiki, body.question, body.sources, body.use_saved)
+    except query.NoStandardOnly as e:
+        raise HTTPException(400, str(e))
 
     async def events():
         parts = []
@@ -104,6 +114,8 @@ async def ask_stream(body: QueryIn, wiki: dict = Depends(wiki_dep)):
             parts.append(t)
             yield {"event": "token", "data": json.dumps(t)}
         yield {"event": "pages", "data": json.dumps(query.listed(wiki, "".join(parts), pages))}
+        if report is not None:  # the schema's answer checks: what they found, and what is left after the fix pass
+            yield {"event": "check", "data": json.dumps(report)}
         yield {"event": "done", "data": ""}
 
     return EventSourceResponse(events())
@@ -112,7 +124,8 @@ async def ask_stream(body: QueryIn, wiki: dict = Depends(wiki_dep)):
 @router.post("/wikis/{w}/lint", status_code=202)
 async def run_lint(body: LintIn, wiki: dict = Depends(wiki_dep)):
     if not body.llm and not body.fix:
-        return {"structural": await lint.structural(wiki["id"])}  # fast path, synchronous
+        return {"structural": await lint.structural(wiki["id"], checks.load(wiki["schema_md"])),  # fast path, synchronous
+                "maintain": await lint.maintain(wiki)}
     job_id = await jobs.submit(wiki["id"], "lint", body.model_dump(), lambda ctx: lint.run(ctx, wiki, body.llm, body.fix, body.mode))
     return {"job_id": str(job_id)}
 
@@ -208,20 +221,69 @@ async def get_changeset(cs_id: UUID, diff: bool = True, wiki: dict = Depends(wik
 
 
 @router.post("/wikis/{w}/changesets/{cs_id}/apply")
-async def apply_changeset(cs_id: UUID, force: bool = False, wiki: dict = Depends(wiki_dep)):
-    await _cs_in_wiki(wiki, cs_id)
+async def apply_changeset(cs_id: UUID, force: bool = False, reviewer: str | None = None, wiki: dict = Depends(wiki_dep)):
+    """Apply a pending changeset. One held for review (its checks failed) is applied only by a named reviewer, whose
+    name is recorded with it."""
+    cs, _ = await _cs_in_wiki(wiki, cs_id)
+    reviewer = (reviewer or "").strip() or None
+    if cs.get("check_failures") and not reviewer:
+        raise HTTPException(409, "This changeset was held for review: it is applied only by a named reviewer (give reviewer).")
     try:
-        return await store.apply_changeset(cs_id, force=force)
+        res = await store.apply_changeset(cs_id, force=force, reviewer=reviewer)
     except ValueError as e:
         raise HTTPException(409, str(e))
+    if reviewer:
+        await store.add_log(wiki["id"], "edit", f"Changeset {cs_id} applied by {reviewer}")
+    return res
 
 
 @router.post("/wikis/{w}/changesets/{cs_id}/discard")
-async def discard_changeset(cs_id: UUID, wiki: dict = Depends(wiki_dep)):
+async def discard_changeset(cs_id: UUID, reviewer: str | None = None, wiki: dict = Depends(wiki_dep)):
     await _cs_in_wiki(wiki, cs_id)
+    reviewer = (reviewer or "").strip() or None
     try:
-        removed_source = await store.discard_changeset(cs_id)
+        removed_source = await store.discard_changeset(cs_id, reviewer=reviewer)
     except ValueError as e:
         raise HTTPException(409, str(e))
-    await store.add_log(wiki["id"], "edit", f"Changeset {cs_id} discarded" + (f"; source {removed_source} removed" if removed_source else ""))
+    await store.add_log(wiki["id"], "edit", f"Changeset {cs_id} discarded" + (f" by {reviewer}" if reviewer else "")
+                        + (f"; source {removed_source} removed" if removed_source else ""))
     return {"ok": True, "removed_source": removed_source}
+
+
+class StatementIn(BaseModel):
+    statement: str = Field(min_length=3, description="The client statement to check against the standard")
+    sources: Literal["standard", "all"] = "all"
+
+
+@router.post("/wikis/{w}/statements/check")
+async def check_statement(body: StatementIn, wiki: dict = Depends(wiki_dep)):
+    """Check a client statement (the watchdog): one verdict from the schema's Client-statement verdicts, each clause
+    cited and quoted, recorded as an open finding for a named reviewer. Changes no page."""
+    try:
+        return await watchdog.check_statement(wiki, body.statement, body.sources)
+    except (watchdog.NoVerdicts, query.NoStandardOnly) as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/wikis/{w}/findings")
+async def list_findings(status: Literal["open", "closed"] | None = None, wiki: dict = Depends(wiki_dep)):
+    return await watchdog.findings(wiki["id"], status)
+
+
+class ReviewIn(BaseModel):
+    reviewer: str = Field(min_length=1, description="The named reviewer closing the finding")
+    decision: str = Field(min_length=1)
+    note: str = ""
+
+
+@router.post("/wikis/{w}/findings/{finding_id}/review")
+async def review_finding(finding_id: UUID, body: ReviewIn, wiki: dict = Depends(wiki_dep)):
+    """Close a finding: its reviewer's name, decision and note are recorded with it. Changes no page."""
+    try:
+        row = await watchdog.review(wiki["id"], finding_id, body.reviewer, body.decision, body.note)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    await store.add_log(wiki["id"], "review", f"Finding {finding_id} closed by {row['reviewer']}: {row['decision']}")
+    return row
