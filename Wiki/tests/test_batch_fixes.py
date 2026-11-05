@@ -283,3 +283,46 @@ class RealSources(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ParagraphFixes(unittest.TestCase):
+    """A sentence citing one paragraph several times names it once; fix rounds rewrite only the paragraphs that fail."""
+
+    def test_repeated_citation_named_once(self):
+        page = (f"X includes: (a) one [[{S}|B1]](a); (b) two [[{S}|B1]](b); (c) three [[{S}|B1]](c).")
+        f = checks.section_failures(page, [], {"B1": GUIDE_KIND}, S, CHK, covers, {"B1"})
+        self.assertEqual(len(f), 1)
+        self.assertIn("citing B1 of", f[0])
+        self.assertEqual(list(fixpass._failing_paragraphs(f)), [("B1", S)])  # so the quote step can quote it
+
+    def test_failure_blocks(self):
+        blocks = [f"## H\n\n", f"{GUIDE_OPENER} that A [[{S}|B1]].", f"B says this [[{S}|B2]].", f"C [[{S}|1.1]] (a) x (b) y."]
+        blocks = [b for b in blocks if b.strip()]
+        f = checks.section_failures("\n\n".join(blocks), [], {"B1": GUIDE_KIND, "B2": GUIDE_KIND}, S, CHK, covers, {"B1", "B2"})
+        self.assertEqual([fixpass.failure_blocks(blocks, x) for x in f], [{2}])
+        part = f"Paragraph 1.1 of [[{S}]] has lettered or numbered parts (a), (b), (c); (c) do not appear on the page."
+        self.assertEqual(fixpass.failure_blocks(blocks, part), {3})
+
+    def test_only_failing_paragraphs_rewritten(self):
+        import asyncio
+        blocks = [f"{GUIDE_OPENER} that A [[{S}|B1]].", f"B says this [[{S}|B2]].", f"C [[{S}|B3]]."]
+        kinds = {"B1": GUIDE_KIND, "B2": GUIDE_KIND, "B3": GUIDE_KIND}
+        chk = lambda x: checks.section_failures(x, [], kinds, S, CHK, covers, set(kinds))
+        sent = []
+
+        async def fake(system, prompt, schema):  # the writer: puts the opener on the paragraph it is sent
+            part = re.search(r"<paragraph>\n(.*)\n</paragraph>", prompt, re.S).group(1)
+            sent.append(part)
+            return {"content_md": f"{GUIDE_OPENER} that {part[0].lower()}{part[1:]}"}
+        real = fixpass.llm.generate_json
+        fixpass.llm.generate_json = fake
+        try:
+            rec = []
+            out = asyncio.run(fixpass.fix_rounds(schema="", slug="p", title="P", text="\n\n".join(blocks), check=chk,
+                                                 sources_text="", linkable="", parse=lambda r: r, kind="section", record=rec))
+        finally:
+            fixpass.llm.generate_json = real
+        self.assertEqual(sorted(sent), sorted(blocks[1:]))  # the passing paragraph is not sent
+        self.assertEqual(chk(out), [])
+        self.assertTrue(out.startswith(blocks[0]))
+        self.assertEqual(rec[0]["rounds"][0]["paragraphs_kept"], 2)

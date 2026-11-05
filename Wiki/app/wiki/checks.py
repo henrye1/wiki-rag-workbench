@@ -965,8 +965,9 @@ def section_failures(content: str, given: list[str], kinds: dict[str, str], sour
                 continue
             ends_lead = line.rstrip().endswith(":")
             for s in sentences(line):
-                cited = [m.group(2) for m in store.LINK_RE.finditer(s) if m.group(1) == source_slug and m.group(2)
-                         and is_location(m.group(2), labels)]
+                cited = list(dict.fromkeys(  # each paragraph once, however often the sentence cites it
+                    m.group(2) for m in store.LINK_RE.finditer(s) if m.group(1) == source_slug and m.group(2)
+                    and is_location(m.group(2), labels)))
                 if not cited:
                     continue
                 shown = store.LINK_RE.sub(lambda m: (m.group(2) or m.group(1)).strip(), s)  # a link read as the text it shows

@@ -178,20 +178,29 @@ async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, so
             break
         rec = {"round": rnd, "failures": failures}
         try:
-            out = await llm.generate_json(prompts.MAINTAINER_SYSTEM, prompts.with_schema(schema, prompts.fix_page_prompt(
-                slug=slug, title=title, content_md=text or "(nothing yet)", failures=failures, linkable=linkable,
-                source_paragraphs=shown(text, failures) or "(none)")), out_schema)
-            new = parse(out["content_md"])
-            after = check(new)
-            lost = [] if may_shrink else sorted(c for c in checks.cites(text) - checks.cites(new) if clause(c))
-            n_old, n_new = len(text.split()), len(new.split())
-            keep = bool(new.strip()) and len(after) < len(failures) and not lost and ok(text, new)
-            rec |= {"kept": keep, "fixed": len(failures) - len(after) if keep else 0, "still": after, "words": [n_old, n_new],
-                    **({"lost_citations": lost} if lost else {})}
-            if keep:
-                text = new
-            log.info("page %s %s check, round %s: %s failures, %s fixed, rewrite %s", slug, kind, rnd,
-                     len(failures), len(failures) - len(after), "kept" if keep else "discarded")
+            # the paragraphs (blocks) of the page the failures name are rewritten, each on its own; what names no
+            # paragraph (a failure of the page as a whole) is sent back with the whole page, as before
+            text, rec_blocks = await _fix_blocks(schema=schema, slug=slug, title=title, text=text, failures=failures,
+                                                 check=check, shown=shown, linkable=linkable, parse=parse,
+                                                 out_schema=out_schema, ok=ok, may_shrink=may_shrink, clause=clause)
+            rec |= rec_blocks
+            if rest := [f for f in check(text) if f in rec_blocks.get("unplaced", [])]:
+                out = await llm.generate_json(prompts.MAINTAINER_SYSTEM, prompts.with_schema(schema, prompts.fix_page_prompt(
+                    slug=slug, title=title, content_md=text or "(nothing yet)", failures=rest, linkable=linkable,
+                    source_paragraphs=shown(text, rest) or "(none)")), out_schema)
+                before = check(text)
+                new = parse(out["content_md"])
+                after = check(new)
+                lost = [] if may_shrink else sorted(c for c in checks.cites(text) - checks.cites(new) if clause(c))
+                keep = bool(new.strip()) and len(after) < len(before) and not lost and ok(text, new)
+                rec["page"] = {"kept": keep, "failures": len(rest), "words": [len(text.split()), len(new.split())],
+                               **({"lost_citations": lost} if lost else {})}
+                if keep:
+                    text = new
+            after = check(text)
+            rec |= {"kept": len(after) < len(failures), "fixed": max(len(failures) - len(after), 0), "still": after}
+            log.info("page %s %s check, round %s: %s failures, %s paragraphs rewritten, %s kept, %s left", slug, kind, rnd,
+                     len(failures), rec.get("paragraphs", 0), rec.get("paragraphs_kept", 0), len(after))
         except Exception as e:
             log.warning("page %s %s check, round %s failed: %s", slug, kind, rnd, e)
             rec["error"] = f"{type(e).__name__}: {e}"
@@ -203,6 +212,79 @@ async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, so
         record.append({"page": slug, "kind": kind, "found": len(initial), "still": len(left), "left": left,
                        "rounds": rounds})
     return text
+
+
+BLOCKS = re.compile(r"\n\s*\n")
+SAID = re.compile(r'\("(.+?)\.\.\."\)')  # checks.section_failures: the opening words of the sentence that fails
+QUOTED_TEXT = re.compile(r'"([^"\n]{15,}?)(?: \.\.\.)?"')  # any other failure quoting the page's text
+
+
+def failure_blocks(blocks: list[str], failure: str) -> set[int]:
+    """The paragraphs (blocks) of a page a failure is about: the one holding the sentence it quotes, the ones holding a
+    citation it names, or, for a paragraph's lettered parts or conditions, the ones whose closing citations name that
+    paragraph (of the source the failure names). None where the failure names no place on the page."""
+    if m := SAID.search(failure):
+        return {i for i, b in enumerate(blocks) if m.group(1) in b}
+    if m := PARA_FAILURE.match(failure):
+        base = lambda x: re.sub(r"(?:\s*\([^)]*\))+$", "", x.strip())
+        return {i for i, b in enumerate(blocks) for c in checks.closing_links(b)
+                if c.group(2) and base(c.group(2)) == m.group(1) and (m.group(2) is None or c.group(1) == m.group(2))}
+    links = set(re.findall(r"\[\[[^\]]+\]\]", failure))
+    if links and (got := {i for i, b in enumerate(blocks) if any(x in b for x in links)}):
+        return got
+    return {i for i, b in enumerate(blocks) for q in QUOTED_TEXT.findall(failure) if q in b}
+
+
+def _for_part(sources: str, part: str, fails: list[str]) -> str:
+    """Of the source text a page is shown, the passages one paragraph of it needs: those it cites and those its failures
+    name (all of it where none of them is there)."""
+    base = lambda x: re.sub(r"(?:\s*\([^)]*\))+$", "", x.strip())
+    want = {base(c.split("|", 1)[1]) for c in checks.cites(part)} | {lab for lab, _ in named_paragraphs(fails)} | {
+        lab for lab, _ in _failing_paragraphs(fails)}
+    got = [b for b in BLOCKS.split(sources or "") if (m := LABEL_RE.match(b.strip())) and base(m.group(1)) in want]
+    return "\n\n".join(got) if got else sources
+
+
+async def _fix_blocks(*, schema, slug, title, text, failures, check, shown, linkable, parse, out_schema, ok, may_shrink,
+                      clause) -> tuple[str, dict]:
+    """One fix round, paragraph by paragraph: each paragraph a failure names is sent back on its own with its failures.
+    A paragraph's rewrite is kept when its own failures are gone, nothing else starts failing, it loses no citation of
+    a source paragraph and the page passes ok. Returns the page and the round's record; "unplaced": the failures that
+    name no paragraph."""
+    blocks = [b for b in BLOCKS.split(text or "") if b.strip()]
+    mine: dict[int, list[str]] = {}
+    unplaced = []
+    for f in failures:
+        at = failure_blocks(blocks, f)
+        if not at:
+            unplaced.append(f)
+        for i in at:
+            mine.setdefault(i, []).append(f)
+    if not mine:
+        return text, {"unplaced": unplaced}
+
+    async def one(i: int):
+        try:
+            out = await llm.generate_json(prompts.MAINTAINER_SYSTEM, prompts.with_schema(schema, prompts.fix_part_prompt(
+                slug=slug, title=title, part_md=blocks[i], failures=mine[i], linkable=linkable,
+                source_paragraphs=_for_part(shown(blocks[i], mine[i]), blocks[i], mine[i]) or "(none)")), out_schema)
+            return i, parse(out["content_md"])
+        except Exception as e:
+            log.warning("page %s: rewrite of a paragraph failed: %s", slug, e)
+            return i, None
+
+    kept = 0
+    now = check(text)
+    for i, new in sorted(await llm.gather_limited(one(i) for i in mine)):
+        if not new or not new.strip():
+            continue
+        trial = blocks[:i] + [new.strip()] + blocks[i + 1:]
+        cand = "\n\n".join(trial)
+        after = check(cand)
+        lost = [] if may_shrink else [c for c in checks.cites(blocks[i]) - checks.cites(new) if clause(c)]
+        if not (set(mine[i]) & set(after)) and not (set(after) - set(now)) and not lost and ok("\n\n".join(blocks), cand):
+            blocks, now, kept = trial, after, kept + 1
+    return "\n\n".join(blocks), {"paragraphs": len(mine), "paragraphs_kept": kept, "unplaced": unplaced}
 
 
 OF_SOURCE = r"(?: of \[\[([^\]|]+)\]\])?"  # checks.section_failures names the paragraph's source after its label
@@ -226,8 +308,9 @@ def _failing_paragraphs(failures: list[str]) -> dict[tuple[str, str | None], lis
     for f in failures:
         if m := PARA_FAILURE.match(f):
             out.setdefault((m.group(1), m.group(2)), []).append(f)
-        elif (m := SENTENCE_FAILURE.match(f)) and "," not in m.group(1):  # a sentence citing one paragraph
-            out.setdefault((re.sub(r"(?:\s*\([^)]*\))+$", "", m.group(1).strip()), m.group(2)), []).append(f)
+        elif (m := SENTENCE_FAILURE.match(f)) and len(labs := {re.sub(r"(?:\s*\([^)]*\))+$", "", x.strip())
+                                                           for x in m.group(1).split(",")}) == 1:  # one paragraph
+            out.setdefault((labs.pop(), m.group(2)), []).append(f)
     return out
 
 

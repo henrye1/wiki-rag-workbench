@@ -268,6 +268,19 @@ def fix_page_prompt(*, slug: str, title: str, content_md: str, failures: list[st
     )
 
 
+def fix_part_prompt(*, slug: str, title: str, part_md: str, failures: list[str], source_paragraphs: str, linkable: str) -> str:
+    """One paragraph of a page sent back on its own, with its failures."""
+    return (
+        f"Below is one paragraph of the wiki page `{slug}` (\"{title}\"). It does not follow the wiki schema in the places "
+        "listed in <failures>. Return only this paragraph, with those places fixed as the schema requires. Change "
+        "nothing else: keep every other sentence, link and citation as it is, and add no heading or other paragraph.\n\n"
+        f"<failures>\n" + "\n".join(f"- {f}" for f in failures) + "\n</failures>\n\n"
+        f"<linkable_pages>\n{linkable}\n</linkable_pages>\n\n"
+        f"<source_paragraphs>\n{source_paragraphs}\n</source_paragraphs>\n\n"
+        f"<paragraph>\n{part_md}\n</paragraph>"
+    )
+
+
 # ---------- ingest: route paragraphs to sections ----------
 
 ROUTE_SCHEMA = {
