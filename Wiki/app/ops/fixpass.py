@@ -71,6 +71,24 @@ def resolve_sources(text: str, ctx: dict, prefer: str | None = None) -> str:
     return store.LINK_RE.sub(fix, text)
 
 
+def names_no_location(text: str, ctx: dict, chk: checks.Checks | None = None) -> str:
+    """A source citation whose label is no location its source holds and has no clause number (the source naming
+    itself, "this IFRS"; a heading's words) becomes its label as plain text: it is not a citation. A citation in one of
+    the schema's citation forms (a defined term, an editorial note: their form's opening words), or with a number in
+    its label, stays, for the citation checks to judge."""
+    labels = ctx["labels"]
+    forms = [chk.defined_term_form, *chk.unlabelled_forms.values()] if chk else []
+    opens = [f.split("<", 1)[0] for f in forms if f and "<" in f and not f.startswith("<")]
+
+    def one(m):
+        slug, lab = m.group(1), (m.group(2) or "").strip()
+        if slug not in labels or not lab or re.search(r"\d", lab) or checks.is_location(lab, labels[slug]) \
+                or any(lab.casefold().startswith(o.casefold()) for o in opens):
+            return m.group(0)
+        return lab
+    return store.LINK_RE.sub(one, text or "")
+
+
 def is_clause(cite: str, ctx: dict) -> bool:
     """A citation (slug|clause) of a paragraph its source holds, not of a page, a name or a label the source lacks."""
     slug, _, label = cite.partition("|")
@@ -122,7 +140,7 @@ def cite_failures(text: str, ctx: dict, chk: checks.Checks | None) -> list[str]:
     """Citations the citation check would flag, and citations that cite something other than a clause. A citation of
     a location its source lacks names the location the sentence rests on, where one is clear. A citation that is only
     a document's name is not sent back: it is put back as plain text before the page is saved (citecheck.names_unlinked)."""
-    text = citecheck.names_unlinked(text, ctx.get("doc_names"))[0]
+    text = names_no_location(citecheck.names_unlinked(text, ctx.get("doc_names"))[0], ctx, chk)
     _, _, flagged = citecheck.check(text, ctx["matchers"], ctx.get("doc_names"))
     out = [f'The citation [[{src}|{label}]] does not match a paragraph of that source ({reason}); cite the paragraph '
            "it states, by its own label." for (src, label, reason) in flagged]
@@ -235,6 +253,34 @@ def failure_blocks(blocks: list[str], failure: str) -> set[int]:
     return {i for i, b in enumerate(blocks) for q in QUOTED_TEXT.findall(failure) if q in b}
 
 
+LOST_ITEMS = re.compile(r"; ([^;]*?) do not appear on the page\.$|states the condition\(s\) (.+?), which")
+
+
+def _failure_key(f: str) -> tuple[str, int]:
+    """A failure as what it is about and how much it finds missing: a paragraph's parts or conditions (its label,
+    source and kind of check; the number of items left out), else the failure itself (one)."""
+    if (m := PARA_FAILURE.match(f)) and (n := LOST_ITEMS.search(f)):
+        what = "parts" if n.group(1) is not None else "conditions"
+        return f"{m.group(1)}|{m.group(2)}|{what}", len((n.group(1) or n.group(2)).split(","))
+    return f, 1
+
+
+def _worse(before: list[str], after: list[str], shared: set[str]) -> bool:
+    """Whether a paragraph's rewrite makes the page worse: a failure that was not there before, or a failure it shares
+    with other paragraphs (shared) now finding more missing. A shared failure that finds less missing, or the same, is
+    not worse; one that is gone is better."""
+    was = {}
+    for f in before:
+        k, n = _failure_key(f)
+        was[k] = max(was.get(k, 0), n)
+    shared_keys = {_failure_key(f)[0] for f in shared}
+    for f in after:
+        k, n = _failure_key(f)
+        if k not in was or (k in shared_keys and n > was[k]) or (k not in shared_keys and f not in before):
+            return True
+    return False
+
+
 def _for_part(sources: str, part: str, fails: list[str]) -> str:
     """Of the source text a page is shown, the passages one paragraph of it needs: those it cites and those its failures
     name (all of it where none of them is there)."""
@@ -275,6 +321,7 @@ async def _fix_blocks(*, schema, slug, title, text, failures, check, shown, link
 
     kept = 0
     now = check(text)
+    shared = {f for f in failures if sum(f in fs for fs in mine.values()) > 1}  # failures pointing to several paragraphs
     for i, new in sorted(await llm.gather_limited(one(i) for i in mine)):
         if not new or not new.strip():
             continue
@@ -282,7 +329,8 @@ async def _fix_blocks(*, schema, slug, title, text, failures, check, shown, link
         cand = "\n\n".join(trial)
         after = check(cand)
         lost = [] if may_shrink else [c for c in checks.cites(blocks[i]) - checks.cites(new) if clause(c)]
-        if not (set(mine[i]) & set(after)) and not (set(after) - set(now)) and not lost and ok("\n\n".join(blocks), cand):
+        own = set(mine[i]) - shared
+        if not (own & set(after)) and not _worse(now, after, shared) and not lost and ok("\n\n".join(blocks), cand):
             blocks, now, kept = trial, after, kept + 1
     return "\n\n".join(blocks), {"paragraphs": len(mine), "paragraphs_kept": kept, "unplaced": unplaced}
 

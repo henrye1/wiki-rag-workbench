@@ -326,3 +326,57 @@ class ParagraphFixes(unittest.TestCase):
         self.assertEqual(chk(out), [])
         self.assertTrue(out.startswith(blocks[0]))
         self.assertEqual(rec[0]["rounds"][0]["paragraphs_kept"], 2)
+
+
+class SharedFailuresAndQuotes(unittest.TestCase):
+    """The keep rule for a paragraph's rewrite; the quote step choosing passages by the whole failing sentence; a
+    citation naming no location and no clause number made plain text, real citation forms never."""
+
+    def test_shared_failure_does_not_block(self):
+        cond = f"Paragraph 1 of [[{S}]] states the condition(s) 'a', 'b', which do not appear where the page writes it up."
+        less = f"Paragraph 1 of [[{S}]] states the condition(s) 'a', which do not appear where the page writes it up."
+        more = f"Paragraph 1 of [[{S}]] states the condition(s) 'a', 'b', 'c', which do not appear where the page writes it up."
+        self.assertFalse(fixpass._worse([cond], [cond], {cond}))  # a shared failure left as it was
+        self.assertFalse(fixpass._worse([cond], [less], {cond}))  # ... or finding less missing
+        self.assertFalse(fixpass._worse([cond], [], {cond}))
+        self.assertTrue(fixpass._worse([cond], [more], {cond}))  # finding more missing is worse
+        self.assertTrue(fixpass._worse([cond], [cond, "A new failure"], {cond}))
+
+    def test_rewrite_kept_with_shared_failure_left(self):
+        import asyncio
+        kinds = {"N1": GUIDE_KIND}
+        blocks = [f"A says [[{S}|N1]]. B says [[{S}|N1]].", f"C says [[{S}|N1]]."]
+        given = ["[N1] Text " + CHK.conditions[0] + " it applies."]
+        chk = lambda x: checks.section_failures(x, given, kinds, S, CHK, covers, {"N1"})
+        self.assertEqual(sum("states the condition" in f for f in chk("\n\n".join(blocks))), 1)  # shared by both
+
+        async def fake(system, prompt, schema):  # puts the opener on each sentence, leaves the condition out
+            part = re.search(r"<paragraph>\n(.*)\n</paragraph>", prompt, re.S).group(1)
+            return {"content_md": re.sub(r"(^|\. )([A-C]) says", lambda m: f"{m.group(1)}{GUIDE_OPENER} that {m.group(2)} says", part)}
+        real = fixpass.llm.generate_json
+        fixpass.llm.generate_json = fake
+        try:
+            rec = []
+            out = asyncio.run(fixpass.fix_rounds(schema="", slug="p", title="P", text="\n\n".join(blocks), check=chk,
+                                                 sources_text="", linkable="", parse=lambda r: r, kind="section", record=rec))
+        finally:
+            fixpass.llm.generate_json = real
+        self.assertEqual([f for f in chk(out) if "open with" in f], [])  # both rewrites kept: the openers are there
+        self.assertEqual(rec[0]["rounds"][0]["paragraphs_kept"], 2)
+
+    def test_pieces_from_whole_sentence(self):
+        parts = [f"[{ed('3.2.3')}] alpha beta gamma delta epsilon", f"[{ed('3.2.3')}] zeta eta theta iota kappa lambda mu"]
+        page = f"Alpha beta zeta eta theta iota kappa lambda mu [[{S}|{ed('3.2.3')}]]."
+        fail = f'The sentence citing {ed("3.2.3")} of [[{S}]] ("Alpha beta...") comes from x but does not open'
+        self.assertEqual(_failing_pieces(parts, [fail]), [parts[0]])  # its opening words alone point to the first
+        self.assertEqual(_failing_pieces(parts, [fail], page), [parts[1]])  # the whole sentence, to the second
+
+    def test_no_location_is_text(self):
+        ctx = {"labels": {S: {"36", "B23", ed("2.1"), TERM.replace("<term>", "fair value"), "p3", "5B", "5D"}}}
+        self.assertEqual(fixpass.names_no_location(f"For the purpose of this [[{S}|IFRS]], x.", ctx, CHK),
+                         "For the purpose of this IFRS, x.")
+        for lab in ("36", "36(a)", "B23", ed("2.1"), TERM.replace("<term>", "fair value"), "p3", "5B–5D",
+                    TERM.replace("<term>", "a term it lacks"), ed("9.9")):  # real forms, and forms the checks judge
+            link = f"[[{S}|{lab}]]"
+            self.assertEqual(fixpass.names_no_location(f"A {link}.", ctx, CHK), f"A {link}.", lab)
+        self.assertEqual(fixpass.names_no_location("A [[other-page|Some words]].", ctx, CHK), "A [[other-page|Some words]].")

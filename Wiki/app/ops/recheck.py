@@ -11,7 +11,7 @@ from ..jobs import JobContext
 from ..wiki import checks, store
 from ..wiki.store import Op
 from . import fixpass, pagecheck
-from .ingest import (use_schema_headings, _covers, _fix_breaks, _listed, _section_for, _sections, _source_paths, _split_also,
+from .ingest import (use_schema_headings, _covers, _fix_breaks, _listed, _quoted, _section_for, _sections, _source_paths, _split_also,
                      _with_also, _without_empty_text, section_index, split_written)
 
 log = logging.getLogger(__name__)
@@ -68,6 +68,7 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
             for sl in pages_of:
                 held.setdefault(sl, {}).setdefault(k.split("|", 1)[0], set()).add(k.split("|", 1)[1])
     check_srcs = await pagecheck.sources(wiki_id)
+    issuers = {sl: ((v.get("fields") or {}).get("issuer") or "").strip() for sl, v in src.items()}  # an opener's <issuer>
     await ctx.progress(stage="check", pages=len(pages))
     record: list[dict] = []
 
@@ -113,7 +114,7 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
         if dropped:
             log.info("re-check: page %s: %s lines written up from skipped passages removed", p["slug"], dropped)
         cite_check = lambda x: fixpass.cite_failures(x, cite_ctx, chk)
-        kind, given, may_shrink, may_grow = "citations", {}, False, False
+        kind, given, may_shrink, may_grow, quote = "citations", {}, False, False, None
         if p["type"] == "source" and p["slug"] in src:
             s = src[p["slug"]]
             # the sections this source informs: section pages (or their subtopic pages) that hold a write-up of one of
@@ -132,6 +133,10 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
             check = pagecheck.section_check(chk=chk, covers=lambda label, ref: _covers(label, ref, not chk.range_ends), srcs=check_srcs, held=held.get(p["slug"], {}), cite_ctx=cite_ctx,
                                             absence_allowed=checks.absence_allowed_on(chk, p["type"], p["title"]))
             kind, sources_text = "section", "\n\n".join(b for paras in given.values() for b in paras)
+            # as on an upload: a paragraph whose write-up still fails after the two rounds is quoted in full
+            quote = lambda text, ref, sl, fails: _quoted(text, ref, sl, check_srcs.get(sl, {}).get("by_label", {}), chk,
+                                                         check_srcs.get(sl, {}).get("kinds", {}), paths.get(sl, {}).get("printed", {}),
+                                                         issuers.get(sl, ""), fails) if sl else None
         elif checks.holds_no_claims(chk, p["slug"]):  # a claim already on the page that holds its paragraph is dropped here
             holders = {x["slug"]: checks.cites(x["content_md"]) for x in pages if x["type"] in ("topic", "subtopic")
                        and x["slug"] not in index_pages and x["slug"] not in chk.no_claim_pages}
@@ -142,10 +147,12 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
             kind, sources_text, may_grow = "no claims", "", True
         else:  # a split section's index, composed pages: their citations only
             check, sources_text = cite_check, ""
+        tidy = lambda x: fixpass.names_no_location(fixpass.normalise_labels(x, cite_ctx), cite_ctx, chk)
         new = await fixpass.fix_rounds(
-            schema=schema, slug=p["slug"], title=p["title"], text=fixpass.normalise_labels(body, cite_ctx), check=check, sources_text=sources_text,
+            schema=schema, slug=p["slug"], title=p["title"], text=tidy(body), check=check, sources_text=sources_text,
             linkable=linkable, kind=kind, record=record, may_shrink=may_shrink, may_grow=may_grow, clause=lambda c: fixpass.is_clause(c, cite_ctx),
-            parse=(lambda r: checks.detail_lines(_fix_breaks(r).strip(), chk)) if kind == "source page" else (lambda r: _fix_breaks(r).strip()))
+            quote=quote, parse=(lambda r: checks.detail_lines(tidy(_fix_breaks(r).strip()), chk)) if kind == "source page"
+            else (lambda r: tidy(_fix_breaks(r).strip())))
         content = _with_also(new, also_lines) if also_lines else new
         if content.strip() == p["content_md"].strip():
             return None

@@ -1238,13 +1238,21 @@ PIECE_WORDS = re.compile(r"states the condition\(s\) (.+?), which")  # ... and t
 PIECE_SAID = re.compile(r'^The sentence citing .+? \("(.+?)\.\.\."\)')  # ... and the failing sentence's opening words
 
 
-def _failing_pieces(parts: list[str], fails: list[str]) -> list[str]:
+def _page_sentences(text: str) -> list[str]:
+    """A page's sentences (the one sentence split), each line's list marker aside."""
+    return [st.strip() for line in (text or "").split("\n")
+            for st in checks.sentences(re.sub(r"^\s*(?:[-*\u2022]\s+)?", "", line))]
+
+
+def _failing_pieces(parts: list[str], fails: list[str], text: str = "") -> list[str]:
     """Of a label's passages (the reader's pieces of one paragraph, or several notes beside one clause), the ones the
     failures are about: those holding a lettered part or a condition word the page left out, and for a sentence, the
-    one sharing most words with it. All of them where the failures tell none apart."""
+    one sharing most words with the whole sentence as the page has it (text; its opening words where it is not found),
+    the same measure by which a statement gives way to the quote. All of them where the failures tell none apart."""
     if len(parts) < 2:
         return parts
     words = lambda x: set(re.findall(r"\w+", x.casefold()))
+    said_on_page = _page_sentences(text)
     pick: list[str] = []
     for f in fails:
         if m := PIECE_PARTS.search(f):
@@ -1252,7 +1260,8 @@ def _failing_pieces(parts: list[str], fails: list[str]) -> list[str]:
         elif m := PIECE_WORDS.search(f):
             pick += [p for p in parts if any(w.strip(" '\"").casefold() in p.casefold() for w in m.group(1).split(","))]
         elif m := PIECE_SAID.match(f):
-            said = words(m.group(1))
+            whole = next((st for st in said_on_page if st.startswith(m.group(1))), m.group(1))
+            said = words(whole)
             pick.append(max(parts, key=lambda p: len(said & words(p))))
     return [p for p in parts if p in pick] or parts
 
@@ -1278,7 +1287,7 @@ def _quoted(text: str, ref: str, source_slug: str, by_label: dict, chk, kinds: d
     the place of the first of them; under the paragraph's own heading (or at the end) where none does. by_label: that
     source's passages by label; kinds, heads: its paragraph kinds and headings. None when no quote can be written."""
     every = by_label.get(ref, [])
-    parts = _failing_pieces(every, list(fails))
+    parts = _failing_pieces(every, list(fails), text)
     if (quote := _quote_line(ref, parts, source_slug, chk, kinds, heads, issuer)) is None:
         return None
     words = lambda x: set(re.findall(r"\w+", x.casefold()))
@@ -1377,7 +1386,7 @@ def _as_saved(md: str, cite_ctx: dict, valid: set[str], prefer: str | None = Non
     exist becomes plain text; a citation takes the label its source holds; a citation that is only a document's name
     becomes that name; a citation of a clause another source holds names that source."""
     md = fixpass.normalise_labels(_unlink(fixpass.resolve_sources(md or "", cite_ctx, prefer), valid), cite_ctx)
-    md = citecheck.names_unlinked(md, cite_ctx.get("doc_names"))[0]
+    md = fixpass.names_no_location(citecheck.names_unlinked(md, cite_ctx.get("doc_names"))[0], cite_ctx, cite_ctx.get("chk"))
     return citecheck.check(md, cite_ctx["matchers"], cite_ctx.get("doc_names"))[0] if cite_ctx.get("matchers") else md
 
 
@@ -1930,6 +1939,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     authority = checks.authority_sentences(ex.text, chk) if chk else []
     authority_shown = checks.authority_context(ex.text, chk) if chk else []  # with the source's text before each form
     cite_ctx = await fixpass.cite_context(wiki_id, [x["name"] for x in sections])  # this source included
+    cite_ctx["chk"] = chk  # its citation forms: a citation in one of them is never taken for plain text
     src_labels = cite_ctx["labels"].get(source["slug"], set())
     cite_failures = lambda text: fixpass.cite_failures(text, cite_ctx, chk)
     # what each page holds (the paragraphs whose write-up is on it), as recorded; this upload routes this source's
@@ -2420,6 +2430,9 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     for o in ops:  # every page's citations in the schema's form, those not checked above included
         if o.content_md:
             o.content_md = fixpass.normalise_labels(o.content_md, cite_ctx)
+    for o in ops:  # a citation naming no location and no clause number is plain text (as the fix rounds saw it)
+        if o.content_md:
+            o.content_md = fixpass.names_no_location(o.content_md, cite_ctx, chk)
     citations = await citecheck.check_ops(wiki_id, ops)
     if citations["corrected"] or citations["flagged"]:
         await ctx.progress(citations=citations)
