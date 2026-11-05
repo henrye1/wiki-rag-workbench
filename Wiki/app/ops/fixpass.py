@@ -241,8 +241,8 @@ def failure_blocks(blocks: list[str], failure: str) -> set[int]:
     """The paragraphs (blocks) of a page a failure is about: the one holding the sentence it quotes, the ones holding a
     citation it names, or, for a paragraph's lettered parts or conditions, the ones whose closing citations name that
     paragraph (of the source the failure names). None where the failure names no place on the page."""
-    if m := SAID.search(failure):
-        return {i for i, b in enumerate(blocks) if m.group(1) in b}
+    if (m := SAID.search(failure)) and (got := {i for i, b in enumerate(blocks) if m.group(1) in b}):
+        return got  # (a quote that is not the page's, such as a source passage a suggestion quotes, falls through)
     if m := PARA_FAILURE.match(failure):
         base = lambda x: re.sub(r"(?:\s*\([^)]*\))+$", "", x.strip())
         return {i for i, b in enumerate(blocks) for c in checks.closing_links(b)

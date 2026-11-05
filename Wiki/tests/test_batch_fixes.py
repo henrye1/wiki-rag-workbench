@@ -380,3 +380,14 @@ class SharedFailuresAndQuotes(unittest.TestCase):
             link = f"[[{S}|{lab}]]"
             self.assertEqual(fixpass.names_no_location(f"A {link}.", ctx, CHK), f"A {link}.", lab)
         self.assertEqual(fixpass.names_no_location("A [[other-page|Some words]].", ctx, CHK), "A [[other-page|Some words]].")
+
+
+class FailureOnTheCitation(unittest.TestCase):
+    """A failure quoting a source passage (not the page) points to the paragraph holding the citation it names."""
+
+    def test_falls_through_to_the_citation(self):
+        blocks = ["## H", f"In Scenario 3, X [[{S}|IE111|(a)]].", f"Other [[{S}|IE110]]."]
+        f = (f"The citation [[{S}|IE111|(a)]] does not name a paragraph of that source: cite the paragraph's own label. "
+             f'The sentence rests on the passage under "IE111" ("(Illustrative example) Scenario 3: Reclassification '
+             f'out of ..."): cite [[{S}|IE111]].')
+        self.assertEqual(fixpass.failure_blocks(blocks, f), {1})
