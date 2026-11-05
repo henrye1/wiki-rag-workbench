@@ -19,7 +19,10 @@ CITE = re.compile(r"\[\[(source-[^\]|#]+)(?:#[^\]|]*)?\|([^\]]+)\]\]")
 BASE = lambda label: re.sub(r"(?:\s*\([^)]*\))+$", "", label.strip())  # 5.5.17(a) -> 5.5.17
 
 
-async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
+async def run(ctx: JobContext, wiki: dict, mode: str = "auto", only: list[str] | None = None) -> dict:
+    """only: the pages to check (every page when None); the others are read as they stand. A page's checks still
+    failing go with the changeset (held for review, and flagged on the page once applied); a page flagged before that
+    now passes, unchanged, is saved as it is so its flag clears."""
     wiki_id, schema = wiki["id"], wiki["schema_md"]
     chk = checks.load(schema)
     use_schema_headings(chk)
@@ -162,7 +165,22 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
         return Op(op="update", slug=p["slug"], title=p["title"], type=p["type"], summary=p["summary"], content_md=content,
                   tags=p["tags"] or [], base_version=p["version"], change_note=note)
 
-    ops = [o for o in await llm.gather_limited([one(p) for p in pages]) if o]
+    flagged = set()
+    async with get_pool().connection() as conn:
+        flagged = {r["slug"] for r in await (await conn.execute(
+            "select p.slug from wiki.page_flags f join wiki.pages p on p.id = f.page_id "
+            "where p.wiki_id = %s and f.kind = 'check_failures'", (wiki_id,))).fetchall()}
+    todo = [p for p in pages if only is None or p["slug"] in set(only)]
+    ops = [o for o in await llm.gather_limited([one(p) for p in todo]) if o]
+    left: dict[str, list[str]] = {}
+    for r in record:  # each page's checks still failing
+        if r.get("still"):
+            left.setdefault(r["page"], []).extend(r.get("left") or r.get("failures") or [])
+    for p in todo:  # flagged before, passing now, unchanged: saved as it is, so its flag clears
+        if p["slug"] in flagged and p["slug"] not in left and p["slug"] not in {o.slug for o in ops}:
+            ops.append(Op(op="update", slug=p["slug"], title=p["title"], type=p["type"], summary=p["summary"],
+                          content_md=p["content_md"], tags=p["tags"] or [], base_version=p["version"],
+                          change_note="Re-check: passes its checks; its flag clears"))
     # the schema's rule after writing: a page over the size limit by more than its margin is split again
     now = {p["slug"]: dict(p) for p in pages} | {o.slug: {**next(p for p in pages if p["slug"] == o.slug), "content_md": o.content_md,
                                                          "summary": o.summary} for o in ops}
@@ -175,8 +193,9 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
             if o.type in ("topic", "subtopic") and o.slug in held:
                 o.holds = pagecheck.as_holds(held[o.slug])
     await ctx.progress(stage="commit")
-    result = await store.commit(wiki_id, "check", "Re-check: page checks", ops, mode, job_id=ctx.id)
+    result = await store.commit(wiki_id, "check", "Re-check: page checks", ops, mode, job_id=ctx.id,
+                                failures={sl: list(dict.fromkeys(fs)) for sl, fs in left.items() if sl in {o.slug for o in ops}})
     await store.add_log(wiki_id, "check", "Re-check of every page",
                         "\n".join(f"- [[{o.slug}]]: {o.change_note}" for o in ops) or "No page needed a change.")
-    return {"mode": mode, "pages_checked": len(pages), "pages_changed": [o.slug for o in ops], "check_fixes": record, "resplit": resplit,
+    return {"mode": mode, "pages_checked": len(todo), "still_failing": left, "pages_changed": [o.slug for o in ops], "check_fixes": record, "resplit": resplit,
             **{k: v for k, v in result.items() if k != "ops"}}
