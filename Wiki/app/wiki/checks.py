@@ -484,11 +484,6 @@ def routed_to_examples(c: Checks | None, reader_kind: str) -> bool:
     return bool(c and reader_kind and c.kinds.get(reader_kind) in c.routed_kinds)
 
 
-# the group of source citations that ends a sentence (or a list item, a table cell): what the sentence rests on; a
-# source link followed by more of the sentence is a cross-reference in passing (a pointer), not a citation
-CLOSING_GROUP = re.compile(r"(?:\[\[source-[^\]]+\]\](?:\s*(?:,|;|and)\s*|\s+)?)+(?=[.;:]?\s*(?:$|[A-Z(|*\u2022-]))", re.M)
-
-
 AFTER_LINK = re.compile(r"\]\]([.;:!?]?)\s+(?=([A-Z(]|\[\[))")
 LINK_GROUP_END = re.compile(r"(?:\s*\[\[[^\]]*\]\][,;]?)+$")
 
@@ -497,9 +492,13 @@ def sentences_at_links(line: str) -> list[str]:
     """A line cut into sentences where one ends with its citations: after a link, only when sentence punctuation
     follows the link or comes just before its group of links ("... effect. [[source|6.1.1]] An entity ..."); a
     sentence may open with a link, after a link followed by sentence punctuation. A link inside a sentence ("of [[IAS 21]]
-    The Effects of ...", "[[source|B6.3.18]]; (b) ...") does not end it, nor does one link of a group end at the next."""
+    The Effects of ...", "[[source|B6.3.18]]; (b) ...") does not end it, nor does one link of a group end at the next. A
+    group of links that ends the line after a full stop ("... with [[source|5.7.5]]. [[source|8(h)]]") is the citation
+    of the sentence before it, not a sentence of its own."""
     out, start = [], 0
     for m in AFTER_LINK.finditer(line):
+        if m.group(2) == "[[" and LINK_GROUP_END.fullmatch(" " + line[m.end():].rstrip(" .;:")):
+            continue  # only its citations follow: they end this sentence
         ends = m.group(1) in (".", "!", "?") or (m.group(2) != "[[" and not m.group(1) and re.search(
             r"[.!?]\s*$", LINK_GROUP_END.sub("", line[start:m.start() + 2])))
         if ends:
@@ -508,11 +507,47 @@ def sentences_at_links(line: str) -> list[str]:
     return out + [line[start:]]
 
 
-def closing_links(text: str) -> list[re.Match]:
-    """The source links of a page that sit in the citation group ending a sentence, list item or table cell."""
+# ---------- the one sentence split: every check, count and suggestion reads sentences through these ----------
+
+SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
+QUOTATION = re.compile(r'"[^"\n]*"|\u201c[^\u201d\n]*\u201d|"[^"\n]*$|\u201c[^\u201d\n]*$')  # an unclosed one runs to the line's end
+
+
+def sentences(line: str) -> list[str]:
+    """One line of a page (its bullet or list marker taken off by the caller) cut into its sentences. A sentence ends
+    where it ends with its citations (sentences_at_links: after a link only when sentence punctuation follows it or
+    comes just before its group of links), and where a full stop, question or exclamation mark is followed by a
+    capital, never inside a link or a quotation (a quoted passage is part of the sentence that quotes it). A link inside
+    a sentence does not end it."""
     out = []
-    for g in CLOSING_GROUP.finditer(text or ""):
-        out += [m for m in store.LINK_RE.finditer(g.group(0))]
+    for piece in sentences_at_links(line):
+        masked = store.LINK_RE.sub(lambda m: "\0" * len(m.group(0)), piece)  # no sentence ends inside a link
+        masked = QUOTATION.sub(lambda m: "\0" * len(m.group(0)), masked)  # nor inside a quotation
+        cuts = [m.end() for m in SENTENCE_END.finditer(masked)]
+        out += [piece[a:b] for a, b in zip([0] + cuts, cuts + [len(piece)]) if piece[a:b].strip()]
+    return out or ([line] if line.strip() else [])
+
+
+# where a sentence's part ends with its citations: a list part ("; (b) ...", ": (i) ..."), a table cell ("| ..."), an
+# inline list item ("\u2022 ...") follows the link group
+PART_START = re.compile(r"(?<=\]\])[;:,]?\s*(?=\|)|(?<=\]\])[;:,]?\s+(?=\((?:[a-z]{1,3}|[ivxlc]{1,6}|\d{1,2})\)\s|[\u2022*-]\s)")
+TRAILING_GROUP = re.compile(r"(?:\[\[source-[^\]]+\]\](?:\s*(?:,|;|and)\s*|\s+)?)+(?=[\s.;:,|*]*$)")
+
+
+def units(line: str) -> list[str]:
+    """A line's sentences (sentences), each cut where one of its parts ends with its citations: a list part, a table
+    cell, an inline list item. What a unit rests on is the citation group it ends with."""
+    return [u for s in sentences(line) for u in PART_START.split(s) if u.strip()]
+
+
+def closing_links(text: str) -> list[re.Match]:
+    """The source links of a page that sit in the citation group ending a sentence, list part or table cell (units):
+    what each rests on. A source link followed by more of its sentence is a cross-reference in passing."""
+    out = []
+    for line in (text or "").split("\n"):
+        for u in units(line):
+            if g := TRAILING_GROUP.search(u.rstrip()):
+                out += [m for m in store.LINK_RE.finditer(g.group(0))]
     return out
 
 
@@ -522,7 +557,6 @@ def cites(text: str) -> set[str]:
             if m.group(1).startswith("source-") and m.group(2)}
 
 
-SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
 # a line break the reply left out: a sentence's end run straight into the next ("in progress.The document"), outside a link
 SENTENCE_RUN_ON = re.compile(r"(?<=[a-z0-9)][.!?])(?=[A-Z][a-z])(?![^\[\n]*\]\])")
 BULLET = re.compile(r"^(\s*(?:[-*]|\d+\.)\s+)")
@@ -550,7 +584,7 @@ def take_claims(text: str, movable=lambda sentence: True, names: set[str] = froz
             lines.append(line)
             continue
         lead = (BULLET.match(line) or [""])[0]
-        parts = SENTENCE_END.split(line[len(lead):])
+        parts = sentences(line[len(lead):])
         taken += [x.strip() for x in parts if take(x)]
         rest = " ".join(uncited(x) if take(x) and navigates(x) else x for x in parts if not take(x) or navigates(x)).strip()
         if re.search(r"[A-Za-z]", store.LINK_RE.sub("x", rest)):
@@ -591,7 +625,7 @@ def subtopic_summary(content: str, c: Checks | None, heads: list[str] | None = N
             break
         fit.append(h)
     out = c.summary_lead + c.summary_sep.join(fit) + "." if fit else ""
-    for x in SENTENCE_END.split(claims or ""):  # then whole claims, while they fit
+    for x in sentences(claims or ""):  # then whole claims, while they fit
         if not x.strip():
             continue
         if len(out) + 1 + len(x.strip()) > cap:
@@ -653,7 +687,7 @@ def page_summary(content: str, c: Checks | None, *, terms: bool = False, source:
     plain = lambda x: " ".join(re.sub(r"\s+([.,;:])", r"\1", store.LINK_RE.sub(
         lambda m: "" if m.group(1).startswith("source-") else name(m), LIST_LABEL.sub("", x))).split())
     openers = list(_opener_res(c).values())
-    claims = [plain(x) for l in body for x in SENTENCE_END.split(BULLET.sub("", l)) if _is_claim(x)]
+    claims = [plain(x) for l in body for x in sentences(BULLET.sub("", l)) if _is_claim(x)]
     for x in (x for x in claims if not any(p.match(x) for p in openers)):  # then whole requirement claims, while they fit
         if len(out) + 1 + len(x) > cap:
             break
@@ -672,7 +706,7 @@ def _summary_claims(content: str, c: Checks, titles: dict[str, str] | None = Non
     parts = []  # (words, claims) under each heading, in page order
     for block in re.split(r"(?m)^(?=#{1,6} )", content):
         claims = [x.strip() for line in block.split("\n") if not re.match(r"#{1,6} ", line)
-                  for x in SENTENCE_END.split(BULLET.sub("", line)) if _is_claim(x)]
+                  for x in sentences(BULLET.sub("", line)) if _is_claim(x)]
         if claims:
             parts.append((len(block.split()), claims))
     if not parts:
@@ -716,7 +750,7 @@ def absence_failures(content: str, c: Checks | None, source_text: str = "") -> l
         if re.match(r"^#{1,6} ", line):
             continue
         out += [f'The page says "{x.strip()[:200]}". A page here records what the paper states, never what it leaves '
-                "out or what was looked for; remove that sentence." for x in SENTENCE_END.split(line) if pat.search(x)]
+                "out or what was looked for; remove that sentence." for x in sentences(line) if pat.search(x)]
     return out
 
 
@@ -729,7 +763,7 @@ def _cited_sentences(content: str) -> list[str]:
     for line in content.split("\n"):
         if re.match(r"^#{1,6} ", line):
             continue
-        out += [x.strip() for x in SENTENCE_END.split(BULLET.sub("", line)) if _is_claim(x)]
+        out += [x.strip() for x in sentences(BULLET.sub("", line)) if _is_claim(x)]
     return out
 
 
@@ -766,7 +800,7 @@ def drop_repeats(content: str) -> tuple[str, int]:
             continue
         lead = (BULLET.match(line) or [""])[0]
         kept = []
-        for x in SENTENCE_END.split(line[len(lead):]):
+        for x in sentences(line[len(lead):]):
             if _is_claim(x) and _same(x) in seen:
                 dropped += 1
                 continue
@@ -891,7 +925,7 @@ def section_failures(content: str, given: list[str], kinds: dict[str, str], sour
                 lead = "" if line.startswith("#") else lead
                 continue
             ends_lead = line.rstrip().endswith(":")
-            for s in sentences_at_links(line):
+            for s in sentences(line):
                 cited = [m.group(2) for m in store.LINK_RE.finditer(s) if m.group(1) == source_slug and m.group(2)]
                 if not cited:
                     continue
@@ -996,19 +1030,66 @@ def detail_lines(content: str, c: Checks) -> str:
     return "\n".join(out)
 
 
+def _authority_matches(text: str, c: Checks) -> list[re.Match]:
+    return [m for form in c.authority
+            for m in re.finditer(r"(" + _template(form, r".+?") + r"[^\n]*?\.)(?=\s|$)", text or "", re.M | re.I)]
+
+
 def authority_sentences(text: str, c: Checks) -> list[str]:
-    """The source's own sentences in one of the schema's authority forms."""
+    """Where the source states its authority: each place one of the schema's authority forms is found, from the form to
+    the end of its sentence. Where the sentence starts is not marked in a PDF's text (a contents page has no full stop
+    before it), so what comes before the form is the page's to transcribe, word for word (authority_context)."""
+    return list(dict.fromkeys(m.group(1).strip() for m in _authority_matches(text, c)))
+
+
+def authority_context(text: str, c: Checks, words: int = 40) -> list[str]:
+    """For the writer: each authority form as the source prints it, with the source's text before it in the same
+    passage (at most words of it), under the passage's label (what the sentence cites), so the whole sentence can be
+    transcribed and cited."""
     out = []
-    for form in c.authority:
-        # the reader's own label and kind tag ("[IG introduction] (Implementation guidance) ...") are not the source's words
-        pat = re.compile(r"(?:^\[[^\]]+\]\s*(?:\([A-Z][^)]*\)\s*)?)?([^.\n\[\]()]*" + _template(form, r".+?") + r"[^\n]*?\.)(?=\s|$)",
-                         re.M | re.I)
-        out += [m.group(1).strip() for m in pat.finditer(text)]
+    for m in _authority_matches(text, c):
+        start = (text.rfind("\n\n", 0, m.start()) + 2) if "\n\n" in text[: m.start()] else 0  # its passage's start
+        lab = re.match(r"^\[([^\]\n]+)\]\s*", text[start:])
+        before = text[start + (lab.end() if lab else 0) : m.start()].split()
+        out.append((f"[{lab.group(1)}] " if lab else "") + ("... " if len(before) > words else "")
+                   + " ".join(before[-words:] + [m.group(1).strip()]))
     return list(dict.fromkeys(out))
 
 
+def verbatim(x: str) -> str:
+    """Text as compared word for word with its source: a source citation left out, another link read as the text it
+    shows, emphasis marks, quotation-mark and dash styles and spacing aside."""
+    x = store.LINK_RE.sub(lambda m: "" if m.group(1).startswith("source-") else (m.group(2) or m.group(1)), x or "")
+    x = re.sub(r"[*_`]+", "", x)
+    x = re.sub(r"[\u2018\u2019]", "'", re.sub(r"[\u201c\u201d]", '"', re.sub(r"[\u2013\u2014\u2212]", "-", x)))
+    return re.sub(r"\s+([.,;:)])", r"\1", " ".join(x.split())).strip()
+
+
+def authority_failures(content: str, part: str, authority: list[str], source_text: str) -> list[str]:
+    """The page's authority line for each authority form the source states: a sentence of the page holding the form,
+    which starts where a sentence starts (a capital), ends with the form as the source prints it, and is found word for
+    word in the source."""
+    out = []
+    source = verbatim(source_text)
+    said = [verbatim(x) for line in content.split("\n") if not line.lstrip().startswith("#")
+            for x in sentences(BULLET.sub("", line.strip()))]
+    for a in authority:
+        core = verbatim(a)
+        have = [x for x in said if core.casefold() in x.casefold()]
+        if not have:
+            out.append(f'The page lacks {part}: the source\'s sentence ending "{a}" is not transcribed. Transcribe the '
+                       "whole sentence word for word, from where it starts in the source.")
+        elif not any(x in source and x.endswith(core) and (x[:1].isupper() or x[:1].isdigit()) for x in have):
+            x = have[0]
+            out.append(f'The page\'s {part} ("{x[:160]}") is not the source\'s sentence word for word: it must start '
+                       f'where the source\'s sentence starts, end with "{a}", and keep every word between as the source '
+                       "prints it.")
+    return out
+
+
 def source_failures(content: str, *, fields: dict[str, str], authority: list[str], informed: set[str],
-                    sections: set[str], source_slug: str, c: Checks, labels: set[str] = frozenset()) -> tuple[list[str], list[str]]:
+                    sections: set[str], source_slug: str, c: Checks, labels: set[str] = frozenset(),
+                    source_text: str = "") -> tuple[list[str], list[str]]:
     """Where a source page lacks a part the schema's Checks list names. Each part is checked by what its entry asks
     for: recorded fields (e.g. issuer, edition, part), the authority forms, the informed sections, cited claims.
     Returns (failures, parts that could not be checked)."""
@@ -1018,9 +1099,9 @@ def source_failures(content: str, *, fields: dict[str, str], authority: list[str
         if "authority" in what:
             if not authority:
                 skipped.append(f"{part}: the source has no sentence in the schema's authority forms")
-            for a in authority:
-                if _words(a) not in text:
-                    failures.append(f'The page lacks {part}: "{a}" is not transcribed verbatim.')
+            elif not source_text:
+                skipped.append(f"{part}: the source's text was not given, so it cannot be compared word for word")
+            failures += authority_failures(content, part, authority, source_text) if source_text else []
         elif "informed sections" in what:
             linked = {m.group(1) for m in store.LINK_RE.finditer(content)}
             if missing := sorted(informed - linked):
@@ -1036,7 +1117,7 @@ def source_failures(content: str, *, fields: dict[str, str], authority: list[str
             scope = content[lead.start():] if lead else content
             if lead and (nxt := re.search(r"(?m)^#{1,4} ", scope[lead.end() - lead.start():])):
                 scope = scope[: lead.end() - lead.start() + nxt.start()]
-            claims = [s for line in scope.split("\n") for s in sentences_at_links(line) if any(
+            claims = [s for line in scope.split("\n") for s in sentences(line) if any(
                 m.group(1) == source_slug and m.group(2) and (m.group(2).strip() in labels or re.search(r"\d", m.group(2))
                 and not re.fullmatch(r"p(?:age)?\s*\d+", m.group(2).strip()))  # a location it has; not the reader's page label
                 for m in store.LINK_RE.finditer(s))]

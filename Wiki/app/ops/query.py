@@ -136,7 +136,6 @@ async def _select_saved(wiki: dict, question: str) -> list[dict]:
 # "Sources: Standard only" (the schema's Checks: Standard only): keep only the statements whose citations are all to
 # the Standard's own text, by paragraph kind; a page also holds guidance, examples and notes, of other kinds
 _SOURCE_CITE = re.compile(r"\[\[(source-[^\]|#]+)")
-_STATEMENT = re.compile(r"(?:\[\[source-[^\]]+\]\][\s,;]*)+[.;:]?")  # a statement ends with its citation group
 _HEADING = re.compile(r"^\s*#{1,6} ")
 
 
@@ -162,13 +161,11 @@ def standard_only(md: str, keep) -> str:
         if not line.strip() or _HEADING.match(line):
             lines.append(line)
             continue
-        parts, pos = [], 0
-        for m in _STATEMENT.finditer(line):
-            parts.append(line[pos : m.end()])
-            pos = m.end()
-        kept = [p for p in parts if (cited := answering._source_cites(p)) and all(keep(sl, lab) for sl, lab in cited)]
+        lead = (checks.BULLET.match(line) or [""])[0]
+        parts = checks.sentences(line[len(lead):])  # the one sentence split (checks.sentences)
+        kept = [p.strip() for p in parts if (cited := answering._source_cites(p)) and all(keep(sl, lab) for sl, lab in cited)]
         if kept:
-            lines.append("".join(kept).strip())
+            lines.append(lead + " ".join(kept))
     out: list[str] = []  # drop headings left with nothing under them
     for i, line in enumerate(lines):
         if _HEADING.match(line):

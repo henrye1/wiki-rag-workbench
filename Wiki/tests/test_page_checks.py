@@ -149,5 +149,78 @@ class AsSaved(Base):
         self.assertEqual([r["page"] for r in out if r["page"] == "sec"], [])
 
 
+class OneSplit(Base):
+    """One sentence split (checks.sentences, checks.units) used by every check, count and suggestion."""
+    S, T = "[[source-x|1.1]]", "[[source-x|1.2]]"
+
+    def test_sentences(self):
+        S, T = self.S, self.T
+        cases = {
+            f"It is so {S}. Next one {T}.": [f"It is so {S}.", f"Next one {T}."],
+            f"First. Second, cited {S}.": ["First.", f"Second, cited {S}."],  # an uncited sentence is one of its own
+            f'Guidance states that "One. Two. Three." {S}.': [f'Guidance states that "One. Two. Three." {S}.'],  # a quotation
+            f"In accordance with {S}. {T}": [f"In accordance with {S}. {T}"],  # the line's last links: its citation
+            f"See [[p|Doc. Two]] for it {S}.": [f"See [[p|Doc. Two]] for it {S}."],  # never inside a link
+        }
+        for line, want in cases.items():
+            self.assertEqual([x.strip() for x in checks.sentences(line)], want, line)
+
+    def test_closing_citations(self):
+        S, T = self.S, self.T
+        closing = lambda line: [m.group(2) for m in checks.closing_links(line)]
+        self.assertEqual(closing(f"The layer {S}; (b) a part {T}."), ["1.1", "1.2"])  # a list part ends with its citation
+        self.assertEqual(closing(f"| a cell {S} | another {T} |"), ["1.1", "1.2"])  # a table cell
+        self.assertEqual(closing(f"As set out in {S} (which applies) the rule {T}."), ["1.2"])  # in passing
+        self.assertEqual(closing(f"In accordance with {S}. {T}"), ["1.2"])
+
+    def test_every_part_of_the_code_splits_alike(self):
+        from app.ops import concepts, query
+        line = f"Guidance states this {self.S}. Another point, \"quoted. As is.\" {self.T}."
+        want = [x.strip() for x in checks.sentences(line)]
+        self.assertEqual(len(want), 2)
+        self.assertEqual(checks._cited_sentences(line), want)
+        self.assertEqual([x.strip() for x in concepts._statements(line)], want)
+        self.assertEqual(checks.take_claims(line)[1], want)
+        self.assertEqual(query.standard_only(line, lambda sl, lab: True), " ".join(want))
+        from app.ops import answering
+        self.assertEqual(answering._sentences(line, CHK), want)
+
+    def test_a_second_sentence_from_guidance_needs_its_opener(self):
+        text = f"{OPENER} that the item is so. The item is measured at cost [[{B}|B1]]."
+        self.assertTrue([f for f in check(text, {}) if "B1" in f and "opener" in f])
+
+
+class Authority(unittest.TestCase):
+    SRC = ("[p3] CONTENTS 1.1 2.1 REFORM ISSUED IN AUGUST 2020 IFRS 9 INSTRUMENTS The Standard 9 Instruments (IFRS 9) "
+           "is set out in paragraphs 1.1–7.3.2 and Appendices A–C. All the paragraphs have equal authority.\n\n"
+           "[p93] This appendix is an integral part of the Standard.")
+
+    def setUp(self):
+        self.c = checks.Checks(authority=["is set out in paragraphs ... and ...", "This appendix is an integral part of the Standard"])
+
+    def test_the_form_and_the_text_before_it(self):
+        self.assertEqual(checks.authority_sentences(self.SRC, self.c),
+                         ["is set out in paragraphs 1.1–7.3.2 and Appendices A–C.", "This appendix is an integral part of the Standard."])
+        shown = checks.authority_context(self.SRC, self.c, words=6)
+        self.assertTrue(shown[0].startswith("[p3] ... ") and "The Standard 9 Instruments (IFRS 9) is set out" in shown[0])
+        self.assertEqual(shown[1], "[p93] This appendix is an integral part of the Standard.")
+
+    def test_the_whole_sentence_word_for_word(self):
+        fails = lambda line: checks.authority_failures(line, "authority sentence", checks.authority_sentences(self.SRC, self.c)[:1], self.SRC)
+        self.assertTrue(fails("is set out in paragraphs 1.1–7.3.2 and Appendices A–C. [[source-x|p3]]"))  # cut short
+        self.assertTrue(fails("IFRS 9 is set out in paragraphs 1.1–7.3.2 and Appendices A–C. [[source-x|p3]]"))  # not as printed
+        self.assertTrue(fails("The rules are elsewhere."))  # not there at all
+        self.assertEqual(fails("The Standard 9 Instruments (IFRS 9) is set out in paragraphs 1.1–7.3.2 and Appendices A–C "
+                               "[[source-x|p3]]."), [])
+
+    def test_the_suggested_citation_is_the_passage_the_sentence_rests_on(self):
+        page = ("## What this document is\nPart: Doc 9\n\n## Authority\nThe Standard 9 Instruments (IFRS 9) is set out in "
+                "paragraphs 1.1–7.3.2 and Appendices A–C. [[source-x|p3]]\nThis appendix is an integral part of the Standard. "
+                "[[source-x|Appendix C]]")
+        texts = {"p3": self.SRC.split("\n\n")[0], "p93": self.SRC.split("\n\n")[1]}
+        said = fixpass._where_it_rests(page, "source-x", "Appendix C", {"texts": {"source-x": texts}})
+        self.assertIn("cite [[source-x|p93]]", said)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -122,9 +122,10 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
                                                           "\n".join(_split_also(x["content_md"])[1]) for x in pages
                                                           if x["slug"] == sl or x["slug"].startswith(sl + "-"))}
             args = dict(fields=s["fields"], authority=checks.authority_sentences(s["text"], chk), informed=informed,
-                        sections=section_pages, source_slug=p["slug"], c=chk, labels=cite_ctx["labels"].get(p["slug"], set()))
+                        sections=section_pages, source_slug=p["slug"], c=chk, labels=cite_ctx["labels"].get(p["slug"], set()),
+                        source_text=s["text"])
             check = lambda x: checks.source_failures(x, **args)[0] + cite_check(x)
-            kind, may_shrink, sources_text = "source page", True, "\n\n".join(args["authority"])
+            kind, may_shrink, sources_text = "source page", True, "\n\n".join(checks.authority_context(s["text"], chk))
             body = checks.detail_lines(body, chk)
         elif p["type"] in ("topic", "subtopic") and p["slug"] not in index_pages:
             given = cited(body)

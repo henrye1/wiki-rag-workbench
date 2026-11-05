@@ -128,16 +128,8 @@ def _sentences(body: str, chk) -> list[str]:
             continue  # a table's header row
         if line.endswith(":") or re.fullmatch(r"\*\*[^*]+\*\*:?", line):
             continue
-        for piece in checks.sentences_at_links(line):
-            out += [s.strip() for s in _at_sentence_ends(piece) if s.strip() and s.strip() != chk.answer_none]
+        out += [s.strip() for s in checks.sentences(line) if s.strip() and s.strip() != chk.answer_none]  # the one split
     return out
-
-
-def _at_sentence_ends(piece: str) -> list[str]:
-    """A piece cut where a sentence ends inside it (a full stop then a capital), never inside a link."""
-    masked = store.LINK_RE.sub(lambda m: "\0" * len(m.group(0)), piece)
-    cuts = [m.end() for m in checks.SENTENCE_END.finditer(masked)]
-    return [piece[a:b] for a, b in zip([0] + cuts, cuts + [len(piece)])]
 
 
 def citation_failures(body: str, chk) -> list[str]:

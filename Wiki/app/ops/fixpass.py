@@ -88,7 +88,8 @@ def _where_it_rests(text: str, slug: str, label: str, ctx: dict) -> str:
     the source's location whose text shares the most words with the sentences that carry it, named so the fix can
     cite it. Empty when no location shares enough of their words."""
     cite = f"[[{slug}|{label}]]"
-    said = set().union(*[_words_of(s) for s in checks.SENTENCE_END.split(text.replace("\n", " ")) if cite in s] or [set()])
+    said = set().union(*[_words_of(s) for line in text.split("\n") for s in checks.sentences(checks.BULLET.sub("", line))
+                         if cite in s] or [set()])  # the sentence that carries it, cut as the page checks cut it
     if len(said) < 4:
         return ""
     best, score = "", 0
