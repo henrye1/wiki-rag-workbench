@@ -2,7 +2,8 @@
 from wiki pages. Each paragraph knows its document and tier:
 - standard: a Standard's own text (Part A, as read by the IFRS reader, appendices included);
 - supporting: documents published with it (Parts B and C: implementation guidance, illustrative examples, basis for
-  conclusions).
+  conclusions), and, inside a Standard, its editorial text (EDITORIAL_KINDS: notes, footnotes, the introduction): never
+  the Standard's own text, in any tier.
 search() finds the paragraphs that best match a piece of text (BM25 over words), for showing the judge the source.
 """
 import math
@@ -43,8 +44,27 @@ def _stem(w: str) -> str:
     return w
 
 
+# The PDF reader's kinds for editorial text inside a Standard (as it names them, like its parser names above): the notes
+# and agenda decisions an annotated edition prints, footnotes, the introduction and the closing approval text
+EDITORIAL_KINDS = ("note", "footnote", "intro", "back_matter")
+# its kinds for the documents published with a Standard (Parts B and C), for passages that carry only their kind
+ACCOMPANYING_KINDS = ("example", "implementation_guidance", "basis_for_conclusions", "dissenting_opinion")
+
+
 def _tier(meta: dict | None) -> str:
     return "supporting" if (meta or {}).get("parser") == "ifrs_accompanying" else "standard" if (meta or {}).get("parser") == "ifrs" else "other"
+
+
+def kind_tier(doc_tier: str, kind: str | None) -> str:
+    """A paragraph's tier: its document's, except that a Standard's editorial text is supporting."""
+    return "supporting" if doc_tier == "standard" and kind in EDITORIAL_KINDS else doc_tier
+
+
+def paragraph_tier(meta: dict | None, label: str) -> str:
+    """The tier of the paragraph a source labels so (sub-paragraph letters aside), from the reader's kind of it."""
+    kinds = (meta or {}).get("para_kinds") or {}
+    kind = kinds.get(label) or kinds.get(re.sub(r"(\s*\([a-z0-9]{1,4}\))+$", "", label))
+    return kind_tier(_tier(meta), kind)
 
 
 def _doc_name(title: str, meta: dict | None) -> str:
@@ -71,7 +91,8 @@ class Library:
         self.by_source: dict[str, dict[str, str]] = {}
         self.titles: dict[str, str] = {}
         self.names: dict[str, str] = {}
-        self.tiers: dict[str, str] = {}
+        self.tiers: dict[str, str] = {}  # each document's
+        self._metas: dict[str, dict] = {}
         rows = conn.execute("""select distinct on (s.slug) s.slug, s.title, s.text, s.meta from wiki.sources s
                                order by s.slug, length(s.text) desc""").fetchall()
         for r in rows:
@@ -88,7 +109,12 @@ class Library:
             self.titles[r["slug"]] = r["title"]
             self.names[r["slug"]] = _doc_name(r["title"], r["meta"])
             self.tiers[r["slug"]] = _tier(r["meta"])
+            self._metas[r["slug"]] = r["meta"] or {}
         self._index = None
+
+    def tier(self, slug: str, label: str) -> str:
+        """A paragraph's tier: its document's, except that a Standard's editorial text is supporting."""
+        return paragraph_tier(self._metas.get(slug), label) if slug in self.tiers else "other"
 
     def find(self, part: str, source: str | None = None) -> list[tuple[str, str]]:
         """(source slug, paragraph text) for each source holding this paragraph; only the named source when given."""
@@ -132,8 +158,8 @@ class Library:
         scored.sort(key=lambda x: -x[0])
         picked = scored[:k]
         for tier in ("standard", "supporting"):
-            have = sum(self.tiers[x[1]] == tier for x in picked)
+            have = sum(self.tier(x[1], x[2]) == tier for x in picked)
             if have < per_tier:
-                picked += [x for x in scored[k:] if self.tiers[x[1]] == tier][: per_tier - have]
-        return [{"paragraph": label, "source": slug, "document": self.names[slug], "tier": self.tiers[slug],
+                picked += [x for x in scored[k:] if self.tier(x[1], x[2]) == tier][: per_tier - have]
+        return [{"paragraph": label, "source": slug, "document": self.names[slug], "tier": self.tier(slug, label),
                  "text": body, "score": round(s, 2)} for s, slug, label, body in picked]

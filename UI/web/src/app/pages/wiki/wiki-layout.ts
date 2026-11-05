@@ -35,6 +35,7 @@ export class WikiLayout {
     { path: 'jobs', label: 'Jobs', icon: 'pending_actions' },
     { path: 'changesets', label: 'Changesets', icon: 'difference' },
     { path: 'lint', label: 'Lint', icon: 'rule' },
+    { path: 'statements', label: 'Client statements', icon: 'fact_check' },
     { path: 'graph', label: 'Graph', icon: 'hub' },
     { path: 'settings', label: 'Schema & export', icon: 'settings' },
   ];

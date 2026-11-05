@@ -9,7 +9,7 @@ from collections import Counter
 
 from .. import llm, prompts
 from ..db import get_pool
-from ..wiki import citecheck, saved, store
+from ..wiki import checks, citecheck, saved, store
 from ..wiki.store import Op, slugify
 
 LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]")
@@ -33,9 +33,10 @@ def slug_for(chat_id: str, answers: list[dict], wiki_pages: list[str], wiki_name
     return f"{framework}-synthesis-{re.sub(r'[^a-z0-9]', '', chat_id.lower())[:8]}"
 
 
-def record(answers: list[dict]) -> str:
-    """The questions, the date each was answered and its Sources setting (written by code, so always exact)."""
-    rows = [f"{i}. {a['searched']} — answered {a['date'][:10]}, Sources: {'Standard only' if a['sources'] == 'standard' else 'All'}"
+def record(answers: list[dict], standard_label: str = "") -> str:
+    """The questions, the date each was answered and its Sources setting (written by code, so always exact); the
+    Standard only setting by its label in the schema (Checks: Standard only)."""
+    rows = [f"{i}. {a['searched']} — answered {a['date'][:10]}, Sources: {(standard_label or a['sources']) if a['sources'] == 'standard' else 'All'}"
             for i, a in enumerate(answers, 1)]
     return f"{RECORD_HEADING}\n\n" + "\n".join(rows)
 
@@ -43,8 +44,9 @@ def record(answers: list[dict]) -> str:
 async def check(wiki: dict, content: str, answers: list[dict]) -> dict:
     """Problems in a draft (nothing is changed): wrongly attributed or unknown citations, citations that were not in the
     wiki answers, and links to pages that do not exist."""
-    names = await citecheck.document_names(wiki["id"])
-    _, fixed, flagged = citecheck.check(content, await citecheck.sources(wiki["id"], names), names)
+    chk = await citecheck.schema_checks(wiki["id"])
+    names = checks.document_name_re(chk)
+    _, fixed, flagged = citecheck.check(content, await citecheck.sources(wiki["id"], names), names, chk)
     allowed = {x for a in answers for x in _links(a["answer"])}
     slugs = {p["slug"] for p in await store.list_pages(wiki["id"])}
     problems = []
@@ -69,7 +71,8 @@ async def draft(wiki: dict, chat_id: str, chat_title: str, answers: list[dict]) 
         prompts.with_schema(wiki["schema_md"], prompts.synthesis_prompt(chat_title, body)),
         prompts.SYNTHESIS_SCHEMA,
     )
-    content = f"{record(answers)}\n\n{out['content_md'].strip()}"
+    chk = checks.load(wiki["schema_md"])
+    content = f"{record(answers, chk.standard_only if chk else '')}\n\n{out['content_md'].strip()}"
     names = [p["slug"] for p in await store.list_pages(wiki["id"]) if p["type"] != "synthesis"]
     page = {"slug": slug_for(chat_id, answers, names, wiki["name"]), "title": out["title"].strip(), "summary": out["summary"].strip(),
             "tags": out.get("tags") or [], "content_md": content}

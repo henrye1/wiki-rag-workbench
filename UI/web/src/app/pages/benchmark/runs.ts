@@ -393,6 +393,7 @@ export class BenchRuns {
   }
   setupTitle(r: any) {
     return [`Sources: ${this.sourcesLabel(r.sources)}`, `Saved answers: ${r.use_saved === true ? 'on' : r.use_saved === false ? 'off' : '—'}`,
+            `RAG editorial text: ${r.rag_editorial === true ? 'on' : r.rag_editorial === false ? 'off' : '—'}`,
             `Rubric: ${r.rubric?.label ?? '—'}${r.rubric?.topics ? ` (${r.rubric.approved}/${r.rubric.topics} approved)` : ''}`,
             `Judge: ${r.judge?.label ?? '—'}`].join('\n');
   }

@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     wiki_slug: str = ""
     sources: str = "all"  # "standard" (Part A only) or "all" (Parts A, B and C); always the same for both systems
     use_saved: bool = True  # the wiki also reads relevant saved answers (synthesis pages filed with Save)
+    # both RAG columns also search the Standard's editorial text (notes and agenda decisions an annotated edition prints,
+    # the introduction, Appendix C), which the wiki keeps too; recorded per run (runs before it was recorded: off)
+    rag_include_editorial: bool = True
     mode: str = "quick"  # quick: answers, grading and the answer checks; full: also faithfulness and context recall
     use_batch: bool = True  # grade through the Message Batches API (half price), falling back to the normal API
     batch_poll_s: int = 30

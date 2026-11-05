@@ -186,6 +186,7 @@ async def list_runs():
             "query_set": r["query_set_name"], "reference": (labels.get(r["reference_sha"]) or {}).get("label"),
             "reference_sha256": r["reference_sha"],
             "rag_collection": r["rag_collection"], "wiki": r["wiki_slug"], "sources": r["sources"], "use_saved": r["use_saved"],
+            "rag_editorial": cfg.get("rag_include_editorial", False) if cfg else None,
             "mode": r["mode"], "use_batch": r["use_batch"],
             "summary": r["summary"], "progress": _progress(r, cfg, _mask(r["errors"], pairs)),
             "rubric": _rubric_label(cfg), "judge": _judge_label(cfg), "extras": _extras(r),
@@ -230,7 +231,8 @@ async def get_run(run_id: str):
     data["progress"] = _progress(row, data.get("config"), data.get("errors"))
     data["extras"] = _extras(row)
     # what the run compared, from the run row (results of older runs do not record it)
-    data["compared"] = {"rag_collection": row["rag_collection"], "wiki": row["wiki_slug"], "sources": row["sources"], "use_saved": row["use_saved"]}
+    data["compared"] = {"rag_collection": row["rag_collection"], "wiki": row["wiki_slug"], "sources": row["sources"], "use_saved": row["use_saved"],
+                        "rag_editorial": (data.get("config") or {}).get("rag_include_editorial", False) if data.get("config") else None}
     return data
 
 

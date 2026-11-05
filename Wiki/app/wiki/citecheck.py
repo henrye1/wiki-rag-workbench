@@ -18,7 +18,6 @@ from . import checks
 CITE_RE = re.compile(r"\[\[([^\]|#]+)(#[^\]|]*)?\|([^\]]+)\]\]")
 LABEL_RE = re.compile(r"^\[([^\]\n]+)\]", re.M)
 RANGE_RE = re.compile(r"\s*[–-]\s*")
-FILLER = re.compile(r"\([^)]*\)|\b(?:paragraphs?|paras?|and|to|also)\b|[\s,;:.\u2013\-–]+", re.I)  # left when a label is only clauses
 
 
 def _norm(label: str, names: re.Pattern | None = None) -> str:
@@ -28,11 +27,15 @@ def _norm(label: str, names: re.Pattern | None = None) -> str:
     return (names.sub(" ", label) if names else label).strip()  # "<document name> 5.5.17": the name is no clause
 
 
-async def document_names(wiki_id: UUID) -> re.Pattern | None:
-    """The wiki schema's document names, as one pattern."""
+async def schema_checks(wiki_id: UUID) -> checks.Checks | None:
     async with get_pool().connection() as conn:
         row = await (await conn.execute("select schema_md from wiki.wikis where id = %s", (wiki_id,))).fetchone()
-    return checks.document_name_re(checks.load(row["schema_md"] if row else ""))
+    return checks.load(row["schema_md"] if row else "")
+
+
+async def document_names(wiki_id: UUID) -> re.Pattern | None:
+    """The wiki schema's document names, as one pattern."""
+    return checks.document_name_re(await schema_checks(wiki_id))
 
 
 def _matcher(text: str, names: re.Pattern | None = None) -> re.Pattern | None:
@@ -58,9 +61,10 @@ async def sources(wiki_id: UUID, names: re.Pattern | None = None) -> dict[str, r
     return {r["slug"]: m for r in rows if (m := _matcher(r["text"], names))}
 
 
-def _covered(key: str, pat: re.Pattern) -> bool:
-    """Whether the label is only clauses of this source (ranges, sub-paragraph letters and 'paragraphs' aside)."""
-    return bool(pat.search(key)) and not FILLER.sub("", pat.sub("", key))
+def _covered(key: str, pat: re.Pattern, filler: re.Pattern) -> bool:
+    """Whether the label is only clauses of this source (ranges, sub-paragraph letters and the schema's Reference words
+    aside)."""
+    return bool(pat.search(key)) and not filler.sub("", pat.sub("", key))
 
 
 def names_unlinked(content: str, names: re.Pattern | None) -> tuple[str, int]:
@@ -80,10 +84,12 @@ def names_unlinked(content: str, names: re.Pattern | None) -> tuple[str, int]:
     return (CITE_RE.sub(one, content or ""), n) if names else (content, 0)
 
 
-def check(content: str, matchers: dict[str, re.Pattern], names: re.Pattern | None = None) -> tuple[str, Counter, Counter]:
+def check(content: str, matchers: dict[str, re.Pattern], names: re.Pattern | None = None,
+          chk: checks.Checks | None = None) -> tuple[str, Counter, Counter]:
     """The page text with wrongly attributed citations corrected; Counters of (from, to, label) fixes and of
-    (source, label, reason) flags."""
+    (source, label, reason) flags. chk: the schema's Checks, for its Reference words."""
     fixed, flagged = Counter(), Counter()
+    filler, bare = checks.reference_filler(chk), checks.bare_number_re(chk)
 
     def one(m: re.Match) -> str:
         slug, anchor, label = m.group(1), m.group(2) or "", m.group(3)
@@ -95,10 +101,10 @@ def check(content: str, matchers: dict[str, re.Pattern], names: re.Pattern | Non
         para = re.sub(r"^p(?=[A-Z]{0,4}\d)", "", key)  # "p35A", "pB8E": paragraphs 35A, B8E (or a page label such as p93: both are tried)
         if matchers[slug].search(key) or matchers[slug].search(para):
             return m.group(0)
-        others = [s for s, pat in matchers.items() if s != slug and _covered(key, pat)]
+        others = [s for s, pat in matchers.items() if s != slug and _covered(key, pat, filler)]
         if not others and para != key:
-            others, key = [s for s, pat in matchers.items() if s != slug and _covered(para, pat)], para
-        if len(others) == 1 and re.fullmatch(r"(?:paragraphs?\s*)?\d+(?:\([^)]*\))*", key, re.I):
+            others, key = [s for s, pat in matchers.items() if s != slug and _covered(para, pat, filler)], para
+        if len(others) == 1 and bare.fullmatch(key):
             flagged[(slug, label, f"bare number, not in this source (it is in {others[0]})")] += 1
             return m.group(0)
         if len(others) == 1:
@@ -112,7 +118,8 @@ def check(content: str, matchers: dict[str, re.Pattern], names: re.Pattern | Non
 
 async def check_ops(wiki_id: UUID, ops: list) -> dict:
     """Check and correct the citations of the pages about to be written; a report for the job."""
-    names = await document_names(wiki_id)
+    chk = await schema_checks(wiki_id)
+    names = checks.document_name_re(chk)
     matchers = await sources(wiki_id, names)
     report = {"corrected": [], "flagged": []}
     if not matchers:
@@ -123,7 +130,7 @@ async def check_ops(wiki_id: UUID, ops: list) -> dict:
         o.content_md, plain = names_unlinked(o.content_md, names)
         if plain:
             report.setdefault("names_unlinked", []).append({"page": o.slug, "count": plain})
-        o.content_md, fixed, flagged = check(o.content_md, matchers, names)
+        o.content_md, fixed, flagged = check(o.content_md, matchers, names, chk)
         if fixed:
             moves = Counter()
             for (a, b, _), n in fixed.items():

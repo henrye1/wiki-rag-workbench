@@ -2,7 +2,10 @@ import { DatePipe } from '@angular/common';
 import { Component, effect, inject, input, signal } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatExpansionModule } from '@angular/material/expansion';
+import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { FormsModule } from '@angular/forms';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../../core/api';
@@ -11,7 +14,8 @@ import { Markdown } from '../../shared/markdown';
 
 @Component({
   selector: 'app-wiki-changeset',
-  imports: [DatePipe, RouterLink, MatButtonModule, MatExpansionModule, MatIconModule, MatProgressBarModule, Diff, Markdown],
+  imports: [DatePipe, FormsModule, RouterLink, MatButtonModule, MatExpansionModule, MatFormFieldModule, MatIconModule, MatInputModule,
+    MatProgressBarModule, Diff, Markdown],
   template: `
     <a routerLink=".." class="muted">← Changesets</a>
     @if (cs(); as c) {
@@ -19,15 +23,29 @@ import { Markdown } from '../../shared/markdown';
         <div class="grow">
           <h2>{{ c.summary || 'Changeset' }}</h2>
           <div class="muted">{{ c.kind }} · {{ c.ops.length }} change(s) · {{ c.created_at | date: 'medium' }} ·
-            <span class="pill" [class.warn]="c.status === 'pending'" [class.ok]="c.status === 'applied'">{{ c.status }}</span></div>
+            <span class="pill" [class.warn]="c.status === 'pending'" [class.ok]="c.status === 'applied'">{{ c.status }}</span>
+            @if (c.reviewer) { · by {{ c.reviewer }}{{ c.reviewed_at ? ', ' : '' }}{{ c.reviewed_at | date: 'medium' }} }</div>
         </div>
         @if (c.status === 'pending') {
+          <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>Reviewer</mat-label>
+            <input matInput [(ngModel)]="reviewer" [required]="failingPages(c).length > 0" /></mat-form-field>
           <button mat-stroked-button (click)="discard()" [disabled]="busy()"><mat-icon>delete_sweep</mat-icon> Discard</button>
-          <button mat-flat-button (click)="apply(false)" [disabled]="busy()"><mat-icon>done_all</mat-icon> Apply</button>
+          <button mat-flat-button (click)="apply(false)" [disabled]="busy() || (failingPages(c).length > 0 && !reviewer.trim())"
+                  [title]="failingPages(c).length ? 'A held upload is applied only by a named reviewer' : ''"><mat-icon>done_all</mat-icon> Apply</button>
         }
       </div>
       @if (busy()) { <mat-progress-bar mode="indeterminate" /> }
       @if (error()) { <p class="error">{{ error() }}</p> }
+      @if (failingPages(c).length) {
+        <div class="card">
+          <b>Held for review: these pages still fail the schema's checks.</b>
+          <span class="muted"> Applying keeps each failure as a flag on its page; it is applied only by a named reviewer.</span>
+          @for (p of failingPages(c); track p) {
+            <p><b>{{ p }}</b></p>
+            <ul>@for (f of c.check_failures[p]; track $index) { <li class="small">{{ f }}</li> }</ul>
+          }
+        </div>
+      }
       @if (outcome(); as o) {
         <div class="card">
           <b>Applied {{ o.applied?.length ?? 0 }}</b>
@@ -61,6 +79,7 @@ import { Markdown } from '../../shared/markdown';
   styles: `.head { margin: 8px 0 12px; } h2 { margin: 0; font: var(--mat-sys-title-large); }`,
 })
 export class WikiChangeset {
+  failingPages(c: any): string[] { return Object.keys(c?.check_failures ?? {}); }
   private api = inject(Api);
   readonly w = input.required<string>();
   readonly id = input.required<string>();
@@ -68,6 +87,7 @@ export class WikiChangeset {
   readonly busy = signal(false);
   readonly error = signal('');
   readonly outcome = signal<any>(null);
+  reviewer = '';
 
   constructor() { effect(() => { void this.load(); }); }
 
@@ -86,6 +106,6 @@ export class WikiChangeset {
       this.busy.set(false);
     }
   }
-  apply(force: boolean) { return this.act(() => this.api.post(`${this.url()}/apply`, {}, { force })); }
-  discard() { return this.act(() => this.api.post(`${this.url()}/discard`)); }
+  apply(force: boolean) { return this.act(() => this.api.post(`${this.url()}/apply`, {}, { force, reviewer: this.reviewer.trim() })); }
+  discard() { return this.act(() => this.api.post(`${this.url()}/discard`, {}, { reviewer: this.reviewer.trim() })); }
 }

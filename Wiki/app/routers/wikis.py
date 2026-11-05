@@ -11,7 +11,8 @@ from pydantic import BaseModel, Field
 
 from ..db import get_pool
 from ..ops import copywiki
-from ..wiki import store
+from ..ops.answering import ready as answering_ready
+from ..wiki import checks, store
 from .deps import wiki_dep
 
 router = APIRouter(tags=["wikis"])
@@ -100,7 +101,12 @@ async def get_wiki(wiki: dict = Depends(wiki_dep)):
                from (select 1) x left join lateral (select id, applied_at from wiki.changesets
                      where wiki_id = %(w)s and status = 'applied' order by applied_at desc limit 1) c on true""",
             {"w": wiki["id"]})).fetchone()
-    return {**wiki, **state}
+    chk = checks.load(wiki["schema_md"])
+    # what the schema gives the answer side: the Sources setting's label (none: the setting is not available), and
+    # whether answers are laid out and checked as its Workflow: Answer and check sets out
+    answering = {"standard_only": (chk.standard_only if chk else "") or None, "checked": answering_ready(chk),
+                 "verdicts": chk.verdicts if chk else []}
+    return {**wiki, **state, "answering": answering}
 
 
 @router.delete("/wikis/{w}", status_code=204)

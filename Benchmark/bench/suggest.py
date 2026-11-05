@@ -121,7 +121,7 @@ class Finder:
             slug = self.by_file.get(h["filename"])
             if slug and (hit := self.lib.find(h["para_ref"], slug)):
                 out.append({"paragraph": h["para_ref"], "source": slug, "document": self.lib.names[slug],
-                            "tier": self.lib.tiers[slug], "text": hit[0][1]})
+                            "tier": self.lib.tier(slug, h["para_ref"]), "text": hit[0][1]})
         return out
 
     async def find(self, text: str) -> list[dict]:
@@ -151,7 +151,7 @@ class Finder:
 
     def lookup(self, label: str) -> list[dict]:
         """A paragraph named in a reason (e.g. "5.5.1"), in any ticked document."""
-        return [{"paragraph": label, "source": slug, "document": self.lib.names[slug], "tier": self.lib.tiers[slug], "text": text}
+        return [{"paragraph": label, "source": slug, "document": self.lib.names[slug], "tier": self.lib.tier(slug, label), "text": text}
                 for slug, text in self.lib.find(label)]
 
 

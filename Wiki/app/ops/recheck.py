@@ -10,23 +10,28 @@ from ..db import get_pool
 from ..jobs import JobContext
 from ..wiki import checks, store
 from ..wiki.store import Op
-from . import fixpass
-from .ingest import (_covers, _fix_breaks, _index_md, _section_for, _sections, _split_also, _with_also, _without_empty_text,
-                     split_written)
+from . import fixpass, pagecheck
+from .ingest import (use_schema_headings, _covers, _fix_breaks, _listed, _quoted, _section_for, _sections, _source_paths, _split_also,
+                     _with_also, _without_empty_text, section_index, split_written)
 
 log = logging.getLogger(__name__)
 CITE = re.compile(r"\[\[(source-[^\]|#]+)(?:#[^\]|]*)?\|([^\]]+)\]\]")
 BASE = lambda label: re.sub(r"(?:\s*\([^)]*\))+$", "", label.strip())  # 5.5.17(a) -> 5.5.17
 
 
-async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
+async def run(ctx: JobContext, wiki: dict, mode: str = "auto", only: list[str] | None = None) -> dict:
+    """only: the pages to check (every page when None); the others are read as they stand. A page's checks still
+    failing go with the changeset (held for review, and flagged on the page once applied); a page flagged before that
+    now passes, unchanged, is saved as it is so its flag clears."""
     wiki_id, schema = wiki["id"], wiki["schema_md"]
     chk = checks.load(schema)
+    use_schema_headings(chk)
     if chk is None:
         return {"skipped": "the schema has no Checks section"}
     sections = _sections(schema)
     pages = [p for p in await store.list_pages(wiki_id, with_content=True) if p["type"] != "synthesis"]
     cite_ctx = await fixpass.cite_context(wiki_id, [x["name"] for x in sections])
+    paths = await _source_paths(wiki_id, checks.footnote_form(chk), _listed(chk), chk)  # for the examples index's lines
     async with get_pool().connection() as conn:
         rows = await (await conn.execute("select slug, text, meta from wiki.sources where wiki_id = %s", (wiki_id,))).fetchall()
     src = {}
@@ -59,6 +64,14 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
                 times.setdefault(f"{slug}|{BASE(label)}", {}).setdefault(x["slug"], 0)
                 times[f"{slug}|{BASE(label)}"][x["slug"]] += 1
     write_up = {k: {sl for sl, n in v.items() if n == max(v.values())} for k, v in times.items()}
+    # what each page holds: as its uploads recorded it; a wiki written before that was kept, the page citing it most
+    held = await store.held_paragraphs(wiki_id)
+    if not held:
+        for k, pages_of in write_up.items():
+            for sl in pages_of:
+                held.setdefault(sl, {}).setdefault(k.split("|", 1)[0], set()).add(k.split("|", 1)[1])
+    check_srcs = await pagecheck.sources(wiki_id)
+    issuers = {sl: ((v.get("fields") or {}).get("issuer") or "").strip() for sl, v in src.items()}  # an opener's <issuer>
     await ctx.progress(stage="check", pages=len(pages))
     record: list[dict] = []
 
@@ -90,10 +103,9 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
     async def one(p: dict) -> Op | None:
         if p["slug"] in index_pages and checks.holds_no_claims(chk, p["slug"], True):
             # a split section's index holds no claims: rebuilt from its subtopic pages, in the order it listed them
-            subs = sorted((x for x in pages if x["type"] == "subtopic" and x["slug"].startswith(p["slug"] + "-")),
-                          key=lambda x: p["content_md"].find(f"[[{x['slug']}") % (len(p["content_md"]) + 1))
-            sec = _section_for(sections, p["title"], p["slug"])
-            content, summary = _index_md(sec["name"] if sec else p["title"], subs, cite_ctx["titles"])
+            subs = [x for x in pages if x["type"] == "subtopic" and x["slug"].startswith(p["slug"] + "-")]
+            sec = _section_for(sections, p["title"], p["slug"]) or {"name": p["title"], "num": None}
+            content, summary = section_index(sec, subs, p["content_md"], cite_ctx["titles"], paths, chk, cite_ctx["labels"])
             if content.strip() == p["content_md"].strip():
                 return None
             return Op(op="update", slug=p["slug"], title=p["title"], type=p["type"], summary=summary, content_md=content,
@@ -105,29 +117,29 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
         if dropped:
             log.info("re-check: page %s: %s lines written up from skipped passages removed", p["slug"], dropped)
         cite_check = lambda x: fixpass.cite_failures(x, cite_ctx, chk)
-        kind, given, may_shrink, may_grow = "citations", {}, False, False
+        kind, given, may_shrink, may_grow, quote = "citations", {}, False, False, None
         if p["type"] == "source" and p["slug"] in src:
             s = src[p["slug"]]
-            # the sections this source informs: section pages (or their subtopic pages) that cite it
-            informed = {sl for sl in section_pages if any(f"[[{p['slug']}|" in x["content_md"] for x in pages
+            # the sections this source informs: section pages (or their subtopic pages) that hold a write-up of one of
+            # its paragraphs, or record one on an "Also recorded here" line
+            informed = {sl for sl in section_pages if any(held.get(x["slug"], {}).get(p["slug"]) or f"[[{p['slug']}|" in
+                                                          "\n".join(_split_also(x["content_md"])[1]) for x in pages
                                                           if x["slug"] == sl or x["slug"].startswith(sl + "-"))}
             args = dict(fields=s["fields"], authority=checks.authority_sentences(s["text"], chk), informed=informed,
-                        sections=section_pages, source_slug=p["slug"], c=chk, labels=cite_ctx["labels"].get(p["slug"], set()))
+                        sections=section_pages, source_slug=p["slug"], c=chk, labels=cite_ctx["labels"].get(p["slug"], set()),
+                        source_text=s["text"])
             check = lambda x: checks.source_failures(x, **args)[0] + cite_check(x)
-            kind, may_shrink, sources_text = "source page", True, "\n\n".join(args["authority"])
+            kind, may_shrink, sources_text = "source page", True, "\n\n".join(checks.authority_context(s["text"], chk))
             body = checks.detail_lines(body, chk)
         elif p["type"] in ("topic", "subtopic") and p["slug"] not in index_pages:
             given = cited(body)
-
-            def check(x: str) -> list[str]:
-                out = []
-                for slug, paras in given.items():
-                    out += checks.section_failures(x, paras, src[slug]["kinds"], slug, chk, _covers, cite_ctx["labels"].get(slug, set()),
-                                                   holds=lambda ref, slug=slug: p["slug"] in write_up.get(f"{slug}|{ref}", {p["slug"]}))
-                if not checks.absence_allowed_on(chk, p["type"], p["title"]):
-                    out += checks.absence_failures(x, chk, "\n\n".join(b for paras in given.values() for b in paras))
-                return out + checks.repeat_failures(x) + cite_check(x)
+            check = pagecheck.section_check(chk=chk, covers=lambda label, ref: _covers(label, ref, not chk.range_ends), srcs=check_srcs, held=held.get(p["slug"], {}), cite_ctx=cite_ctx,
+                                            absence_allowed=checks.absence_allowed_on(chk, p["type"], p["title"]))
             kind, sources_text = "section", "\n\n".join(b for paras in given.values() for b in paras)
+            # as on an upload: a paragraph whose write-up still fails after the two rounds is quoted in full
+            quote = lambda text, ref, sl, fails: _quoted(text, ref, sl, check_srcs.get(sl, {}).get("by_label", {}), chk,
+                                                         check_srcs.get(sl, {}).get("kinds", {}), paths.get(sl, {}).get("printed", {}),
+                                                         issuers.get(sl, ""), fails) if sl else None
         elif checks.holds_no_claims(chk, p["slug"]):  # a claim already on the page that holds its paragraph is dropped here
             holders = {x["slug"]: checks.cites(x["content_md"]) for x in pages if x["type"] in ("topic", "subtopic")
                        and x["slug"] not in index_pages and x["slug"] not in chk.no_claim_pages}
@@ -138,10 +150,12 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
             kind, sources_text, may_grow = "no claims", "", True
         else:  # a split section's index, composed pages: their citations only
             check, sources_text = cite_check, ""
+        tidy = lambda x: fixpass.names_no_location(fixpass.normalise_labels(x, cite_ctx), cite_ctx, chk)
         new = await fixpass.fix_rounds(
-            schema=schema, slug=p["slug"], title=p["title"], text=body, check=check, sources_text=sources_text,
+            schema=schema, slug=p["slug"], title=p["title"], text=tidy(body), check=check, sources_text=sources_text,
             linkable=linkable, kind=kind, record=record, may_shrink=may_shrink, may_grow=may_grow, clause=lambda c: fixpass.is_clause(c, cite_ctx),
-            parse=(lambda r: checks.detail_lines(_fix_breaks(r).strip(), chk)) if kind == "source page" else (lambda r: _fix_breaks(r).strip()))
+            quote=quote, parse=(lambda r: checks.detail_lines(tidy(_fix_breaks(r).strip()), chk)) if kind == "source page"
+            else (lambda r: tidy(_fix_breaks(r).strip())))
         content = _with_also(new, also_lines) if also_lines else new
         if content.strip() == p["content_md"].strip():
             return None
@@ -151,16 +165,37 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
         return Op(op="update", slug=p["slug"], title=p["title"], type=p["type"], summary=p["summary"], content_md=content,
                   tags=p["tags"] or [], base_version=p["version"], change_note=note)
 
-    ops = [o for o in await llm.gather_limited([one(p) for p in pages]) if o]
+    flagged = set()
+    async with get_pool().connection() as conn:
+        flagged = {r["slug"] for r in await (await conn.execute(
+            "select p.slug from wiki.page_flags f join wiki.pages p on p.id = f.page_id "
+            "where p.wiki_id = %s and f.kind = 'check_failures'", (wiki_id,))).fetchall()}
+    todo = [p for p in pages if only is None or p["slug"] in set(only)]
+    ops = [o for o in await llm.gather_limited([one(p) for p in todo]) if o]
+    left: dict[str, list[str]] = {}
+    for r in record:  # each page's checks still failing
+        if r.get("still"):
+            left.setdefault(r["page"], []).extend(r.get("left") or r.get("failures") or [])
+    for p in todo:  # flagged before, passing now, unchanged: saved as it is, so its flag clears
+        if p["slug"] in flagged and p["slug"] not in left and p["slug"] not in {o.slug for o in ops}:
+            ops.append(Op(op="update", slug=p["slug"], title=p["title"], type=p["type"], summary=p["summary"],
+                          content_md=p["content_md"], tags=p["tags"] or [], base_version=p["version"],
+                          change_note="Re-check: passes its checks; its flag clears"))
     # the schema's rule after writing: a page over the size limit by more than its margin is split again
     now = {p["slug"]: dict(p) for p in pages} | {o.slug: {**next(p for p in pages if p["slug"] == o.slug), "content_md": o.content_md,
                                                          "summary": o.summary} for o in ops}
     more, resplit = await split_written(wiki_id, chk, sections, now, {sl for sl, p in now.items() if p["type"] in ("topic", "subtopic")})
     for x in more:
         ops = [o for o in ops if o.slug != x.slug] + [x]
+    if resplit:  # a split page's pieces hold what it held and they cite
+        pagecheck.held_after_split(held, resplit, {o.slug: o.content_md or "" for o in ops})
+        for o in ops:
+            if o.type in ("topic", "subtopic") and o.slug in held:
+                o.holds = pagecheck.as_holds(held[o.slug])
     await ctx.progress(stage="commit")
-    result = await store.commit(wiki_id, "check", "Re-check: page checks", ops, mode, job_id=ctx.id)
+    result = await store.commit(wiki_id, "check", "Re-check: page checks", ops, mode, job_id=ctx.id,
+                                failures={sl: list(dict.fromkeys(fs)) for sl, fs in left.items() if sl in {o.slug for o in ops}})
     await store.add_log(wiki_id, "check", "Re-check of every page",
                         "\n".join(f"- [[{o.slug}]]: {o.change_note}" for o in ops) or "No page needed a change.")
-    return {"mode": mode, "pages_checked": len(pages), "pages_changed": [o.slug for o in ops], "check_fixes": record, "resplit": resplit,
+    return {"mode": mode, "pages_checked": len(todo), "still_failing": left, "pages_changed": [o.slug for o in ops], "check_fixes": record, "resplit": resplit,
             **{k: v for k, v in result.items() if k != "ops"}}

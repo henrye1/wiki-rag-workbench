@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from uuid import UUID
 
 import numpy as np
+from psycopg.types.json import Jsonb
 
 from .. import llm, storage
 from ..config import get_settings
@@ -84,6 +85,18 @@ async def backlinks(wiki_id: UUID, slug: str) -> list[dict]:
         ).fetchall()
 
 
+async def held_paragraphs(wiki_id: UUID) -> dict[str, dict[str, set[str]]]:
+    """page slug -> source slug -> the paragraphs whose write-up the page holds, where an upload recorded them."""
+    async with get_pool().connection() as conn:
+        rows = await (await conn.execute(
+            """select p.slug page, s.slug source, ps.held from wiki.page_sources ps join wiki.pages p on p.id = ps.page_id
+               join wiki.sources s on s.id = ps.source_id where p.wiki_id = %s and ps.held is not null""", (wiki_id,))).fetchall()
+    out: dict[str, dict[str, set[str]]] = {}
+    for r in rows:
+        out.setdefault(r["page"], {})[r["source"]] = set(r["held"])
+    return out
+
+
 async def page_sources(page_id: UUID) -> list[dict]:
     async with get_pool().connection() as conn:
         return await (
@@ -119,23 +132,26 @@ class Op:
     tags: list[str] = field(default_factory=list)
     base_version: int | None = None
     change_note: str = ""
+    holds: dict[str, list[str]] | None = None  # source slug -> its paragraphs whose write-up the page holds (those named)
 
 
 async def create_changeset(
-    wiki_id: UUID, kind: str, summary: str, ops: list[Op], job_id: UUID | None = None, source_id: UUID | None = None
+    wiki_id: UUID, kind: str, summary: str, ops: list[Op], job_id: UUID | None = None, source_id: UUID | None = None,
+    failures: dict[str, list[str]] | None = None,
 ) -> UUID:
     async with get_pool().connection() as conn, conn.transaction():
         cs = await (
             await conn.execute(
-                "insert into wiki.changesets (wiki_id, job_id, source_id, kind, summary) values (%s,%s,%s,%s,%s) returning id",
-                (wiki_id, job_id, source_id, kind, summary),
+                "insert into wiki.changesets (wiki_id, job_id, source_id, kind, summary, check_failures) values (%s,%s,%s,%s,%s,%s) returning id",
+                (wiki_id, job_id, source_id, kind, summary, Jsonb(failures) if failures else None),
             )
         ).fetchone()
         async with conn.cursor() as cur:
             await cur.executemany(
-                """insert into wiki.changeset_ops (changeset_id, op, slug, title, type, summary, content_md, tags, base_version, change_note)
-                   values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                [(cs["id"], o.op, o.slug, o.title, o.type, o.summary, o.content_md, o.tags, o.base_version, o.change_note) for o in ops],
+                """insert into wiki.changeset_ops (changeset_id, op, slug, title, type, summary, content_md, tags, base_version, change_note, holds)
+                   values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                [(cs["id"], o.op, o.slug, o.title, o.type, o.summary, o.content_md, o.tags, o.base_version, o.change_note,
+                  Jsonb(o.holds) if o.holds is not None else None) for o in ops],
             )
     return cs["id"]
 
@@ -151,8 +167,9 @@ async def get_changeset(changeset_id: UUID) -> tuple[dict, list[dict]]:
     return cs, ops
 
 
-async def apply_changeset(changeset_id: UUID, force: bool = False) -> dict:
-    """Apply a pending changeset. Ops whose page changed since they were written are skipped as conflicts unless force."""
+async def apply_changeset(changeset_id: UUID, force: bool = False, reviewer: str | None = None) -> dict:
+    """Apply a pending changeset. Ops whose page changed since they were written are skipped as conflicts unless force.
+    reviewer: the named reviewer who applies it, recorded with it (a held upload is applied only by one)."""
     cs, op_rows = await get_changeset(changeset_id)
     if cs["status"] != "pending":
         raise ValueError(f"Changeset is {cs['status']}")
@@ -218,9 +235,29 @@ async def apply_changeset(changeset_id: UUID, force: bool = False) -> dict:
                 await conn.execute(
                     "insert into wiki.page_sources (page_id, source_id) values (%s,%s) on conflict do nothing", (pid, cs["source_id"])
                 )
+            for src_slug, labels in (o.holds or {}).items():  # the write-ups the page holds, for each source named
+                await conn.execute(
+                    """insert into wiki.page_sources (page_id, source_id, held) select %s, s.id, %s from wiki.sources s
+                       where s.wiki_id = %s and s.slug = %s on conflict (page_id, source_id) do update set held = excluded.held""",
+                    (pid, list(labels), wiki_id, src_slug))
             applied.append({"slug": o.slug, "op": action, "version": row["version"]})
         await conn.execute("update wiki.changesets set status='applied', applied_at=now() where id=%s", (changeset_id,))
+        if reviewer:
+            await conn.execute("update wiki.changesets set reviewer=%s, reviewed_at=now() where id=%s", (reviewer, changeset_id))
         applied_slugs = {a["slug"] for a in applied}
+        # the checks a held ingest still failed stay on its pages, as each page's flag, until a later change fixes them
+        failing = cs.get("check_failures") or {}
+        for a in applied:
+            if a["op"] == "delete":
+                continue
+            pid = (await (await conn.execute("select id from wiki.pages where wiki_id = %s and slug = %s", (wiki_id, a["slug"]))).fetchone())["id"]
+            if a["slug"] in failing:
+                await conn.execute(
+                    """insert into wiki.page_flags (page_id, kind, detail) values (%s, 'check_failures', %s)
+                       on conflict (page_id, kind) do update set detail = excluded.detail, updated_at = now()""",
+                    (pid, Jsonb({"failures": failing[a["slug"]], "changeset": str(changeset_id)})))
+            else:
+                await conn.execute("delete from wiki.page_flags where page_id = %s and kind = 'check_failures'", (pid,))
         to_check = await saved.flag_changed(conn, wiki_id, {k: v for k, v in changes.items() if k in applied_slugs},
                                             cs["summary"] or cs["kind"])
         detail = "\n".join(f"- {a['op']} [[{a['slug']}]]" for a in applied)
@@ -254,8 +291,9 @@ async def _reindex_page(conn, wiki_id: UUID, page_id: UUID, md: str, chunks: lis
         )
 
 
-async def discard_changeset(changeset_id: UUID) -> str | None:
-    """Discard a pending changeset. For an ingest, the source is removed too (if no page uses it) so it can be re-ingested."""
+async def discard_changeset(changeset_id: UUID, reviewer: str | None = None) -> str | None:
+    """Discard a pending changeset. For an ingest, the source is removed too (if no page uses it) so it can be re-ingested.
+    reviewer: the named reviewer who discards it, recorded with it."""
     async with get_pool().connection() as conn, conn.transaction():
         cs = await (
             await conn.execute(
@@ -265,6 +303,8 @@ async def discard_changeset(changeset_id: UUID) -> str | None:
         ).fetchone()
         if not cs:
             raise ValueError("Changeset not found or not pending")
+        if reviewer:
+            await conn.execute("update wiki.changesets set reviewer=%s, reviewed_at=now() where id=%s", (reviewer, changeset_id))
         if cs["kind"] == "ingest" and cs["source_id"]:
             row = await (
                 await conn.execute(
@@ -297,11 +337,14 @@ async def remove_file(file: dict | None, conn=None):
 
 
 async def commit(wiki_id: UUID, kind: str, summary: str, ops: list[Op], mode: str,
-                 job_id: UUID | None = None, source_id: UUID | None = None) -> dict:
-    """Create a changeset and apply it now (auto) or leave it pending (review)."""
+                 job_id: UUID | None = None, source_id: UUID | None = None, failures: dict[str, list[str]] | None = None) -> dict:
+    """Create a changeset and apply it now (auto) or leave it pending (review). failures: the checks its pages still
+    fail (page -> failures); a changeset with any is held for review whatever the mode, and applying it flags them."""
     if not ops:
         return {"changeset_id": None, "status": "empty"}
-    cs_id = await create_changeset(wiki_id, kind, summary, ops, job_id, source_id)
+    cs_id = await create_changeset(wiki_id, kind, summary, ops, job_id, source_id, failures)
+    if mode == "auto" and failures:
+        return {"changeset_id": str(cs_id), "status": "held", "held_for": failures, "ops": [{"op": o.op, "slug": o.slug} for o in ops]}
     if mode == "auto":
         res = await apply_changeset(cs_id)
         return {**res, "status": "applied"}
@@ -325,18 +368,22 @@ async def render_index(wiki: dict) -> str:
     return "\n".join(lines)
 
 
-async def compact_index(wiki_id: UUID, limit_chars: int = 60000, exclude_types: tuple[str, ...] = ()) -> str:
-    """Compact catalog for LLM prompts: slug | type | title | summary."""
+async def compact_index(wiki_id: UUID, exclude_types: tuple[str, ...] = ()) -> str:
+    """Compact catalog for LLM prompts: slug | type | title | summary, one line per page, every page (never cut: a step
+    that chooses from a list too long for one call is given it in parts, index_parts)."""
     pages = [p for p in await list_pages(wiki_id) if p["type"] not in exclude_types]
-    out, size = [], 0
-    for p in pages:
-        line = f"{p['slug']} | {p['type']} | {p['title']} | {p['summary']}"
-        size += len(line)
-        if size > limit_chars:
-            out.append(f"... ({len(pages) - len(out)} more pages not shown)")
-            break
-        out.append(line)
-    return "\n".join(out) or "(wiki is empty)"
+    return "\n".join(f"{p['slug']} | {p['type']} | {p['title']} | {p['summary']}" for p in pages) or "(wiki is empty)"
+
+
+def index_parts(index: str, max_chars: int) -> list[str]:
+    """A page list in parts of at most max_chars (whole lines; a longer line is a part of its own): every page in one."""
+    parts, cur = [], []
+    for line in index.split("\n"):
+        if cur and sum(len(x) + 1 for x in cur) + len(line) > max_chars:
+            parts.append("\n".join(cur))
+            cur = []
+        cur.append(line)
+    return parts + (["\n".join(cur)] if cur else [])
 
 
 async def render_log(wiki: dict, limit: int = 500) -> str:

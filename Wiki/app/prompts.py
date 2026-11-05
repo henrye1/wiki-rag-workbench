@@ -19,7 +19,7 @@ NOTES_SCHEMA = {
         "summary": {"type": "string", "description": "2-4 sentence summary of this section"},
         "claims": {
             "type": "array",
-            "description": "Statements the source itself ASSERTS as fact (rules, definitions, numbers). Keep location labels like [5.5.3] or [page 4] if present. Never turn a question, request or hypothesis into a claim.",
+            "description": "Statements the source itself ASSERTS as fact (rules, definitions, numbers). Keep location labels like [<paragraph label>] or [page 4] if present. Never turn a question, request or hypothesis into a claim.",
             "items": {"type": "string"},
         },
         "open_questions": {
@@ -40,13 +40,24 @@ NOTES_SCHEMA = {
 }
 
 
-def notes_prompt(source_title: str, idx: int, total: int, section: str) -> str:
+def notes_schema(open_questions: bool = True) -> dict:
+    """The notes' reply schema; without open questions where the schema's pages record none (fixed sections)."""
+    if open_questions:
+        return NOTES_SCHEMA
+    return {**NOTES_SCHEMA, "properties": {k: v for k, v in NOTES_SCHEMA["properties"].items() if k != "open_questions"},
+            "required": [k for k in NOTES_SCHEMA["required"] if k != "open_questions"]}
+
+
+def notes_prompt(source_title: str, idx: int, total: int, section: str, open_questions: bool = True) -> str:
+    """open_questions: whether the notes record the questions a source raises (a schema without fixed sections)."""
     return (
         f"Source: {source_title} (section {idx} of {total}).\n"
         "Extract notes for building wiki pages: a short summary; the claims the source itself asserts (complete, precise, "
-        "with every condition); the questions/requests it poses without answering (as open questions, not claims); "
-        "and the entities and concepts that deserve or relate to wiki pages. "
-        "If the source is mainly a questionnaire, checklist or instructions, most content belongs in open_questions. "
+        "with every condition); "
+        + ("the questions/requests it poses without answering (as open questions, not claims); " if open_questions else "")
+        + "and the entities and concepts that deserve or relate to wiki pages. "
+        + ("If the source is mainly a questionnaire, checklist or instructions, most content belongs in open_questions. "
+           if open_questions else "") +
         "Follow the wiki schema for what to capture and how to label it.\n\n"
         f"<section>\n{section}\n</section>"
     )
@@ -77,7 +88,8 @@ PLAN_SCHEMA = {
 }
 
 
-def plan_prompt(source_title: str, source_slug: str, notes: str, index: str, candidates: str, max_pages: int) -> str:
+def plan_prompt(source_title: str, source_slug: str, notes: str, index: str, candidates: str, max_pages: int,
+                open_questions: bool = True) -> str:
     return (
         f"A new source has been added: \"{source_title}\" (its source page will be [[{source_slug}]], written separately).\n"
         f"Decide which wiki pages to create or update so the wiki integrates this source. At most {max_pages} pages.\n"
@@ -86,7 +98,8 @@ def plan_prompt(source_title: str, source_slug: str, notes: str, index: str, can
         "- Always include the `overview` page (create it if missing, otherwise update it).\n"
         "- If the schema defines a fixed list of sections, include one page for every section.\n"
         "- Do not include the source page itself.\n"
-        "- Do not create a page whose content would come only from open questions; those belong on the source page.\n\n"
+        + ("- Do not create a page whose content would come only from open questions; those belong on the source page.\n"
+           if open_questions else "") + "\n"
         f"<current_index>\nslug | type | title | summary\n{index}\n</current_index>\n\n"
         f"<related_existing_pages>\n{candidates}\n</related_existing_pages>\n\n"
         f"<source_notes>\n{notes}\n</source_notes>"
@@ -118,16 +131,27 @@ FILL_SCHEMA = {
 }
 
 
+OPENS_NOTE = "(opens: {})"  # after a paragraph's label: the schema's opener(s) for its kind
+
+
+def opens_note(forms: list[str]) -> str:
+    """The note after a paragraph's label giving the schema's openers for its kind, word for word."""
+    return OPENS_NOTE.format(" or ".join(f'"{f}"' for f in forms))
+
+
 def write_page_prompt(
     *, slug: str, title: str, ptype: str, focus: str, existing_md: str | None, material: str,
     linkable: str, source_slug: str | None, source_paragraphs: str | None = None,
     background_paragraphs: str | None = None, auto_gaps: bool = False,
     part: tuple[int, int] | None = None, earlier_parts: str = "", fill: bool = False, others_md: str | None = None,
+    open_questions: bool = True,
 ) -> str:
+    """open_questions: whether a page may record the questions a source raises (a schema without fixed sections)."""
     cite = (
         f"The source page is [[{source_slug}]]; cite it exactly as the wiki schema requires. "
-        "Only state as fact what the source paragraphs or the Claims in the material support; material listed under Open "
-        "questions may be recorded as open questions the source raises, never as facts.\n"
+        "Only state as fact what the source paragraphs or the Claims in the material support"
+        + ("; material listed under Open questions may be recorded as open questions the source raises, never as facts.\n"
+           if open_questions else ".\n")
         if source_slug else ""
     )
     if background_paragraphs and source_paragraphs:
@@ -147,7 +171,8 @@ def write_page_prompt(
     )
     paragraphs = (
         "<source_paragraphs>\nThe source's own text for this page, each paragraph labelled with its [paragraph number], "
-        "in document order. Write from these first; use the material for context.\n\n"
+        "in document order. Write from these first; use the material for context. Where a label is followed by "
+        f"{OPENS_NOTE.format('...')}, every sentence written from that paragraph opens with it, as given.\n\n"
         f"{source_paragraphs}\n</source_paragraphs>\n\n"
         if source_paragraphs else ""
     )
@@ -243,6 +268,19 @@ def fix_page_prompt(*, slug: str, title: str, content_md: str, failures: list[st
     )
 
 
+def fix_part_prompt(*, slug: str, title: str, part_md: str, failures: list[str], source_paragraphs: str, linkable: str) -> str:
+    """One paragraph of a page sent back on its own, with its failures."""
+    return (
+        f"Below is one paragraph of the wiki page `{slug}` (\"{title}\"). It does not follow the wiki schema in the places "
+        "listed in <failures>. Return only this paragraph, with those places fixed as the schema requires. Change "
+        "nothing else: keep every other sentence, link and citation as it is, and add no heading or other paragraph.\n\n"
+        f"<failures>\n" + "\n".join(f"- {f}" for f in failures) + "\n</failures>\n\n"
+        f"<linkable_pages>\n{linkable}\n</linkable_pages>\n\n"
+        f"<source_paragraphs>\n{source_paragraphs}\n</source_paragraphs>\n\n"
+        f"<paragraph>\n{part_md}\n</paragraph>"
+    )
+
+
 # ---------- ingest: route paragraphs to sections ----------
 
 ROUTE_SCHEMA = {
@@ -261,6 +299,15 @@ ROUTE_SCHEMA = {
 }
 
 
+def route_schema(nums) -> dict:
+    """ROUTE_SCHEMA with the section held to the numbers offered: a section not offered (the examples section) cannot be
+    answered, so no paragraph is dropped for naming one."""
+    items = ROUTE_SCHEMA["properties"]["assignments"]["items"]
+    section = {**items["properties"]["section"], "enum": sorted(nums)}
+    return {**ROUTE_SCHEMA, "properties": {"assignments": {
+        **ROUTE_SCHEMA["properties"]["assignments"], "items": {**items, "properties": {**items["properties"], "section": section}}}}}
+
+
 # ---------- ingest: "also record here" sections (additive) ----------
 
 ALSO_SCHEMA = {
@@ -270,11 +317,15 @@ ALSO_SCHEMA = {
 }
 
 
-def also_prompt(brief: str, lines: str) -> str:
+def also_prompt(brief: str, lines: str, what: str = "") -> str:
+    """what: what the schema's Also recorded list says is recorded on this section's page."""
     return (
         "The section below is an \"also record here\" section: a paragraph stays on its own section's page and is ALSO "
-        "recorded here. From the paragraphs below, return the ids of those the section brief says are recorded here. "
-        "Leave out the others.\n\n"
+        "recorded here. From the paragraphs below, return the ids of those "
+        + (f"that, by their own words, are what the schema's Also recorded list says is recorded here: {what}. The "
+           "section brief is given for context only: a paragraph is not recorded here because the brief's \"Belongs "
+           "here\" covers its subject, and a paragraph that only mentions or comments on such a point does not make it."
+           if what else "the section brief says are recorded here.") + " Leave out the others.\n\n"
         f"<section_brief>\n{brief}\n</section_brief>\n\n<paragraphs>\nid | text\n{lines}\n</paragraphs>"
     )
 
@@ -291,8 +342,34 @@ ALSO_DECLINE_SCHEMA = {
 }
 
 
-def also_record_prompt(*, slug: str, title: str, items: str, linkable: str, source_slug: str, brief: str | None = None) -> str:
-    """brief: the page's section brief, given when the writer may decline a paragraph the brief does not record here."""
+ALSO_DECIDE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "record": {"type": "boolean", "description": "Whether the page brief records this paragraph here"},
+        "line": {"type": "string", "description": "Its one line, when it is recorded here; else empty"},
+        "why": {"type": "string", "description": "Why the page brief does not record it here, when it is not; else empty"},
+    },
+    "required": ["record", "line", "why"],
+}
+
+
+def also_decide_prompt(*, slug: str, title: str, item: str, linkable: str, source_slug: str, brief: str, what: str = "") -> str:
+    """One paragraph marked to be also recorded on a page, which got neither a line nor a reason: decide, either way."""
+    return (
+        f"The paragraph below was marked to be ALSO recorded on the wiki page `{slug}` (\"{title}\"), as one short line. "
+        "Decide, by the page brief below" + (f" (what is recorded here: {what})" if what else "") + ": either it is "
+        "recorded here (record = true) and you write its one line, or it is not (record = false) and you say why in a "
+        "few words. Exactly one of the two.\n"
+        f"Its line, if any, is a markdown bullet: the point in a few words, opening as its paragraph's kind requires, "
+        f"then a link to its main page, then [[{source_slug}|<paragraph number>]], cited exactly as the wiki schema requires.\n\n"
+        f"<page_brief>\n{brief}\n</page_brief>\n\n<linkable_pages>\n{linkable}\n</linkable_pages>\n\n<paragraph>\n{item}\n</paragraph>"
+    )
+
+
+def also_record_prompt(*, slug: str, title: str, items: str, linkable: str, source_slug: str, brief: str | None = None,
+                       what: str = "") -> str:
+    """brief: the page's section brief, given when the writer may decline a paragraph the brief does not record here.
+    what: what the schema's Also recorded list says is recorded on this page (schemas before that list: none)."""
     decline = (
         "A paragraph that the page brief below does not record here gets no line: list its paragraph number in "
         "not_recorded, with the reason in a few words. It stays written up on its main page.\n"
@@ -302,9 +379,12 @@ def also_record_prompt(*, slug: str, title: str, items: str, linkable: str, sour
         "its main page (named after it) and is ALSO recorded here, without repeating it.\n" + decline +
         f"Every paragraph in <paragraphs> comes from the source [[{source_slug}]]. Cite each one to that source, as "
         f"[[{source_slug}|<paragraph number>]], and never to any other source page.\n"
-        f"For each paragraph{' it records' if brief else ''} write exactly ONE line, as a markdown bullet: what the entity decides, presumes, elects or "
-        "estimates, in a few words, then a link to its main page, then the paragraph's citation, e.g.\n"
-        f"- Policy choice: measure the loss allowance at lifetime expected credit losses: see [[main-page-slug]] [[{source_slug}|5.5.15]]\n"
+        + (f"For each paragraph{' it records' if brief else ''} write exactly ONE line, as a markdown bullet: the point "
+           f"recorded here ({what}), named in a few words, then a link to its main page, then the paragraph's citation, as\n"
+           f"- <the point, in a few words>: see [[<main page slug>]] [[{source_slug}|<paragraph number>]]\n" if what else
+           f"For each paragraph{' it records' if brief else ''} write exactly ONE line, as a markdown bullet: what the entity decides, presumes, elects or "
+           "estimates, in a few words, then a link to its main page, then the paragraph's citation, as\n"
+           f"- <the decision point, in a few words>: see [[<main page slug>]] [[{source_slug}|<paragraph number>]]\n") +
         "Cite each paragraph exactly as the wiki schema requires, with its paragraph number. Nothing else: no heading, no "
         "introduction, no full restatement.\n\n"
         f"<linkable_pages>\n{linkable}\n</linkable_pages>\n\n<paragraphs>\n{items}\n</paragraphs>"
@@ -362,8 +442,7 @@ def index_prompt_focus(name: str) -> str:
 def route_prompt(briefs: str, lines: str, outline: str = "", note: str = "") -> str:
     return (
         "Assign each source paragraph to the ONE section whose brief says it belongs there (follow the briefs' hand-off "
-        "rules). That section's page is the only one that writes it up. Return every id exactly once, with its section number. "
-        "Keep a topic together: paragraphs under the same heading go to the same section unless a brief hands one off.\n"
+        "rules). That section's page is the only one that writes it up. Return every id exactly once, with its section number.\n"
         f"{note}\n"
         + (f"<source_outline>\nNumbered headings of the source:\n{outline}\n</source_outline>\n\n" if outline else "")
         + f"<section_briefs>\n{briefs}\n</section_briefs>\n\n<paragraphs>\nid | heading | text\n{lines}\n</paragraphs>"

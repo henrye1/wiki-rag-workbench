@@ -395,6 +395,8 @@ async def main():
         s.use_batch = False  # Message Batches are an API feature; the subscription judge grades one call at a time
     runs = args.runs or row["runs"]
     store = Store(conn, run_id, row["results"] or {}, row["log"])
+    if store.data:  # a resumed run asks the RAG as it started (runs from before the setting was recorded: off)
+        s.rag_include_editorial = bool((store.data.get("config") or {}).get("rag_include_editorial", False))
     store.ref_sha, store.ref_name = rubric.sha256(row["reference"]), row["reference_name"]
     store.log(f"--- {dt.datetime.now().isoformat(timespec='seconds')} start")
     await store.save("running")
@@ -431,6 +433,7 @@ async def main():
                         "system_labels": {n: systems.LABEL[n] for n in systems.SYSTEMS},
                         "rag_retrieval": {n: systems.RETRIEVAL[n] for n in systems.RAGS},
                         "rag_collection": s.rag_collection, "wiki_slug": s.wiki_slug, "sources": s.sources, "use_saved_answers": s.use_saved,
+                        "rag_include_editorial": s.rag_include_editorial,
                         "mode": s.mode, "grading": ("the wiki answer, asked once, is paired with each RAG column; each pair in both "
                                                     "orders (A-B and B-A), averaged; a win only when both agree; the wiki's own "
                                                     "scores are from its pair with RAG (per topic); "

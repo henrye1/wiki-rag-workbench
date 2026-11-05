@@ -26,6 +26,7 @@ interface Pane {
   pages: any[]; // wiki pages read
   ms: number | null;
   saved?: any;
+  check?: any; // the schema's answer checks: what they found and what is left after the fix pass
 }
 
 interface Msg {
@@ -46,7 +47,7 @@ interface Msg {
 }
 
 const pane = (): Pane => ({ answer: '', running: true, error: '', sources: [], pages: [], ms: null });
-const stored = (p: any): Pane | null => (p ? { answer: p.answer ?? '', running: false, error: p.error ?? '', sources: p.sources ?? [], pages: p.pages ?? [], ms: p.ms ?? null } : null);
+const stored = (p: any): Pane | null => (p ? { answer: p.answer ?? '', running: false, error: p.error ?? '', sources: p.sources ?? [], pages: p.pages ?? [], ms: p.ms ?? null, check: p.check ?? null } : null);
 const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', both: 'Both' };
 
 @Component({
@@ -198,6 +199,17 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
                     @if (p.running) { <mat-progress-bar mode="indeterminate" /> }
                     @if (p.error) { <p class="error">{{ p.error }}</p> }
                     <app-md [text]="p.answer" [wiki]="m.wiki_slug ?? ''" [titles]="titles(p)" [cites]="false" />
+                    @if (p.check; as k) {
+                      <div class="small" [class.warn]="k.left?.length" [class.muted]="!k.left?.length"
+                           title="The schema's answer checks (Workflow: Answer and check): run on the answer, which is sent back once with what they find">
+                        Answer checks: {{ k.found?.length ?? 0 }} found, {{ k.left?.length ?? 0 }} left
+                        @if (k.checks_off?.length) { · off (not in the schema): {{ k.checks_off.join(', ') }} }
+                      </div>
+                      @if (k.left?.length) { <ul class="small">@for (f of k.left; track $index) { <li>{{ f }}</li> }</ul> }
+                      @for (s of k.not_addressed_search ?? []; track $index) {
+                        <div class="small muted">Not addressed, searched for: {{ s.terms.join(', ') }} ({{ s.pages.length }} page(s) found)</div>
+                      }
+                    }
                     @if (p.pages.length) {
                       <div class="chips"><span class="muted">Pages read:</span>
                         @for (pg of p.pages; track pg.slug) {
@@ -421,7 +433,7 @@ export class Ask {
       m.mode !== 'rag' ? this.stream(i, 'wiki', `/api/wiki/wikis/${enc(m.wiki_slug!)}/query/stream`, 'pages', body) : null,
     ]);
     const done = this.messages()[i];
-    const side = (p: Pane | null) => (p ? { answer: p.answer, sources: p.sources, pages: p.pages, ms: p.ms, error: p.error } : null);
+    const side = (p: Pane | null) => (p ? { answer: p.answer, sources: p.sources, pages: p.pages, ms: p.ms, error: p.error, check: p.check ?? null } : null);
     const saved = await this.api.post<any>(`/api/ask/chats/${enc(this.chatId()!)}/messages`, {
       question: done.question, searched: done.searched, mode: done.mode, sources: done.sources,
       rag_collection: done.rag_collection, wiki_slug: done.wiki_slug, rag: side(done.rag), wiki: side(done.wiki),
@@ -438,6 +450,7 @@ export class Ask {
       for await (const ev of postSse(url, body, this.abort!.signal)) {
         if (ev.event === 'token') set((p) => ({ ...p, answer: p.answer + JSON.parse(ev.data) }));
         else if (ev.event === sourcesEvent) set((p) => (key === 'rag' ? { ...p, sources: JSON.parse(ev.data) } : { ...p, pages: JSON.parse(ev.data) }));
+        else if (ev.event === 'check') set((p) => ({ ...p, check: JSON.parse(ev.data) }));
       }
     } catch (e: any) {
       set((p) => ({ ...p, error: e?.name === 'AbortError' ? 'Stopped' : errMsg(e) }));

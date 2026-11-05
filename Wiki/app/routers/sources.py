@@ -77,9 +77,8 @@ async def add_file(file: UploadFile, mode: Mode = MODE_Q, wiki: dict = Depends(w
     name = file.filename or "upload.txt"
     try:
         chk = checks.load(wiki.get("schema_md") or "")
-        ex = await asyncio.to_thread(extract.from_upload, name, data, s.section_words, checks.example_label_re(chk) if chk else None,
-                                       checks.stub_re(chk), checks.footnote_form(chk), chk.control_headers if chk else None,
-                                       issuer.strip())
+        ex = await asyncio.to_thread(lambda: extract.from_upload(name, data, s.section_words, client=issuer.strip(),
+                                                                  **extract.schema_options(chk)))
     except ValueError as e:
         raise HTTPException(415, str(e))
     if title.strip():
@@ -171,8 +170,8 @@ class TitleIn(BaseModel):
 
 @router.put("/wikis/{w}/sources/{slug}/title")
 async def retitle_source(slug: str, body: TitleIn, wiki: dict = Depends(wiki_dep)):
-    """Retitle a source: it takes the slug its new title gives, and every link and citation to it (its source page
-    too) moves to that slug word for word. Applied at once: the source and its links move together."""
+    """Retitle a source: its title (and its source page's title) changes, never its slug, so every link and citation to
+    it stays as it is and its page keeps its history."""
     try:
         return await rename.retitle(wiki, slug, body.title)
     except KeyError:
