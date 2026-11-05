@@ -40,13 +40,24 @@ NOTES_SCHEMA = {
 }
 
 
-def notes_prompt(source_title: str, idx: int, total: int, section: str) -> str:
+def notes_schema(open_questions: bool = True) -> dict:
+    """The notes' reply schema; without open questions where the schema's pages record none (fixed sections)."""
+    if open_questions:
+        return NOTES_SCHEMA
+    return {**NOTES_SCHEMA, "properties": {k: v for k, v in NOTES_SCHEMA["properties"].items() if k != "open_questions"},
+            "required": [k for k in NOTES_SCHEMA["required"] if k != "open_questions"]}
+
+
+def notes_prompt(source_title: str, idx: int, total: int, section: str, open_questions: bool = True) -> str:
+    """open_questions: whether the notes record the questions a source raises (a schema without fixed sections)."""
     return (
         f"Source: {source_title} (section {idx} of {total}).\n"
         "Extract notes for building wiki pages: a short summary; the claims the source itself asserts (complete, precise, "
-        "with every condition); the questions/requests it poses without answering (as open questions, not claims); "
-        "and the entities and concepts that deserve or relate to wiki pages. "
-        "If the source is mainly a questionnaire, checklist or instructions, most content belongs in open_questions. "
+        "with every condition); "
+        + ("the questions/requests it poses without answering (as open questions, not claims); " if open_questions else "")
+        + "and the entities and concepts that deserve or relate to wiki pages. "
+        + ("If the source is mainly a questionnaire, checklist or instructions, most content belongs in open_questions. "
+           if open_questions else "") +
         "Follow the wiki schema for what to capture and how to label it.\n\n"
         f"<section>\n{section}\n</section>"
     )
@@ -77,7 +88,8 @@ PLAN_SCHEMA = {
 }
 
 
-def plan_prompt(source_title: str, source_slug: str, notes: str, index: str, candidates: str, max_pages: int) -> str:
+def plan_prompt(source_title: str, source_slug: str, notes: str, index: str, candidates: str, max_pages: int,
+                open_questions: bool = True) -> str:
     return (
         f"A new source has been added: \"{source_title}\" (its source page will be [[{source_slug}]], written separately).\n"
         f"Decide which wiki pages to create or update so the wiki integrates this source. At most {max_pages} pages.\n"
@@ -86,7 +98,8 @@ def plan_prompt(source_title: str, source_slug: str, notes: str, index: str, can
         "- Always include the `overview` page (create it if missing, otherwise update it).\n"
         "- If the schema defines a fixed list of sections, include one page for every section.\n"
         "- Do not include the source page itself.\n"
-        "- Do not create a page whose content would come only from open questions; those belong on the source page.\n\n"
+        + ("- Do not create a page whose content would come only from open questions; those belong on the source page.\n"
+           if open_questions else "") + "\n"
         f"<current_index>\nslug | type | title | summary\n{index}\n</current_index>\n\n"
         f"<related_existing_pages>\n{candidates}\n</related_existing_pages>\n\n"
         f"<source_notes>\n{notes}\n</source_notes>"
@@ -116,6 +129,14 @@ FILL_SCHEMA = {
         "content_md": {"type": "string", "description": "ONLY the new text for the requested paragraphs, to be appended to the page"},
     },
 }
+
+
+OPENS_NOTE = "(opens: {})"  # after a paragraph's label: the schema's opener(s) for its kind
+
+
+def opens_note(forms: list[str]) -> str:
+    """The note after a paragraph's label giving the schema's openers for its kind, word for word."""
+    return OPENS_NOTE.format(" or ".join(f'"{f}"' for f in forms))
 
 
 def write_page_prompt(
@@ -150,7 +171,8 @@ def write_page_prompt(
     )
     paragraphs = (
         "<source_paragraphs>\nThe source's own text for this page, each paragraph labelled with its [paragraph number], "
-        "in document order. Write from these first; use the material for context.\n\n"
+        "in document order. Write from these first; use the material for context. Where a label is followed by "
+        f"{OPENS_NOTE.format('...')}, every sentence written from that paragraph opens with it, as given.\n\n"
         f"{source_paragraphs}\n</source_paragraphs>\n\n"
         if source_paragraphs else ""
     )
@@ -243,6 +265,19 @@ def fix_page_prompt(*, slug: str, title: str, content_md: str, failures: list[st
         f"<linkable_pages>\n{linkable}\n</linkable_pages>\n\n"
         f"<source_paragraphs>\n{source_paragraphs}\n</source_paragraphs>\n\n"
         f"<page>\n{content_md}\n</page>"
+    )
+
+
+def fix_part_prompt(*, slug: str, title: str, part_md: str, failures: list[str], source_paragraphs: str, linkable: str) -> str:
+    """One paragraph of a page sent back on its own, with its failures."""
+    return (
+        f"Below is one paragraph of the wiki page `{slug}` (\"{title}\"). It does not follow the wiki schema in the places "
+        "listed in <failures>. Return only this paragraph, with those places fixed as the schema requires. Change "
+        "nothing else: keep every other sentence, link and citation as it is, and add no heading or other paragraph.\n\n"
+        f"<failures>\n" + "\n".join(f"- {f}" for f in failures) + "\n</failures>\n\n"
+        f"<linkable_pages>\n{linkable}\n</linkable_pages>\n\n"
+        f"<source_paragraphs>\n{source_paragraphs}\n</source_paragraphs>\n\n"
+        f"<paragraph>\n{part_md}\n</paragraph>"
     )
 
 

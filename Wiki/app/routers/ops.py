@@ -132,12 +132,14 @@ async def run_lint(body: LintIn, wiki: dict = Depends(wiki_dep)):
 
 class RecheckIn(BaseModel):
     mode: Mode = "auto"
+    pages: list[str] | None = Field(None, description="Only these pages are checked (every page when left out)")
 
 
 @router.post("/wikis/{w}/recheck", status_code=202)
 async def run_recheck(body: RecheckIn, wiki: dict = Depends(wiki_dep)):
-    """Run the after-writing page checks (and their fix rounds) on every page the wiki has, without re-ingesting."""
-    job_id = await jobs.submit(wiki["id"], "recheck", body.model_dump(), lambda ctx: recheck.run(ctx, wiki, body.mode))
+    """Run the after-writing page checks (and their fix rounds) on every page the wiki has (or the pages named), without
+    re-ingesting."""
+    job_id = await jobs.submit(wiki["id"], "recheck", body.model_dump(), lambda ctx: recheck.run(ctx, wiki, body.mode, body.pages))
     return {"job_id": str(job_id)}
 
 

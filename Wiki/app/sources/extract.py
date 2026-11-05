@@ -87,39 +87,55 @@ def _contents_list(text: str, heading_words: set[str]) -> bool:
     return len(words) >= 20 and sum(w in heading_words for w in words) >= 0.9 * len(words)
 
 
-def _kept(chunks, left_out: list[str], label_forms: dict[str, str]) -> list:
+def _kept(chunks, left_out: list[str], label_forms: dict[str, str], asides: dict | None = None) -> list:
     """Every chunk except those of a kind the schema leaves out. Text of a kind the schema cites in a form of its own
     (e.g. an editorial note, "ED:<clause>") takes that label, from the clause it sits beside, or its page before the
-    first clause; a bare pointer ("[Refer: ...]") is no content and goes, and so does a contents list."""
+    first clause. Such text, and text cited by its page label, holds no content (the schema's No-content length) when,
+    its pointers removed, it has that many words or fewer, or it is only the source's own headings in a row (its contents
+    list): it goes."""
+    asides = asides or {}
+    pointer_re, short = asides.get("pointer_re"), asides.get("no_content")
     heading_words = {w for c in chunks for _, h in c.heading_path for w in re.findall(r"[a-z]+", h.lower())}
     out = []
     for c in chunks:
         if c.source_type in left_out:
             continue
         form = label_forms.get(c.source_type)
-        if form and "<clause>" in form and not (c.para_ref or "").startswith(form.split("<clause>")[0]):
-            c.content = clean(pdf_ifrs.POINTER_BRACKETS.sub("", c.content))
-            if len(c.content.split()) <= 5 or (not c.para_ref and _contents_list(c.content, heading_words)):
+        noted = bool(form and "<clause>" in form and not (c.para_ref or "").startswith(form.split("<clause>")[0]))
+        if noted or not c.para_ref:  # an editorial note, or text cited by its page label
+            if pointer_re:
+                c.content = clean(pointer_re.sub("", c.content))
+            if (short is not None and len(c.content.split()) <= short) or (
+                    not c.para_ref and _contents_list(c.content, heading_words)):
                 continue
+        if noted:
+            c.beside_page = not c.para_ref  # beside its page label (before the first clause): no clause to go with
             c.para_ref = form.replace("<clause>", c.para_ref or f"p{c.page}")
         out.append(c)
     return out
 
 
+def _page_labels(chunks) -> list[str]:
+    """The labels the reader made from a page number: text printed without a paragraph label, and the clause of a note
+    printed before the first clause (its form's <clause>)."""
+    return sorted({f"p{c.page}" for c in chunks if not c.para_ref or getattr(c, "beside_page", False)})
+
+
 def from_pdf(name: str, data: bytes, max_words: int, example_re=None, stub_re=None, footnote_form=None,
-             left_out: list[str] | None = None, label_forms: dict[str, str] | None = None, term_form: str | None = None) -> Extracted:
+             left_out: list[str] | None = None, label_forms: dict[str, str] | None = None, term_form: str | None = None,
+             asides: dict | None = None) -> Extracted:
     """left_out: the reader kinds the schema leaves out (its "Kinds left out"), and label_forms: its citation form for
     each reader kind printed without a paragraph label. Without the first (schemas before it was given), a Standard
     keeps its binding text and footnotes only, and each paragraph's kind is not recorded block by block."""
     doc = pymupdf.open(stream=data, filetype="pdf")
     meta = {"pages": doc.page_count, **{k: v for k, v in (doc.metadata or {}).items() if v}}
     chunks, layout = pdf_ifrs.parse_document(doc, stub_re=stub_re, footnote_form=footnote_form, example_re=example_re,
-                                             term_form=term_form)
+                                             term_form=term_form, asides=asides)
     if layout == "standard":
         if left_out is None:  # binding text only, labelled by paragraph number so notes can cite it
             chunks = [c for c in chunks if c.source_type in ("standard", "appendix_a", "appendix_b", "footnote")]
         else:
-            chunks = _kept(chunks, left_out, label_forms or {})
+            chunks = _kept(chunks, left_out, label_forms or {}, asides)
             meta["kinds"] = [c.source_type for c in chunks]  # block by block, as for documents published with one
         heads = _example_heads(chunks, example_re)
         blocks = [f"[{c.para_ref or 'p' + str(c.page)}] {_with_head(c.content, h if not (stub_re and stub_re.match(c.content)) else "")}" for c, h in zip(chunks, heads)]
@@ -132,10 +148,11 @@ def from_pdf(name: str, data: bytes, max_words: int, example_re=None, stub_re=No
                 if not c.para_ref:
                     meta["para_kinds"].setdefault(f"p{c.page}", c.source_type)
         meta["heading_paths"] = [[list(x) for x in c.heading_path] for c in chunks]  # one per block, top heading first
+        meta["page_labels"] = _page_labels(chunks)
     elif layout == "accompanying":
         # Parts B and C: numbered paragraphs, each marked with its kind (never presented as a requirement)
         chunks = ([c for c in chunks if c.source_type in KIND_LABELS or c.source_type == "footnote"] if left_out is None
-                  else _kept(chunks, left_out, label_forms or {}))
+                  else _kept(chunks, left_out, label_forms or {}, asides))
         heads = _example_heads(chunks, example_re)
         blocks = [f"[{c.para_ref or 'p' + str(c.page)}] " + (f"({KIND_LABELS[c.source_type]}) " if c.source_type in KIND_LABELS else "")
                   + _with_head(c.content, h if not (stub_re and stub_re.match(c.content)) else "") for c, h in zip(chunks, heads)]
@@ -148,6 +165,7 @@ def from_pdf(name: str, data: bytes, max_words: int, example_re=None, stub_re=No
                 if not c.para_ref:
                     meta["para_kinds"].setdefault(f"p{c.page}", c.source_type)
         meta["heading_paths"] = [[list(x) for x in c.heading_path] for c in chunks]
+        meta["page_labels"] = _page_labels(chunks)
         meta["outline"] = _outline(chunks)
     else:
         blocks = [f"[page {i}]\n{p.get_text()}" for i, p in enumerate(doc, start=1) if p.get_text().strip()]
@@ -198,7 +216,7 @@ def schema_options(chk) -> dict:
     return {"example_re": checks.example_label_re(chk) if chk else None, "stub_re": checks.stub_re(chk),
             "footnote_form": checks.footnote_form(chk), "control_headers": chk.control_headers if chk else None,
             "left_out": chk.kinds_left_out if chk else None, "label_forms": checks.label_forms(chk),
-            "term_form": chk.defined_term_form if chk else None}
+            "term_form": chk.defined_term_form if chk else None, "asides": checks.reader_settings(chk) if chk else None}
 
 
 def opening_text(name: str, data: bytes, pages: int = 3, chars: int = 6000) -> str:
@@ -214,14 +232,14 @@ def opening_text(name: str, data: bytes, pages: int = 3, chars: int = 6000) -> s
 
 def from_upload(name: str, data: bytes, max_words: int, example_re=None, stub_re=None, footnote_form=None,
                 control_headers: list[str] | None = None, client: str = "", left_out: list[str] | None = None,
-                label_forms: dict[str, str] | None = None, term_form: str | None = None) -> Extracted:
+                label_forms: dict[str, str] | None = None, term_form: str | None = None, asides: dict | None = None) -> Extracted:
     """example_re: the wiki schema's example labels, so the issuer's example headings are kept with their paragraphs.
     stub_re: its stub forms, so a stub inside the text is read as its own paragraph.
     footnote_form: its citation form for a footnote, so footnotes are kept under their paragraph.
     client: who issued the paper, as recorded at upload, so a Word paper's cover line naming them is not its title."""
     low = name.lower()
     if low.endswith(".pdf"):
-        return from_pdf(name, data, max_words, example_re, stub_re, footnote_form, left_out, label_forms, term_form)
+        return from_pdf(name, data, max_words, example_re, stub_re, footnote_form, left_out, label_forms, term_form, asides)
     if low.endswith(".docx"):
         return from_docx(name, data, max_words, control_headers, client)
     if low.endswith(TEXT_EXT):
