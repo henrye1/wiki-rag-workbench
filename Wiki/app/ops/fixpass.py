@@ -46,6 +46,9 @@ def normalise_labels(text: str, ctx: dict) -> str:
 
     def fix(m):
         src, lab = m.group(1), (m.group(2) or "").strip()
+        if src in labels and "|" in lab and (head := lab.split("|", 1)[0].strip()) and (
+                head in labels[src] or bare(head) in labels[src]):  # [[src|IE111|(a)]]: [[src|IE111]](a)
+            return f"[[{src}|{head}]]" + lab.split("|", 1)[1].strip()
         if src not in labels or not lab or lab in labels[src] or bare(lab) in labels[src]:
             return m.group(0)
         words = lab.split()
@@ -192,6 +195,7 @@ async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, so
         text, n = checks.drop_repeats(text)
         rounds.append({"round": "repeats", "failures": [f for f in check(text) if f.startswith(checks.REPEAT)] or ["repeats"],
                        "kept": True, "fixed": n, "still": [f for f in check(text) if f.startswith(checks.REPEAT)]})
+    keep_notes: dict[str, list[str]] = {}  # carried from round 1 to round 2
     for rnd in (1, 2):
         failures = check(text)
         if not failures:
@@ -202,7 +206,8 @@ async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, so
             # paragraph (a failure of the page as a whole) is sent back with the whole page, as before
             text, rec_blocks = await _fix_blocks(schema=schema, slug=slug, title=title, text=text, failures=failures,
                                                  check=check, shown=shown, linkable=linkable, parse=parse,
-                                                 out_schema=out_schema, ok=ok, may_shrink=may_shrink, clause=clause)
+                                                 out_schema=out_schema, ok=ok, may_shrink=may_shrink, clause=clause,
+                                                 keep_notes=keep_notes)
             rec |= rec_blocks
             if rest := [f for f in check(text) if f in rec_blocks.get("unplaced", [])]:
                 out = await llm.generate_json(prompts.MAINTAINER_SYSTEM, prompts.with_schema(schema, prompts.fix_page_prompt(
@@ -293,8 +298,12 @@ def _for_part(sources: str, part: str, fails: list[str]) -> str:
     return "\n\n".join(got) if got else sources
 
 
+KEEP_CITATION = ("Keep the citation [[{}]] at the end of the sentence that states that paragraph: a rewrite of this "
+                 "paragraph that drops it is not kept.")  # said to the writer in the next round
+
+
 async def _fix_blocks(*, schema, slug, title, text, failures, check, shown, linkable, parse, out_schema, ok, may_shrink,
-                      clause) -> tuple[str, dict]:
+                      clause, keep_notes: dict | None = None) -> tuple[str, dict]:
     """One fix round, paragraph by paragraph: each paragraph a failure names is sent back on its own with its failures.
     A paragraph's rewrite is kept when its own failures are gone, nothing else starts failing, it loses no citation of
     a source paragraph and the page passes ok. Returns the page and the round's record; "unplaced": the failures that
@@ -311,10 +320,13 @@ async def _fix_blocks(*, schema, slug, title, text, failures, check, shown, link
     if not mine:
         return text, {"unplaced": unplaced}
 
+    notes = keep_notes if keep_notes is not None else {}  # failure -> the citations an earlier rewrite dropped
+
     async def one(i: int):
+        said = mine[i] + [KEEP_CITATION.format(c) for f in mine[i] for c in notes.get(f, [])]
         try:
             out = await llm.generate_json(prompts.MAINTAINER_SYSTEM, prompts.with_schema(schema, prompts.fix_part_prompt(
-                slug=slug, title=title, part_md=blocks[i], failures=mine[i], linkable=linkable,
+                slug=slug, title=title, part_md=blocks[i], failures=list(dict.fromkeys(said)), linkable=linkable,
                 source_paragraphs=_for_part(shown(blocks[i], mine[i]), blocks[i], mine[i]) or "(none)")), out_schema)
             return i, parse(out["content_md"])
         except Exception as e:
@@ -334,6 +346,9 @@ async def _fix_blocks(*, schema, slug, title, text, failures, check, shown, link
         own = set(mine[i]) - shared
         if not (own & set(after)) and not _worse(now, after, shared) and not lost and ok("\n\n".join(blocks), cand):
             blocks, now, kept = trial, after, kept + 1
+        elif lost:
+            for f in mine[i]:
+                notes.setdefault(f, []).extend(c for c in lost if c not in notes.get(f, []))
     return "\n\n".join(blocks), {"paragraphs": len(mine), "paragraphs_kept": kept, "unplaced": unplaced}
 
 

@@ -392,3 +392,36 @@ class FailureOnTheCitation(unittest.TestCase):
              f'The sentence rests on the passage under "IE111" ("(Illustrative example) Scenario 3: Reclassification '
              f'out of ..."): cite [[{S}|IE111]].')
         self.assertEqual(fixpass.failure_blocks(blocks, f), {1})
+
+
+class LabelsAndKeptCitations(unittest.TestCase):
+    """A label written with a second separator takes its first part; a dropped citation is named in the next round."""
+
+    def test_second_separator(self):
+        ctx = {"labels": {S: {"IE111"}}}
+        self.assertEqual(fixpass.normalise_labels(f"X [[{S}|IE111|(a)]].", ctx), f"X [[{S}|IE111]](a).")
+        self.assertEqual(fixpass.normalise_labels(f"X [[{S}|IE999|(a)]].", ctx), f"X [[{S}|IE999|(a)]].")  # not its label
+
+    def test_dropped_citation_named_next_round(self):
+        import asyncio
+        kinds = {"B1": GUIDE_KIND}
+        page = f"X says [[{S}|B1]] and more [[{S}|36]]."
+        chk = lambda x: checks.section_failures(x, [], kinds, S, CHK, covers, {"B1", "36"})
+        prompts_seen = []
+
+        async def fake(system, prompt, schema):  # drops 36 the first time; keeps it once told to
+            prompts_seen.append(prompt)
+            told = "Keep the citation" in prompt
+            return {"content_md": f"{GUIDE_OPENER} that X says [[{S}|B1]]." + (f" More [[{S}|36]]." if told else "")}
+        real = fixpass.llm.generate_json
+        fixpass.llm.generate_json = fake
+        try:
+            rec = []
+            out = asyncio.run(fixpass.fix_rounds(schema="", slug="p", title="P", text=page, check=chk, sources_text="",
+                                                 linkable="", parse=lambda r: r, kind="section", record=rec,
+                                                 clause=lambda c: True))
+        finally:
+            fixpass.llm.generate_json = real
+        self.assertIn(f"[[{S}|36]]", out)
+        self.assertIn("Keep the citation", prompts_seen[-1])
+        self.assertEqual(chk(out), [])
