@@ -18,6 +18,7 @@ export const routes: Routes = [
       { path: 'changesets', loadComponent: () => import('./pages/wiki/changesets').then((m) => m.WikiChangesets) },
       { path: 'changesets/:id', loadComponent: () => import('./pages/wiki/changeset').then((m) => m.WikiChangeset) },
       { path: 'lint', loadComponent: () => import('./pages/wiki/lint').then((m) => m.WikiLint) },
+      { path: 'statements', loadComponent: () => import('./pages/wiki/statements').then((m) => m.WikiStatements) },
       { path: 'graph', loadComponent: () => import('./pages/wiki/graph').then((m) => m.WikiGraph) },
       { path: 'settings', loadComponent: () => import('./pages/wiki/settings').then((m) => m.WikiSettings) },
     ],

@@ -17,9 +17,9 @@ import { poller } from '../../shared/poll';
         <button mat-flat-button (click)="structural()" [disabled]="busy()"><mat-icon>rule</mat-icon> Structural check (instant)</button>
         <button mat-stroked-button (click)="job(false)" [disabled]="busy()"><mat-icon>psychology</mat-icon> + LLM health check</button>
         <button mat-stroked-button (click)="job(true)" [disabled]="busy()"><mat-icon>auto_fix_high</mat-icon> LLM check + fix</button>
-        <mat-button-toggle-group [(ngModel)]="mode">
-          <mat-button-toggle value="review">Fixes need review</mat-button-toggle>
-          <mat-button-toggle value="auto">Apply fixes</mat-button-toggle>
+        <mat-button-toggle-group [(ngModel)]="mode" title="For a schema without fixed sections, the new pages lint writes; links are only ever proposed">
+          <mat-button-toggle value="review">New pages need review</mat-button-toggle>
+          <mat-button-toggle value="auto">Apply new pages</mat-button-toggle>
         </mat-button-toggle-group>
       </div>
       @if (busy()) { <mat-progress-bar mode="indeterminate" /><p class="muted">{{ status() }}</p> }
@@ -52,6 +52,27 @@ import { poller } from '../../shared/poll';
       }
     }
 
+    @if (maintain(); as m) {
+      <h2>The schema's Maintain checks</h2>
+      @if (m.not_run) { <p class="warn">{{ m.not_run }}</p> }
+      <table class="simple"><tbody>
+        @for (c of m.checks ?? []; track c.check) {
+          <tr>
+            <td>Check {{ c.check }}</td>
+            @if (c.run) {
+              <td>{{ c.runs }}</td><td [class.error]="c.failures">{{ c.failures }} found</td>
+              <td class="small">
+                @for (p of pageKeys(c); track p) { <div><a [routerLink]="['..', 'pages', p]">{{ p }}</a>: {{ c.pages[p].length }}</div> }
+                @for (f of (c.found ?? []).slice(0, 20); track $index) { <div>{{ f }}</div> }
+              </td>
+            } @else {
+              <td colspan="3" class="warn">not run: {{ c.reason }}</td>
+            }
+          </tr>
+        }
+      </tbody></table>
+    }
+
     @if (llm(); as l) {
       <h2>LLM health check</h2>
       @if (l.contradictions.length) {
@@ -75,6 +96,15 @@ import { poller } from '../../shared/poll';
         @if (f.changeset_id && f.status === 'pending') { — <a [routerLink]="['..', 'changesets', f.changeset_id]">review {{ f.ops?.length }} change(s) →</a> }
         @if (f.applied) { — applied {{ f.applied.length }} }
       </div>
+      @if (f.link_proposals?.length) {
+        <h3>Links proposed ({{ f.link_proposals.length }}) — no page was changed</h3>
+        <table class="simple"><tbody>
+          @for (x of f.link_proposals; track $index) {
+            <tr><td><a [routerLink]="['..', 'pages', x.page]">{{ x.page }}</a></td><td class="mono">{{ x.link }}</td>
+              <td>{{ x.proposal }}{{ x.as ? ': "' + x.as + '"' : '' }}</td></tr>
+          }
+        </tbody></table>
+      }
     }
   `,
   styles: `.summary { margin: 16px 0; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }`,
@@ -85,6 +115,8 @@ export class WikiLint {
   readonly report = signal<any>(null);
   readonly llm = signal<any>(null);
   readonly fix = signal<any>(null);
+  readonly maintain = signal<any>(null);
+  pageKeys(c: any): string[] { return Object.keys(c?.pages ?? {}); }
   readonly busy = signal(false);
   readonly status = signal('');
   readonly error = signal('');
@@ -104,6 +136,7 @@ export class WikiLint {
     this.status.set(`Job ${j.status}${j.progress?.stage ? ' · ' + j.progress.stage : ''}`);
     if (j.status === 'succeeded') {
       this.report.set(j.result.structural);
+      this.maintain.set(j.result.maintain ?? null);
       this.llm.set(j.result.llm);
       this.fix.set(j.result.fix ?? null);
     }
@@ -118,6 +151,7 @@ export class WikiLint {
     try {
       const r = await this.api.post(`/api/wiki/wikis/${enc(this.w())}/lint`, {});
       this.report.set(r.structural);
+      this.maintain.set(r.maintain ?? null);
     } catch (e) {
       this.error.set(errMsg(e));
     }
