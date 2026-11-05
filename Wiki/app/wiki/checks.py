@@ -82,6 +82,14 @@ class Checks:
     related_line: str = ""  # the words that open a subtopic page's line of links to its related pages
     section_framework: str = ""  # the framework slug a section page's slug opens with
     entity_summary: bool = False  # an entity page's summary as a concept page's
+    note_kinds: list[str] = field(default_factory=list)  # the schema's kind names routed with the clause they sit beside
+    agenda_markers: list[str] = field(default_factory=list)  # text that makes an editorial note an agenda decision
+    bracket_notes: list[str] = field(default_factory=list)  # the source's bracketed notes, kept as editorial notes
+    bracket_pointers: list[str] = field(default_factory=list)  # bracketed pointers to other text: never content
+    one_sentence_pointers: list[str] = field(default_factory=list)  # of those, the ones that are pointers only as one sentence
+    no_content_words: int | None = None  # an editorial note or page-labelled text this short holds no content
+    page_turn: list[str] = field(default_factory=list)  # text printed where a box runs over a page: removed
+    note_markers: list[str] = field(default_factory=list)  # each starts a note of its own
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
     unreadable: list[str] = field(default_factory=list)  # lists the schema gives in wording the engine cannot read
     unknown: list[str] = field(default_factory=list)  # lines of the Checks section that name no list the engine knows
@@ -105,8 +113,12 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
     "concept_slug": "concept slug", "concept_summary_lead": "concept summary",
     "entity_pages": "entity pages", "entity_lines": "entity lines", "entity_summary": "entity summary",
     "also_heading": "also recorded heading", "related_line": "related pages line",
+    "note_kinds": "notes filed with their clause", "agenda_markers": "agenda decision marker",
+    "bracket_notes": "editorial brackets", "no_content_words": "no-content length", "page_turn": "page-turn text",
+    "note_markers": "note markers",
 }
 PLACEHOLDER = re.compile(r"<[^<>]+>")
+AGENDA = LISTS["agenda_markers"].rsplit(" ", 1)[0]  # the Openers entry an agenda decision takes: its list's name, less "marker"
 
 
 NUMBER_WORDS = {w: n for n, w in enumerate("one two three four five six seven eight nine ten".split(), start=1)}
@@ -196,6 +208,18 @@ def load(schema_md: str) -> Checks | None:
             c.no_claim_index = any(re.search(r"\bindex\b", x, re.I) for x in c.no_claim_pages)
         elif attr in ("join_related", "slug_main"):  # a setting: on only with the schema's value for it
             setattr(c, attr, value.strip().rstrip(".").casefold() == {"join_related": "most related", "slug_main": "largest heading"}[attr])
+        elif attr == "note_kinds":  # "a, b. What is done with them.": the kind names up to the first full stop
+            c.note_kinds = [x.strip().casefold() for x in value.split(".")[0].split(",") if x.strip()]
+        elif attr == "bracket_notes":  # "<first key> = forms; <second key> = forms (<when>). What is done with them."
+            parts = [v for _, v in _mapping(value).items()]
+            if len(parts) >= 2:  # the first group is kept as notes, the second goes as pointers, in the schema's order
+                c.bracket_notes = QUOTED.findall(parts[0])
+                c.bracket_pointers = QUOTED.findall(parts[1])
+                c.one_sentence_pointers = [f for f in c.bracket_pointers  # a form followed by "(... one sentence)"
+                                           if re.search(re.escape(f) + r'["\u201d]\s*\([^)]*\bone sentence\b', parts[1])]
+        elif attr == "no_content_words":
+            n = re.search(r"\d+", value)
+            c.no_content_words = int(n.group(0)) if n else None
         elif attr == "guidance_kinds":  # "a, b. What is done with them.": the kind names up to the first full stop
             c.guidance_kinds = [x.strip().casefold() for x in value.split(".")[0].split(",") if x.strip()]
         elif attr in ("max_takeaways", "examples_section", "page_size_limit", "subtopic_minimum", "slug_words", "summary_heads"):
@@ -328,6 +352,74 @@ def stub_re(c: Checks | None) -> re.Pattern | None:
         pat = _template(f[:-1] if closes else f, r"[^\[\]]{0,400}?").replace(r"\ ", r"\s+")
         pats.append(pat + (r"[^\[\]]{0,200}?\]" if closes else ""))
     return re.compile("(?:" + "|".join(pats) + ")", re.I)
+
+
+def _bracket_re(form: str) -> str:
+    """A bracketed form ("[Refer...]", "[Note: ... refer to ...]") as a pattern: "..." stands for any text inside the
+    one bracket; a word written before "..." ends there (a form "[now...]" does not match "[nowhere]")."""
+    out = re.escape(form).replace(r"\ ", r"\s+")
+    return re.sub(r"(\w)" + re.escape(re.escape("...")), r"\1\\b[^\\[\\]]*?", out).replace(re.escape("..."), r"[^\[\]]*?")
+
+
+def bracket_res(c: Checks | None) -> tuple[re.Pattern | None, re.Pattern | None]:
+    """The schema's Editorial brackets as two patterns: its notes (kept as editorial notes) and its pointers (removed
+    wherever they appear). A pointer form that is a pointer only as one sentence is matched only where its text is one."""
+    if not c:
+        return None, None
+    one = {_bracket_re(f) for f in c.one_sentence_pointers}
+    notes = re.compile("|".join(map(_bracket_re, c.bracket_notes)), re.I) if c.bracket_notes else None
+    plain = [_bracket_re(f) for f in c.bracket_pointers if _bracket_re(f) not in one]
+    pointers = None
+    if c.bracket_pointers:
+        rx = [re.compile(x, re.I) for x in plain] + [re.compile(x, re.I) for x in one]
+
+        class _Pointers:  # one pattern's finditer/sub over every form, the one-sentence forms checked as they match
+            def __init__(self):
+                self.pattern = "|".join(plain + list(one))
+
+            def _hits(self, text):
+                spans = []
+                for i, r in enumerate(rx):
+                    for m in r.finditer(text):
+                        if i >= len(plain) and len(sentences(m.group(0)[1:-1])) != 1:
+                            continue
+                        if not any(a < m.end() and m.start() < b for a, b in spans):
+                            spans.append((m.start(), m.end()))
+                return sorted(spans)
+
+            def sub(self, repl, text):
+                for a, b in reversed(self._hits(text)):
+                    text = text[:a] + repl + text[b:]
+                return text
+
+            def search(self, text):
+                return bool(self._hits(text))
+        pointers = _Pointers()
+    return notes, pointers
+
+
+def page_turn_re(c: Checks | None) -> re.Pattern | None:
+    """The schema's Page-turn text, longest first, word for word (its spaces any run of space)."""
+    if not c or not c.page_turn:
+        return None
+    return re.compile("|".join(re.escape(f).replace(r"\ ", r"\s+") for f in sorted(c.page_turn, key=len, reverse=True)))
+
+
+def note_marker_re(c: Checks | None) -> re.Pattern | None:
+    """The schema's Note markers as one pattern (<n> a number), each matched where a note starts: at the start of the
+    text or after a space."""
+    if not c or not c.note_markers:
+        return None
+    return re.compile(r"(?:(?<=\s)|^)(?:" + "|".join(
+        re.escape(f).replace(re.escape("<n>"), "<n>").replace("<n>", r"\d+").replace(r"\ ", r"\s*") for f in c.note_markers) + ")")
+
+
+def reader_settings(c: Checks | None) -> dict:
+    """What the PDF reader takes from the schema's Checks to read the source's own asides: its bracketed notes and
+    pointers, page-turn text, note markers and the no-content length."""
+    notes, pointers = bracket_res(c)
+    return {"note_re": notes, "pointer_re": pointers, "page_turn_re": page_turn_re(c), "marker_re": note_marker_re(c),
+            "no_content": c.no_content_words if c else None}
 
 
 LABEL_TOKEN = re.compile(r"\S*\d\S*")  # a paragraph number or a range of them (30A–30C)
@@ -806,13 +898,42 @@ def _stub_parts(body: str, part_re: re.Pattern, c: Checks) -> set[str]:
             if rx.match(body[m.end(): marks[k + 1].start() if k + 1 < len(marks) else len(body)].strip())}
 
 
+def is_location(label: str, labels: set[str]) -> bool:
+    """Whether a citation's label names a location its source holds, in any of the schema's citation forms (a numbered
+    clause, a defined term, an editorial note, a page label: the source's own labels), sub-paragraph letters aside; a
+    range names two of them. Without the source's labels, every label is taken as one."""
+    if not labels:
+        return True
+    base = lambda x: re.sub(r"(?:\s*\([^)]*\))+$", "", x.strip())
+    if label.strip() in labels or base(label) in labels:
+        return True
+    ends = re.split(r"\s*[\u2013\u2014-]\s*", label.strip())
+    return len(ends) == 2 and all(base(e) in labels for e in ends)
+
+
+def opener_kind(c: Checks, reader_kind: str | None, agenda: bool = False) -> str | None:
+    """The schema's kind name whose openers a paragraph of this reader kind takes: an editorial note that is an agenda
+    decision (its text carries the schema's Agenda decision marker) takes the openers listed under that list's name."""
+    name = c.kinds.get(reader_kind or "") if c else None
+    return AGENDA if agenda and name and AGENDA in c.openers else name
+
+
+def agenda_labels(by_label: dict[str, list[str]], c: Checks | None) -> set[str]:
+    """The labels whose passages carry the schema's Agenda decision marker."""
+    marks = [m.casefold() for m in (c.agenda_markers if c else [])]
+    return {lab for lab, ps in by_label.items() if marks and any(m in p.casefold() for p in ps for m in marks)}
+
+
 def section_failures(content: str, given: list[str], kinds: dict[str, str], source_slug: str, c: Checks, covers,
-                     labels: set[str] = frozenset(), holds=lambda ref: True) -> list[str]:
+                     labels: set[str] = frozenset(), holds=lambda ref: True, agenda: set[str] = frozenset()) -> list[str]:
     """Where a written page breaks the schema's checks for its own paragraphs: a lettered part of a paragraph whose
     write-up the page holds missing near its citation, a condition phrase of such a paragraph missing there (holds: a page
     citing a paragraph only as a cross-reference is not checked for its parts or conditions), and a sentence citing a
-    non-Standard paragraph without its opener."""
+    non-Standard paragraph without its opener. Each failure names the paragraph with its source. A citation counts only
+    where its label is a location the source holds (labels; is_location). agenda: the labels that are agenda decisions."""
     failures = []
+    of = f" of [[{source_slug}]]"
+    own = {_label(p) for p in given}
     blocks = [b for b in re.split(r"\n\s*\n", content) if b.strip()]
     part_re = _part_re(c)
     for p in given:
@@ -825,12 +946,12 @@ def section_failures(content: str, given: list[str], kinds: dict[str, str], sour
         if part_re and holds(ref) and len(parts := list(dict.fromkeys(part_re.findall(body)))) >= 2:
             stubs = _stub_parts(body, part_re, c)  # a part that is only a stub ("(c) [deleted]") is not written up
             if lost := [x for x in parts if x not in near and x not in stubs]:
-                failures.append(f"Paragraph {ref} has lettered or numbered parts {', '.join(parts)}; "
+                failures.append(f"Paragraph {ref}{of} has lettered or numbered parts {', '.join(parts)}; "
                                 f"{', '.join(lost)} do not appear on the page.")
         flat_body, flat_near = _flat(body), _flat(near)
         if holds(ref) and (lost := [w for w in c.conditions if re.search(rf"\b{re.escape(w.casefold())}\b", flat_body)
                                        and not re.search(rf"\b{re.escape(w.casefold())}\b", flat_near)]):
-            failures.append(f"Paragraph {ref} states the condition(s) {', '.join(repr(w) for w in lost)}, "
+            failures.append(f"Paragraph {ref}{of} states the condition(s) {', '.join(repr(w) for w in lost)}, "
                             "which do not appear where the page writes it up.")
     openers = _opener_res(c)
     anywhere = {k: re.compile(r.pattern.replace("^", "(?:^|(?<=[\\s,;:(]))", 1), re.I) for k, r in openers.items()}
@@ -844,34 +965,45 @@ def section_failures(content: str, given: list[str], kinds: dict[str, str], sour
                 continue
             ends_lead = line.rstrip().endswith(":")
             for s in sentences(line):
-                cited = [m.group(2) for m in store.LINK_RE.finditer(s) if m.group(1) == source_slug and m.group(2)]
+                cited = [m.group(2) for m in store.LINK_RE.finditer(s) if m.group(1) == source_slug and m.group(2)
+                         and is_location(m.group(2), labels)]
                 if not cited:
                     continue
                 shown = store.LINK_RE.sub(lambda m: (m.group(2) or m.group(1)).strip(), s)  # a link read as the text it shows
                 body = LIST_LABEL.sub("", shown, count=1)  # "Interest rate swap**: The implementation guidance states ..."
-                found = {c.kinds.get(kinds.get(re.sub(r"\(.*$", "", lab).strip(), "")) for lab in cited}
+                bare = lambda lab: re.sub(r"\(.*$", "", lab).strip()
+                found = {opener_kind(c, kinds.get(bare(lab), ""), bare(lab) in agenda) for lab in cited}
                 kinds_with = sorted(k for k in found if k in openers)
                 if not kinds_with:
                     continue
                 if not shown[:1].isupper():  # a list item continuing a lead-in sentence: the lead-in carries its opener
                     if item and lead and not all(anywhere[k].search(lead) for k in kinds_with):
-                        failures.append(f"The list item citing {', '.join(cited)} (\"{s[:90]}...\") comes from "
+                        failures.append(f"The list item citing {', '.join(cited)}{of} (\"{s[:90]}...\") comes from "
                                         f"{', '.join(kinds_with)}, but the sentence it continues (\"{lead[:90]}...\") does not "
                                         f"open with the schema's opener for it ({'; '.join(', '.join(c.openers[k]) for k in kinds_with)}).")
                     continue
                 if len(found) == 1:
                     k = kinds_with[0]
                     m = openers[k].match(body)
-                    if not m:
-                        failures.append(f"The sentence citing {', '.join(cited)} (\"{s[:90]}...\") comes from {k} but does not "
+                    other = [x for x, r in openers.items() if x != k and r.match(body)]
+                    if not m and other and any(bare(lab) not in own for lab in cited):
+                        # it opens as another kind, and cites a paragraph the page was not given: the citation may be wrong
+                        failures.append(f"The sentence citing {', '.join(cited)}{of} (\"{s[:90]}...\") opens as {other[0]} "
+                                        f"({', '.join(c.openers[other[0]])}), but {', '.join(cited)} is not one of this page's own "
+                                        f"paragraphs, and it comes from {k}. If the sentence states one of the page's own "
+                                        f"{other[0]} paragraphs, cite that paragraph; otherwise open it with the schema's opener "
+                                        f"for {k} ({', '.join(c.openers[k])}).")
+                    elif not m:
+                        failures.append(f"The sentence citing {', '.join(cited)}{of} (\"{s[:90]}...\") comes from {k} but does not "
                                         f"open with the schema's opener for {k} ({', '.join(c.openers[k])}).")
                     elif named := [g.strip() for g in m.groups() if g and g.strip() in labels]:
-                        failures.append(f"The sentence citing {', '.join(cited)} (\"{s[:90]}...\") names its example "
+                        failures.append(f"The sentence citing {', '.join(cited)}{of} (\"{s[:90]}...\") names its example "
                                         f"\"{named[0]}\", which is one of the source's paragraph labels, not the example's name.")
                 elif missing := [k for k in kinds_with if not anywhere[k].search(body)]:  # drawn from clauses of several kinds
-                    failures.append(f"The sentence citing {', '.join(cited)} (\"{s[:90]}...\") draws on {', '.join(sorted(x or 'the Standard' for x in found))}; "
-                                    f"the part from {', '.join(missing)} does not open with its opener "
-                                    f"({'; '.join(', '.join(c.openers[k]) for k in missing)}).")
+                    failures.append(f"The sentence citing {', '.join(cited)}{of} (\"{s[:90]}...\") draws on clauses of several kinds "
+                                    f"({', '.join(sorted(x or "the source's own text" for x in found))}); every claim has one clause reference: "
+                                    f"write one sentence per clause, each citing its own clause and opening as its kind requires "
+                                    f"(for {', '.join(missing)}: {'; '.join(', '.join(c.openers[k]) for k in missing)}).")
             if ends_lead or not item:
                 lead = line if ends_lead else ""
     return failures
@@ -961,14 +1093,27 @@ def authority_sentences(text: str, c: Checks) -> list[str]:
 
 
 def authority_context(text: str, c: Checks, words: int = 40) -> list[str]:
-    """For the writer: each authority form as the source prints it, with the source's text before it in the same
-    passage (at most words of it), under the passage's label (what the sentence cites), so the whole sentence can be
-    transcribed and cited."""
+    """For the writer: each authority form as the source prints it, with the source's text before it in its sentence
+    (the one sentence split; at most words of it), under the passage's label (what the sentence cites), so the whole
+    sentence can be transcribed and cited. The sentence starts where a sentence starts, at its first word opening with a
+    capital or a digit (as authority_failures asks): what the reader printed before that (a kind it marks) is not shown."""
     out = []
     for m in _authority_matches(text, c):
         start = (text.rfind("\n\n", 0, m.start()) + 2) if "\n\n" in text[: m.start()] else 0  # its passage's start
         lab = re.match(r"^\[([^\]\n]+)\]\s*", text[start:])
-        before = text[start + (lab.end() if lab else 0) : m.start()].split()
+        at = start + (lab.end() if lab else 0)
+        end = text.find("\n\n", m.start())
+        body, pos = text[at: end if end >= 0 else len(text)], m.start() - at
+        first, k = 0, 0
+        for s in sentences(body):  # the sentence the form is in
+            k = body.find(s, k)
+            if k <= pos < k + len(s):
+                first = k
+                break
+            k += len(s)
+        before = body[first:pos].split()
+        while before and not (before[0][:1].isupper() or before[0][:1].isdigit()):
+            before = before[1:]
         out.append((f"[{lab.group(1)}] " if lab else "") + ("... " if len(before) > words else "")
                    + " ".join(before[-words:] + [m.group(1).strip()]))
     return list(dict.fromkeys(out))

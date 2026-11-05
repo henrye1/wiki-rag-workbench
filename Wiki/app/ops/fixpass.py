@@ -10,6 +10,7 @@ from ..wiki import checks, citecheck, store
 
 log = logging.getLogger(__name__)
 LABEL_RE = re.compile(r"^\[([^\]\n]+)\]", re.M)
+SOURCE_SLUG = "source-"  # a source page's slug opens with this (the schema's Slugs and links: source-<source-name>)
 
 
 async def cite_context(wiki_id: UUID, section_names: list[str]) -> dict:
@@ -51,6 +52,22 @@ def normalise_labels(text: str, ctx: dict) -> str:
             if cand in labels[src] or bare(cand) in labels[src]:
                 return f"[[{src}|{cand}]]"
         return m.group(0)
+    return store.LINK_RE.sub(fix, text)
+
+
+def resolve_sources(text: str, ctx: dict, prefer: str | None = None) -> str:
+    """A citation naming a source page the wiki does not have (a slug the writer made up) names the source that holds
+    its label: the one preferred (the source being uploaded) where it holds it, else the only one that does. Left as it
+    is where no source, or more than one, holds it."""
+    labels = ctx["labels"]
+
+    def fix(m):
+        slug, lab = m.group(1), (m.group(2) or "").strip()
+        if slug in labels or not lab or not slug.startswith(SOURCE_SLUG):
+            return m.group(0)
+        have = [sl for sl, labs in labels.items() if checks.is_location(lab, labs)]
+        to = prefer if prefer in have else have[0] if len(have) == 1 else None
+        return f"[[{to}|{lab}]]" if to else m.group(0)
     return store.LINK_RE.sub(fix, text)
 
 
@@ -145,7 +162,10 @@ async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, so
     failures, loses no citation of a source paragraph (clause tells one from a broken link, which a fix may repair;
     may_shrink when a failure asks for something to be taken out) and passes ok. A paragraph whose write-up still fails
     after the second return is then quoted in full (quote, where the caller gives one): the quote itself becomes the
-    claim. may_grow is accepted for callers' sake: a rewrite's length is not limited."""
+    claim. may_grow is accepted for callers' sake: a rewrite's length is not limited. sources_text: the source text the
+    writer is shown, or a function of the page's text and its failures giving it (a paragraph a failure names as well as
+    the page's own)."""
+    shown = sources_text if callable(sources_text) else (lambda x, fails: sources_text)
     rounds = []
     initial = check(text)
     if any(f.startswith(checks.REPEAT) for f in initial):  # the same text twice: its later copies go, word for word
@@ -160,7 +180,7 @@ async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, so
         try:
             out = await llm.generate_json(prompts.MAINTAINER_SYSTEM, prompts.with_schema(schema, prompts.fix_page_prompt(
                 slug=slug, title=title, content_md=text or "(nothing yet)", failures=failures, linkable=linkable,
-                source_paragraphs=sources_text or "(none)")), out_schema)
+                source_paragraphs=shown(text, failures) or "(none)")), out_schema)
             new = parse(out["content_md"])
             after = check(new)
             lost = [] if may_shrink else sorted(c for c in checks.cites(text) - checks.cites(new) if clause(c))
@@ -185,28 +205,40 @@ async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, so
     return text
 
 
-PARA_FAILURE = re.compile(r"^Paragraph (.+?) (?:has lettered or numbered parts|states the condition)")  # checks.section_failures
-SENTENCE_FAILURE = re.compile(r"^The sentence citing (.+?) \(\"")  # its opener, from checks.section_failures
+OF_SOURCE = r"(?: of \[\[([^\]|]+)\]\])?"  # checks.section_failures names the paragraph's source after its label
+PARA_FAILURE = re.compile(r"^Paragraph (.+?)" + OF_SOURCE + r" (?:has lettered or numbered parts|states the condition)")
+SENTENCE_FAILURE = re.compile(r"^The sentence citing (.+?)" + OF_SOURCE + r" \(\"")  # its opener, from checks.section_failures
 
 
-def _failing_paragraphs(failures: list[str]) -> dict[str, list[str]]:
-    """The paragraphs the failures name (a part, a condition or an opener missing from its write-up) -> its failures."""
-    out: dict[str, list[str]] = {}
+def named_paragraphs(failures: list[str]) -> set[tuple[str, str | None]]:
+    """The paragraphs the sentence failures name, each as (label, its source): what the sentence cites."""
+    out = set()
+    for f in failures:
+        if m := SENTENCE_FAILURE.match(f):
+            out |= {(re.sub(r"(?:\s*\([^)]*\))+$", "", x.strip()), m.group(2)) for x in m.group(1).split(",")}
+    return out
+
+
+def _failing_paragraphs(failures: list[str]) -> dict[tuple[str, str | None], list[str]]:
+    """The paragraphs the failures name (a part, a condition or an opener missing from its write-up), each as (label,
+    its source) -> its failures."""
+    out: dict[tuple[str, str | None], list[str]] = {}
     for f in failures:
         if m := PARA_FAILURE.match(f):
-            out.setdefault(m.group(1), []).append(f)
+            out.setdefault((m.group(1), m.group(2)), []).append(f)
         elif (m := SENTENCE_FAILURE.match(f)) and "," not in m.group(1):  # a sentence citing one paragraph
-            out.setdefault(re.sub(r"(?:\s*\([^)]*\))+$", "", m.group(1).strip()), []).append(f)
+            out.setdefault((re.sub(r"(?:\s*\([^)]*\))+$", "", m.group(1).strip()), m.group(2)), []).append(f)
     return out
 
 
 def _quote_failing(text: str, failures: list[str], check, quote, rounds: list) -> str:
     """The schema's last step after the two returns: each paragraph whose write-up still fails is written as its own
     words, quoted in full, with its opener and citation (quote: the page's text with that done, or None where it cannot
-    be). Kept when that paragraph's failures go and nothing else starts failing. No AI call."""
-    for ref, fails in _failing_paragraphs(failures).items():
-        new = quote(text, ref)
-        rec = {"round": "quote", "paragraph": ref, "failures": fails}
+    be; quote(text, label, source, failures): the source as the failures name it, and the failures, which tell which of
+    the label's passages fails). Kept when that paragraph's failures go and nothing else starts failing. No AI call."""
+    for (ref, src), fails in _failing_paragraphs(failures).items():
+        new = quote(text, ref, src, fails)
+        rec = {"round": "quote", "paragraph": ref, "source": src, "failures": fails}
         if new is None:
             rounds.append(rec | {"kept": False, "reason": "no quote could be written for it"})
             continue

@@ -11,8 +11,8 @@ from ..jobs import JobContext
 from ..wiki import checks, store
 from ..wiki.store import Op
 from . import fixpass, pagecheck
-from .ingest import (use_schema_headings, _covers, _fix_breaks, _index_md, _section_for, _sections, _split_also, _with_also, _without_empty_text,
-                     split_written)
+from .ingest import (use_schema_headings, _covers, _fix_breaks, _listed, _section_for, _sections, _source_paths, _split_also,
+                     _with_also, _without_empty_text, section_index, split_written)
 
 log = logging.getLogger(__name__)
 CITE = re.compile(r"\[\[(source-[^\]|#]+)(?:#[^\]|]*)?\|([^\]]+)\]\]")
@@ -28,6 +28,7 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
     sections = _sections(schema)
     pages = [p for p in await store.list_pages(wiki_id, with_content=True) if p["type"] != "synthesis"]
     cite_ctx = await fixpass.cite_context(wiki_id, [x["name"] for x in sections])
+    paths = await _source_paths(wiki_id, checks.footnote_form(chk), _listed(chk), chk)  # for the examples index's lines
     async with get_pool().connection() as conn:
         rows = await (await conn.execute("select slug, text, meta from wiki.sources where wiki_id = %s", (wiki_id,))).fetchall()
     src = {}
@@ -98,10 +99,9 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto") -> dict:
     async def one(p: dict) -> Op | None:
         if p["slug"] in index_pages and checks.holds_no_claims(chk, p["slug"], True):
             # a split section's index holds no claims: rebuilt from its subtopic pages, in the order it listed them
-            subs = sorted((x for x in pages if x["type"] == "subtopic" and x["slug"].startswith(p["slug"] + "-")),
-                          key=lambda x: p["content_md"].find(f"[[{x['slug']}") % (len(p["content_md"]) + 1))
-            sec = _section_for(sections, p["title"], p["slug"])
-            content, summary = _index_md(sec["name"] if sec else p["title"], subs, cite_ctx["titles"])
+            subs = [x for x in pages if x["type"] == "subtopic" and x["slug"].startswith(p["slug"] + "-")]
+            sec = _section_for(sections, p["title"], p["slug"]) or {"name": p["title"], "num": None}
+            content, summary = section_index(sec, subs, p["content_md"], cite_ctx["titles"], paths, chk, cite_ctx["labels"])
             if content.strip() == p["content_md"].strip():
                 return None
             return Op(op="update", slug=p["slug"], title=p["title"], type=p["type"], summary=summary, content_md=content,

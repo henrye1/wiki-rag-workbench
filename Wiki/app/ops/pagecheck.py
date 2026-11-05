@@ -56,7 +56,8 @@ def section_check(*, chk, covers, srcs: dict[str, dict], held: dict[str, set[str
             mine = passages(srcs[sl]["by_label"], held.get(sl, set()))
             texts += mine + passages(srcs[sl]["by_label"], cited.get(sl, set()))
             if chk:
-                out += checks.section_failures(x, mine, srcs[sl]["kinds"], sl, chk, covers, cite_ctx["labels"].get(sl, set()))
+                out += checks.section_failures(x, mine, srcs[sl]["kinds"], sl, chk, covers, cite_ctx["labels"].get(sl, set()),
+                                               agenda=srcs[sl].setdefault("agenda", checks.agenda_labels(srcs[sl]["by_label"], chk)))
         if chk and not absence_allowed:
             out += checks.absence_failures(x, chk, "\n\n".join(texts))
         return out + checks.repeat_failures(x) + checks.heading_failures(x) + fixpass.cite_failures(x, cite_ctx, chk)
@@ -89,7 +90,7 @@ def held_after_split(held: dict[str, dict[str, set[str]]], report: list[dict], t
 
 
 def as_saved(ops: list, existing: dict[str, dict], held: dict[str, dict[str, set[str]]], *, chk, covers, srcs, cite_ctx,
-             body) -> list[dict]:
+             body, checked: set[str] | None = None) -> list[dict]:
     """Every section and subtopic page of a changeset as it will be saved, checked once more (a later pass may have
     changed what the checks passed), with what it holds set on its op. Returns a failing page's record (still > 0)."""
     subtopics = {o.slug for o in ops if o.type == "subtopic" and o.op != "delete"} | {
@@ -103,6 +104,8 @@ def as_saved(ops: list, existing: dict[str, dict], held: dict[str, dict[str, set
             continue  # an index, a page that holds no claims: checked for what they must hold where they are built
         check = section_check(chk=chk, covers=covers, srcs=srcs, held=held.get(o.slug, {}), cite_ctx=cite_ctx,
                               absence_allowed=checks.absence_allowed_on(chk, o.type, o.title))
+        if checked is not None:
+            checked.add(o.slug)
         if bad := check(body(o.content_md or "")):
             out.append({"page": o.slug, "kind": "page as saved", "found": len(bad), "still": len(bad), "left": bad, "rounds": []})
     return out

@@ -26,9 +26,6 @@ IG_HEADING_RE = re.compile(r"^([A-G])\.(\d+)\s+\S")
 IG_TITLE_RE = re.compile(r"^Guidance on implementing\b", re.I)  # its title; the note under it says the guidance is not part of the Standard
 IG_INTRO = "IG introduction"
 RANGE_DASH = ("\u2013", "\u2014", "-")  # "BC2.17A–" continued by "BC2.17H" on the next line: a range of deleted paragraphs
-EDITORIAL_BRACKETS = re.compile(r"\[(?:Refer|Note|Link|now)\b[^\]]*\]", re.I)
-POINTER_BRACKETS = re.compile(r"\[(?:Refer|Link)\b[^\]]*\]", re.I)  # bare pointers to other text: no content of their own
-INLINE_NOTE = re.compile(r"\[Note:[^\]]*\]", re.I)  # an editorial note printed inside a paragraph's own text
 MARGIN_MAX_X = 150
 HEADER_Y, FOOTER_Y = 110, 720
 
@@ -214,7 +211,7 @@ def accompanying_kind(ref: str) -> str:
 
 
 def parse_document(doc: pymupdf.Document, max_words: int = 500, stub_re=None, footnote_form=None,
-                   example_re=None, term_form: str | None = None) -> tuple[list[Chunk], str]:
+                   example_re=None, term_form: str | None = None, asides: dict | None = None) -> tuple[list[Chunk], str]:
     """Read an IFRS PDF. A Standard (Part A) is read exactly as parse() always has; a document published with it
     (illustrative examples, implementation guidance, Basis for Conclusions: Parts B and C) by its own paragraph numbers.
 
@@ -224,24 +221,32 @@ def parse_document(doc: pymupdf.Document, max_words: int = 500, stub_re=None, fo
     stub_re: the wiki schema's stub forms (what a deleted or left-out paragraph says), each read as its own paragraph.
     footnote_form: the schema's citation form for a footnote, which keeps footnotes (see parse).
     term_form: the schema's citation form for a defined term ("<prefix><term>"), which labels each one (see parse).
+    asides: how the schema reads the source's own asides (checks.reader_settings): see parse.
     """
     chunks = parse(doc, max_words, stub_re=stub_re, footnote_form=footnote_form, example_re=example_re,
-                   term_form=term_form) if looks_like_ifrs(doc) else []
+                   term_form=term_form, asides=asides) if looks_like_ifrs(doc) else []
     if any(c.source_type == "standard" for c in chunks):
         return chunks, "standard"
-    acc = parse(doc, max_words, accompanying=True, stub_re=stub_re, footnote_form=footnote_form, example_re=example_re)
+    acc = parse(doc, max_words, accompanying=True, stub_re=stub_re, footnote_form=footnote_form, example_re=example_re,
+                asides=asides)
     if any(c.source_type in ACCOMPANYING_TYPES for c in acc):
         return acc, "accompanying"
     return chunks, ""
 
 
 def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = False, stub_re=None,
-          footnote_form: str | None = None, example_re=None, term_form: str | None = None) -> list[Chunk]:
+          footnote_form: str | None = None, example_re=None, term_form: str | None = None, asides: dict | None = None) -> list[Chunk]:
     """accompanying=False reads a Standard (Part A); True reads a document published with one (Parts B and C).
     footnote_form: how the wiki's schema cites a footnote ("ED:<clause>"): each footnote is kept, labelled in that form
     with the paragraph whose text carries its marker (or, with no marker found, the one it is printed under); without it
     footnotes are left out. term_form: how the schema cites a defined term (its Defined-term citation form, e.g.
-    "<prefix><term>"): each glossary entry is labelled in it; without it, by its term alone."""
+    "<prefix><term>"): each glossary entry is labelled in it; without it, by its term alone.
+    asides (the schema's Checks, as checks.reader_settings gives them): its bracketed notes, taken out of a paragraph's
+    text and kept as its notes; its pointers, removed; its page-turn text, removed; its note markers, each starting a note
+    of its own. Without them the text is kept as printed."""
+    asides = asides or {}
+    note_re, pointer_re, turn_re, marker_re = (asides.get(k) for k in ("note_re", "pointer_re", "page_turn_re", "marker_re"))
+    tidy = lambda x: clean(turn_re.sub(" ", x)) if turn_re and x else x  # page-turn text goes wherever it is printed
     section = "intro"
     heading: str | None = None
     heading_buf: list[str] = []
@@ -364,6 +369,12 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
                         and font.startswith("Swift")
                         and (PARA_RE.match(text.rstrip("".join(RANGE_DASH))) or (section == "appendix_a" and "Bold" in font))
                     )
+                if (not is_label and section == "appendix_a" and cur.ref and x < MARGIN_MAX_X and font.startswith("Swift")
+                        and not (last_label and last_label[0] == pno and 0 <= y - last_label[1] < 3)):
+                    # text in the term column in the body font: the glossary's own text after its terms (a closing line),
+                    # not the definition above it; it is unlabelled text of its own, cited by its page label
+                    flush()
+                    cur = _Para(None, section, pno, heading, path=tuple((l, h) for l, h, _ in path))
                 if is_label:
                     if section == "appendix_a" and last_label and last_label[0] == pno and 0 < y - last_label[1] < 13:
                         cur.ref = f"{cur.ref} {text}"
@@ -385,18 +396,23 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
         ref = p.ref
         if p.section == "appendix_a" and ref:
             ref = term_form.replace("<term>", ref) if term_form and "<term>" in term_form else ref
-        raw = _join(p.body)
-        p.notes.extend(INLINE_NOTE.findall(raw))  # kept with the paragraph's other notes, never as part of its text
-        body = clean(EDITORIAL_BRACKETS.sub("", raw))
+        raw = tidy(_join(p.body))
+        if note_re:  # a note printed inside a paragraph's own text is kept with its other notes, never as its text
+            p.notes.extend(m.group(0) for m in note_re.finditer(raw) if not (pointer_re and pointer_re.search(m.group(0))))
+        body = clean(note_re.sub("", pointer_re.sub("", raw) if pointer_re else raw)) if note_re else (
+            clean(pointer_re.sub("", raw)) if pointer_re else raw)
         for r, text in _split_stubs(ref, body, stub_re):
             kind = p.section if r or not accompanying else "intro"  # unlabelled text in a document published with one
             for i, part in enumerate(split_long(text, max_words)):
                 chunks.append(Chunk(r, kind, p.page, p.heading, part, i, p.path))
-        for lines in p.footnotes:  # under its paragraph, in the schema's form for text without a paragraph label
-            if footnote_form and ref and (text := clean(_join(lines))):
-                chunks.append(Chunk(footnote_form.replace("<clause>", ref), "footnote", p.page, p.heading, text, 0, p.path))
-        notes = _join(p.notes)
-        if notes and len(notes.split()) > 5:
-            for i, part in enumerate(split_long(notes, max_words)):
+        for lines in p.footnotes:  # under its paragraph (or its page label, under unlabelled text), in the schema's form
+            if footnote_form and (text := tidy(_join(lines))):
+                chunks.append(Chunk(footnote_form.replace("<clause>", ref or f"p{p.page}"), "footnote", p.page, p.heading,
+                                    text, 0, p.path))
+        notes = tidy(_join(p.notes))
+        starts = [m.start() for m in marker_re.finditer(notes)] if marker_re and notes else []
+        pieces = [notes[a:b].strip() for a, b in zip([0] + starts, starts + [len(notes)])] if starts else [notes]
+        for note in (x for x in pieces if x):  # each marked note its own passage, beside the same clause
+            for i, part in enumerate(split_long(note, max_words)):
                 chunks.append(Chunk(ref, "note", p.page, p.heading, part, i, p.path))
     return chunks
