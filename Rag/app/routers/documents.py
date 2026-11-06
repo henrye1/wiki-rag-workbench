@@ -4,6 +4,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 
 from .. import storage
+from ..files import remove_unless_held
 from ..db import get_pool
 from ..ingest.pipeline import DuplicateDocument, ingest
 from .collections import collection_dep
@@ -89,4 +90,4 @@ async def delete_document(doc_id: UUID):
         row = await (await conn.execute("delete from documents where id = %s returning file", (doc_id,))).fetchone()
         if not row:
             raise HTTPException(404, "Not found")
-    await storage.remove(row["file"])
+    await remove_unless_held([row["file"]])  # another collection may hold the same file
