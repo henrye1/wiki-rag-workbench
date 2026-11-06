@@ -16,13 +16,6 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     judge_model: str = "claude-opus-5-5"
     judge_effort: str = "high"
-    # api: the Anthropic API (key above). claude-code: your Claude subscription through Claude Code (`claude -p`, with the
-    # token from `claude setup-token`); same model, effort, system prompt and JSON schema, but no Message Batches, and usage
-    # counts against the plan's limits instead of API credit
-    judge_backend: str = "api"
-    claude_code_oauth_token: str = ""
-    claude_bin: str = "claude"
-    judge_timeout_s: int = 900
 
     rag_url: str = "http://127.0.0.1:8000"
     rag_api_key: str
@@ -34,7 +27,7 @@ class Settings(BaseSettings):
     sources: str = "all"  # "standard" (Part A only) or "all" (Parts A, B and C); always the same for both systems
     use_saved: bool = True  # the wiki also reads relevant saved answers (synthesis pages filed with Save)
     # both RAG columns also search the Standard's editorial text (notes and agenda decisions an annotated edition prints,
-    # the introduction, Appendix C), which the wiki keeps too; recorded per run (runs before it was recorded: off)
+    # the introduction, Appendix C), which the wiki keeps too; recorded per run
     rag_include_editorial: bool = True
     mode: str = "quick"  # quick: answers, grading and the answer checks; full: also faithfulness and context recall
     use_batch: bool = True  # grade through the Message Batches API (half price), falling back to the normal API

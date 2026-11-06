@@ -26,7 +26,7 @@ from psycopg.types.json import Jsonb
 
 from . import judge
 from .config import get_settings
-from .data import load
+from .data import load, parse_topics
 from .library import Library
 
 TAGS = ["standard", "supporting", "beyond_standard"]
@@ -282,7 +282,7 @@ async def suggest_topic(t, row: dict, finder: Finder) -> dict:
         if len(tags) == 1:  # never merge points with different tags
             merges.append({**m, "status": None})
     return {
-        "made_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "model": sg["model"], "backend": sg.get("backend", "api"),
+        "made_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "model": sg["model"],
         "base_version": row["version"], "usage": usage, "search": "words and meaning" if finder.semantic else "words only",
         "points": {i: {**{k: verdict[i][k] for k in keys}, **({"second_look": verdict[i]["second_look"]} if "second_look" in verdict[i] else {}),
                        "status": None} for i in ids if i in verdict},
@@ -342,12 +342,7 @@ async def suggest(conn: psycopg.Connection, ref_sha: str, numbers: set[int] | No
 
 if __name__ == "__main__":
     if len(sys.argv) in (2, 3):
-        nums = None
-        if len(sys.argv) == 3:
-            nums = set()
-            for part in sys.argv[2].split(","):
-                a, _, b = part.partition("-")
-                nums.update(range(int(a), int(b or a) + 1))
+        nums = parse_topics(sys.argv[2]) if len(sys.argv) == 3 else None
         c = psycopg.connect(get_settings().database_url, autocommit=True, row_factory=dict_row)
         asyncio.run(suggest(c, sys.argv[1], nums, lambda m: print(m, flush=True)))
     else:

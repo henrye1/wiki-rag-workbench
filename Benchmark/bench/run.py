@@ -22,19 +22,9 @@ from psycopg.types.json import Jsonb
 
 from . import checks, context, gaps, judge, metrics, rubric, std_similarity, systems
 from .config import ROOT, get_settings
-from .data import Topic, load
+from .data import Topic, load, parse_topics
 
 WEIGHT = {"full": 1.0, "partial": 0.5, "missing": 0.0}
-
-
-def parse_topics(spec: str | None, n: int) -> list[int]:
-    if not spec:
-        return list(range(1, n + 1))
-    out: set[int] = set()
-    for part in spec.split(","):
-        a, _, b = part.partition("-")
-        out.update(range(int(a), int(b or a) + 1))
-    return sorted(out)
 
 
 def coverage(points: list[dict], grades: dict[str, str], kind: str | tuple | None = None) -> float | None:
@@ -157,7 +147,7 @@ def _per_order(points: list[dict], label: dict, g: dict) -> dict:
     jd = g["data"]
     out = {"blind_labels": label, "winner": "tie" if jd["winner"] == "tie" else label[jd["winner"]], "rationale": jd["rationale"],
            "point_notes": {pg["id"]: pg["note"] for pg in jd["point_grades"]}, "judge_model": g["model"], "judge_usage": g["usage"],
-           "batch": g.get("batch", False), "backend": g.get("backend", "api"), "systems": {}}
+           "batch": g.get("batch", False), "systems": {}}
     for lab, name in label.items():
         grades = {pg["id"]: pg[lab] for pg in jd["point_grades"]}
         out["systems"][name] = {"grades": grades, "similarity": jd["similarity"][lab], "contradictions": jd["contradictions"][lab]}
@@ -172,7 +162,7 @@ def _avg(xs):
 def _scores(points: list[dict], o: list[dict], name: str, all_sources: bool) -> dict:
     """One system's scores in one pair, from its gradings in both orders."""
     return {
-        "grades": o[0]["systems"][name]["grades"],  # order 1, as in runs before both orders
+        "grades": o[0]["systems"][name]["grades"],  # order 1's grades: the topic page shows them per key point
         "grades_by_order": [x["systems"][name]["grades"] for x in o],
         "point_weight": {p["id"]: sum(WEIGHT[x["systems"][name]["grades"].get(p["id"], "missing")] for x in o) / len(o) for p in points},
         "similarity": _avg([x["systems"][name]["similarity"] for x in o]),
@@ -194,7 +184,7 @@ def _pair(o: list[dict]) -> dict:
         "rationale": "\n\n".join(f"Order {k} ({x['blind_labels']['A']} first): {x['rationale']}" for k, x in zip(ORDERS, o)),
         "point_notes": o[0]["point_notes"], "orders_graded": len(o), "judge_model": o[0]["judge_model"],
         "judge_usage": {k: sum(x["judge_usage"][k] for x in o) for k in ("input_tokens", "output_tokens")},
-        "judge_batch": all(x["batch"] for x in o), "judge_backend": o[0].get("backend", "api"),
+        "judge_batch": all(x["batch"] for x in o),
     }
 
 
@@ -330,13 +320,6 @@ def aggregate(data: dict):
             for w, c in pw.items():
                 wins_vs[rag][w] += c
             agg.setdefault("pairs", {})[rag] = {"wiki": vs, "wins": pw}
-        # Per key point: how often each system covered it fully across runs
-        agg["key_point_hit_rate"] = {
-            p["id"]: {name: round(sum(r["systems"][name]["point_weight"][p["id"]] if "point_weight" in r["systems"][name]
-                                      else WEIGHT[r["systems"][name]["grades"].get(p["id"], "missing")] for r in runs) / len(runs), 2)
-                      for name in names}
-            for p in rec["key_points"]
-        }
         rec["aggregate"] = agg
     data["summary"] = {
         "topics_scored": len(totals["rag"]["similarity"]),
@@ -388,15 +371,12 @@ async def main():
     if not row["rag_collection"]:
         sys.exit(f"Run {run_id} has no RAG collection")
     s.rag_collection, s.wiki_slug, s.sources = row["rag_collection"], row["wiki_slug"], row["sources"] or "all"
-    s.use_saved = row["use_saved"] is not False  # older runs (null) read every page, saved answers included
+    s.use_saved, s.use_batch = row["use_saved"], row["use_batch"]
     s.mode = row.get("mode") or s.mode
-    s.use_batch = s.use_batch if row.get("use_batch") is None else row["use_batch"]
-    if s.judge_backend == "claude-code":
-        s.use_batch = False  # Message Batches are an API feature; the subscription judge grades one call at a time
     runs = args.runs or row["runs"]
     store = Store(conn, run_id, row["results"] or {}, row["log"])
-    if store.data:  # a resumed run asks the RAG as it started (runs from before the setting was recorded: off)
-        s.rag_include_editorial = bool((store.data.get("config") or {}).get("rag_include_editorial", False))
+    if store.data:  # a resumed run asks the RAG as it started
+        s.rag_include_editorial = store.data["config"]["rag_include_editorial"]
     store.ref_sha, store.ref_name = rubric.sha256(row["reference"]), row["reference_name"]
     store.log(f"--- {dt.datetime.now().isoformat(timespec='seconds')} start")
     await store.save("running")
@@ -408,15 +388,15 @@ async def main():
             qs.write_bytes(row["query_set"])
             ref.write_bytes(row["reference"])
             topics = load(qs, ref)
-        wanted = set(parse_topics(args.topics or row["topics"] or None, len(topics)))
+        wanted = parse_topics(args.topics or row["topics"]) or {t.number for t in topics}  # empty: every topic
         topics = [t for t in topics if t.number in wanted]
-        if s.mode == "full":  # Full runs use an approved rubric only
+        if s.mode == "full":  # Full runs use an approved rubric only (the UI checks the same before it starts a run)
             ok = {r["topic_number"] for r in conn.execute(
                 """select topic_number from bench.rubrics where reference_sha256 = %s and reviewed_at is not null
                    and facts is not null and facts_reviewed_at is not null""", (store.ref_sha,))}
             if missing := [t.number for t in topics if t.number not in ok]:
-                raise RuntimeError(f"Full runs need an approved rubric: approve topic(s) {', '.join(map(str, missing))} "
-                                   "on the Rubric review screen, or run in Quick mode")
+                raise RuntimeError("Full runs need an approved rubric. Approve the key points and the fact list of topic(s) "
+                                   f"{', '.join(map(str, missing))} on the Rubric review screen, or run in Quick mode")
 
         async with httpx.AsyncClient() as http:
             if not store.data:
@@ -424,21 +404,15 @@ async def main():
                     "config": {
                         "started": dt.datetime.now().isoformat(timespec="seconds"), "git_commit": _git_commit(),
                         "judge_model": s.judge_model, "judge_effort": s.judge_effort,
-                        "judge_backend": "Claude Code on a Claude subscription (claude -p)" if s.judge_backend == "claude-code" else "Anthropic API",
                         "answer_checks": {"model": s.checks_model, "version": checks.VERSION},
                         "context_checks": {"model": s.context_model, "version": context.VERSION} if s.mode == "full" else None, "runs": runs, "seed": s.seed,
                         "topics_selected": [t.number for t in topics], "expected_judgements": len(topics) * runs,
-                        "question_format": "topic title + Q1..Qn, sent identically to RAG /collections/{c}/query (both RAG columns) and Wiki /wikis/{w}/query",
                         "systems_compared": list(systems.SYSTEMS),
                         "system_labels": {n: systems.LABEL[n] for n in systems.SYSTEMS},
                         "rag_retrieval": {n: systems.RETRIEVAL[n] for n in systems.RAGS},
                         "rag_collection": s.rag_collection, "wiki_slug": s.wiki_slug, "sources": s.sources, "use_saved_answers": s.use_saved,
                         "rag_include_editorial": s.rag_include_editorial,
-                        "mode": s.mode, "grading": ("the wiki answer, asked once, is paired with each RAG column; each pair in both "
-                                                    "orders (A-B and B-A), averaged; a win only when both agree; the wiki's own "
-                                                    "scores are from its pair with RAG (per topic); "
-                                                    + ("message batches (half price), normal API for the rest" if s.use_batch else "normal API")),
-                        "capture": "read+usage v1",  # each answer records what was read and its AI calls' tokens
+                        "mode": s.mode,
                         "systems": await systems.describe(http),
                         "query_set": row["query_set_name"], "reference": row["reference_name"],
                         "reference_sha256": store.ref_sha,

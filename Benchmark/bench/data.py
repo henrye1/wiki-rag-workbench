@@ -26,6 +26,16 @@ class Topic:
         return f"{self.title}\n" + "\n".join(self.questions)
 
 
+def parse_topics(spec: str | None) -> set[int]:
+    """Topic numbers from a spec such as "1,2,5-7"; an empty spec gives an empty set (the caller's "all")."""
+    out: set[int] = set()
+    for part in (spec or "").replace(" ", "").split(","):
+        if part:
+            a, _, b = part.partition("-")
+            out.update(range(int(a), int(b or a) + 1))
+    return out
+
+
 def load_topics(path) -> list[Topic]:
     text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
     matches = list(TOPIC_RE.finditer(text))

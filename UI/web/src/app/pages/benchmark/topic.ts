@@ -4,10 +4,9 @@ import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../../core/api';
 import { Markdown } from '../../shared/markdown';
+import { LABEL, SHORT } from './systems';
 
 const SYMBOL: Record<string, string> = { full: '✅', partial: '⚠️', missing: '❌' };
-const LABEL: Record<string, string> = { rag: 'RAG (per topic)', rag_q: 'RAG (per question)', wiki: 'Wiki' };
-const SHORT: Record<string, string> = { rag: 'RAG topic', rag_q: 'RAG question', wiki: 'Wiki' };
 
 @Component({
   selector: 'app-bench-topic',
@@ -104,7 +103,7 @@ const SHORT: Record<string, string> = { rag: 'RAG topic', rag_q: 'RAG question',
                       <li><b [class]="'st ' + c.status">{{ c.label || c.source }} {{ word[c.status] ?? c.status }}</b> — <i>{{ c.statement }}</i>
                         <span class="muted"> {{ c.note || c.reason }}</span></li>
                     }</ul>
-                    <div class="muted small">Checked by {{ ck.model }}{{ ck.backend === 'claude-code' ? ' (Claude subscription)' : '' }}</div>
+                    <div class="muted small">Checked by {{ ck.model }}</div>
                   </details>
                 }
                 @if (r.systems[sys].context_checks; as cx) {
@@ -120,7 +119,7 @@ const SHORT: Record<string, string> = { rag: 'RAG topic', rag_q: 'RAG question',
                     <ul>@for (c of cx.claims; track $index) { <li><b [class]="'st ' + c.status">{{ word[c.status] ?? c.status }}</b> — {{ c.claim }} <span class="muted">{{ c.note }}</span></li> }</ul>
                     <h4>Key points in what it read</h4>
                     <ul>@for (k of cx.key_points; track k.id) { <li><b [class]="'st ' + k.status">{{ k.id }} {{ word[k.status] ?? k.status }}</b> <span class="muted">{{ k.note }}</span></li> }</ul>
-                    <div class="muted small">Checked by {{ cx.model }}{{ cx.backend === 'claude-code' ? ' (Claude subscription)' : '' }}</div>
+                    <div class="muted small">Checked by {{ cx.model }}</div>
                   </details>
                 }
               </div>
@@ -173,8 +172,8 @@ export class BenchTopic {
     not_stated: 'not stated', supported: 'supported', not_supported: 'not supported', not_checkable: 'not checkable',
   };
 
-  /** The systems the run compared: runs made before RAG (per question) was added compared RAG (per topic) and the wiki. */
-  systems(): string[] { return this.data()?.config?.systems_compared ?? ['rag', 'wiki']; }
+  /** The systems the run compared, as it recorded them. */
+  systems(): string[] { return this.data()?.config?.systems_compared ?? []; }
   label(sys: string) { return LABEL[sys] ?? sys; }
   short(sys: string) { return SHORT[sys] ?? sys; }
   pairList(r: any) { return Object.entries<any>(r.pairs ?? {}).map(([rag, p]) => ({ rag, p })); }

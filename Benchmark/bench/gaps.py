@@ -9,6 +9,8 @@ Each RAG column has its own gaps. For the judged tests and wins, the wiki's side
 import random
 import statistics
 
+from .systems import answers_of
+
 LOWER_IS_BETTER = {"latency_s", "cost_usd"}
 JUDGED = ("similarity", "coverage", "coverage_standard", "coverage_std_supp")
 RESAMPLES = 10_000
@@ -19,7 +21,7 @@ def _topic_values(rec: dict, rag: str = "rag") -> dict[str, dict[str, float]]:
     answers otherwise), for the pair of `rag` and the wiki."""
     out: dict[str, dict[str, list]] = {}
     for run in rec.get("runs", {}).values():
-        sys_ = run.get("systems") or run.get("answers") or {}
+        sys_ = answers_of(run)
         pair = run if rag == "rag" else (run.get("pairs") or {}).get(rag) or {}
         for name in (rag, "wiki"):
             a = sys_.get(name)
