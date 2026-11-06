@@ -53,8 +53,9 @@ async def page_source_map(slug: str, wiki: dict = Depends(wiki_dep)):
     of its sentences cite each. contents: on a source's own page, each section of that source with the pages it informs,
     then the sections no page draws on; otherwise null."""
     page = await _page_or_404(wiki, slug)
-    return {"sources": await sourcemap.page_map(wiki["id"], page["content_md"]),
-            "contents": await sourcemap.source_contents(wiki["id"], slug) if page["type"] == "source" else None}
+    c = checks.load(wiki["schema_md"])  # the schema's citation forms name what a label means
+    return {"sources": await sourcemap.page_map(wiki["id"], page["content_md"], c),
+            "contents": await sourcemap.source_contents(wiki["id"], slug, c) if page["type"] == "source" else None}
 
 
 @router.delete("/wikis/{w}/pages/{slug}/needs-checking", status_code=204)

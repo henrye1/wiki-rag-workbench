@@ -44,12 +44,12 @@ import { Markdown } from '../../shared/markdown';
               <h3>Contents map</h3>
               <p class="muted small">Each section of this document, in its own order, with the pages it informs (sentences citing it).</p>
               @for (x of c.sections; track x.section) {
-                <div class="sec"><b>{{ x.section }}</b>
-                  <div>@for (g of x.pages; track g.slug) { <a [routerLink]="['..', g.slug]">{{ g.title }}</a> <span class="muted">({{ g.sentences }})</span>@if (!$last) { · } }</div>
+                <div class="sec"><b>{{ x.name }}</b>
+                  <ul class="pages">@for (g of x.pages; track g.slug) { <li><a [routerLink]="['..', g.slug]">{{ g.title }}</a><span class="muted">&nbsp;({{ g.sentences }})</span></li> }</ul>
                 </div>
               }
               <h4>Not used on any page ({{ c.unused.length }})</h4>
-              @for (u of c.unused; track u) { <div class="sec">{{ u }}</div> }
+              @for (u of c.unused; track u.section) { <div class="sec">{{ u.name }}</div> }
               @empty { <div class="muted">None: every section informs at least one page.</div> }
               @if (c.not_in_source.length) {
                 <h4>Cited, but not a location in this document ({{ c.not_in_source.length }})</h4>
@@ -78,13 +78,13 @@ import { Markdown } from '../../shared/markdown';
               </div>
               @if (open().has(s.slug)) {
                 <ul class="secs">
-                  @for (x of s.sections; track x.section) { <li>{{ x.section }} <span class="muted">({{ x.sentences }})</span></li> }
+                  @for (x of s.sections; track x.section) { <li>{{ x.name }}<span class="muted">&nbsp;({{ x.sentences }})</span></li> }
                   @for (x of s.not_in_source; track x.label) { <li class="error">{{ x.label }} <span class="muted">(cited, not in this source)</span></li> }
                 </ul>
               }
             }
             @empty { <div class="muted empty">None recorded</div> }
-            @if (docs().length) { <div class="muted small">▸ the document's sections this page cites (sentences citing each).</div> }
+            @if (docs().length) { <p class="hint">Open a document to see the sections this page cites, with the number of sentences citing each.</p> }
           </div>
           <div class="card">
             <h3>History</h3>
@@ -122,6 +122,8 @@ import { Markdown } from '../../shared/markdown';
     .doc { display: flex; align-items: baseline; gap: 4px; } .tog { width: 18px; flex: none; border: 0; background: none; padding: 0; cursor: pointer; color: inherit; }
     .secs { margin: 2px 0 8px 22px; padding-left: 12px; font-size: 13px; } .secs li { margin: 2px 0; }
     .contents { margin-top: 24px; } .contents h4 { margin: 16px 0 4px; } .sec { margin: 6px 0; font-size: 14px; }
+    .pages { margin: 2px 0 0; padding-left: 20px; } .pages li { margin: 1px 0; }
+    .hint { margin: 8px 0 0; font-size: 12px; color: var(--mat-sys-on-surface-variant); cursor: default; user-select: text; }
   `,
 })
 export class WikiPage {

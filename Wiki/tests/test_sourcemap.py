@@ -2,6 +2,7 @@
 import unittest
 
 from app.ops import sourcemap
+from app.wiki import checks
 
 TEXT = "\n\n".join([
     "[Front] A paper",
@@ -33,6 +34,16 @@ class Sections(unittest.TestCase):
         self.assertEqual(sourcemap.section_of("Part Two > Topic > Figure 9", of), "Part Two > Topic")  # longest start
         self.assertIsNone(sourcemap.section_of("Part Twelve", of))
         self.assertIsNone(sourcemap.section_of("9", of))
+
+
+class Shown(unittest.TestCase):
+    def test_page_labels_and_schema_forms(self):
+        c = checks.Checks(unlabelled_forms={"side remark": "SR:<clause>", "opening": "<page label>"})
+        self.assertEqual(sourcemap.shown("p74", c), "Page 74")
+        self.assertEqual(sourcemap.shown("SR:p79", c), "Page 79 (side remark)")  # the kind's name comes from the schema
+        self.assertEqual(sourcemap.shown("SR:12", c), "12 (side remark)")
+        self.assertEqual(sourcemap.shown("Part One > Detail", c), "Part One > Detail")
+        self.assertEqual(sourcemap.shown("SR:p79", None), "SR:p79")  # no schema form: as it is
 
 
 class Cited(unittest.TestCase):

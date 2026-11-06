@@ -13,6 +13,19 @@ from .ingest import _drop_title, _ref
 from .pagecheck import BASE
 
 RANGE = re.compile(r"\s*[–-]\s*")  # "B11D(a)-(e)", "B5.5.1–B5.5.6": a range is read as its first label
+PAGE_NUMBER = re.compile(r"p(?:age)?\s*(\d+)", re.I)  # the PDF reader's page label (checks.PAGE_LABEL), its number kept
+
+
+def shown(section: str, c: checks.Checks | None) -> str:
+    """How a section is shown. A section named by the reader's page label reads "Page 74"; one named in a citation
+    form the schema gives for text without a paragraph label (e.g. "ED:<clause>") is shown as what follows the form's
+    prefix, with the schema's name for that kind in brackets ("Page 79 (editorial note)"). Any other name as it is."""
+    for kind, form in (c.unlabelled_forms if c else {}).items():
+        tag = form.split("<", 1)[0]
+        if "<" in form and tag and section.startswith(tag) and section != tag:
+            return f"{shown(section[len(tag):], None)} ({kind})"
+    m = PAGE_NUMBER.fullmatch(section)
+    return f"Page {m.group(1)}" if m else section
 
 
 def sections(text: str, heading_paths: list | None) -> tuple[list[str], dict[str, str]]:
@@ -67,7 +80,7 @@ async def _sources(wiki_id, slugs: list[str] | None = None) -> dict[str, dict]:
     return {r["slug"]: {"title": r["title"], "sections": sections(r["text"], r["hp"])} for r in rows}
 
 
-async def page_map(wiki_id, content_md: str) -> list[dict]:
+async def page_map(wiki_id, content_md: str, c: checks.Checks | None = None) -> list[dict]:
     """For each source the page cites: its sections the page draws on, in the source's order, with the number of the
     page's sentences citing each; and any cited location the source does not have."""
     units = cited(content_md)
@@ -87,12 +100,12 @@ async def page_map(wiki_id, content_md: str) -> list[dict]:
             for sec in secs:
                 count[sec] = count.get(sec, 0) + 1
         out.append({"slug": slug, "title": info["title"],
-                    "sections": [{"section": sec, "sentences": count[sec]} for sec in order if sec in count],
+                    "sections": [{"section": sec, "name": shown(sec, c), "sentences": count[sec]} for sec in order if sec in count],
                     "not_in_source": [{"label": k, "sentences": v} for k, v in missing.items()]})
     return out
 
 
-async def source_contents(wiki_id, source_slug: str) -> dict | None:
+async def source_contents(wiki_id, source_slug: str, c: checks.Checks | None = None) -> dict | None:
     """A source's sections in document order, each with the pages that draw on it (and how many of their sentences
     cite it); then the sections no page draws on; then any cited location the source does not have. None where the
     slug is not a source of the wiki. The source's own page is left out: it describes the source, it is not informed by it."""
@@ -117,6 +130,6 @@ async def source_contents(wiki_id, source_slug: str) -> dict | None:
     title = {p["slug"]: p["title"] for p in pages}
     pages_of = lambda d: [{"slug": sl, "title": title[sl], "sentences": n} for sl, n in sorted(d.items(), key=lambda x: title[x[0]])]
     return {"slug": source_slug, "title": srcs[source_slug]["title"],
-            "sections": [{"section": sec, "pages": pages_of(by_sec[sec])} for sec in order if sec in by_sec],
-            "unused": [sec for sec in order if sec not in by_sec],
+            "sections": [{"section": sec, "name": shown(sec, c), "pages": pages_of(by_sec[sec])} for sec in order if sec in by_sec],
+            "unused": [{"section": sec, "name": shown(sec, c)} for sec in order if sec not in by_sec],
             "not_in_source": [{"label": k, "pages": [{"slug": sl, "title": title[sl]} for sl in sorted(v)]} for k, v in missing.items()]}
