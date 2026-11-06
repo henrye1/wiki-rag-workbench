@@ -61,7 +61,23 @@ def passages_cited(srcs: dict, slug: str, label: str) -> list[str]:
 
 
 def _source_cites(text: str) -> list[tuple[str, str]]:
-    return [(m.group(1), m.group(2).strip()) for m in store.LINK_RE.finditer(text) if m.group(1).startswith("source-") and m.group(2)]
+    """The clauses a text cites: the source links in the group of citations that ends each of its sentences (list
+    parts and table cells included). A link inside a sentence, to a page or to a paragraph in passing, is a pointer,
+    not a citation (the schema's Workflow: Answer and check)."""
+    return [(m.group(1), m.group(2).strip()) for m in checks.closing_links(text)
+            if m.group(1).startswith(fixpass.SOURCE_SLUG) and m.group(2)]
+
+
+def _end_links(unit: str) -> list:
+    """The links standing in a unit's citation position: the run of links it ends with, joined only by spaces, commas
+    or semicolons, with nothing after them but closing punctuation."""
+    links, out, tail = list(store.LINK_RE.finditer(unit)), [], unit
+    for m in reversed(links):
+        after = tail[m.end():] if not out else unit[m.end():out[0].start()]
+        if not re.fullmatch(r"[\s.;:,|*]*" if not out else r"[\s,;]*", after):
+            break
+        out.insert(0, m)
+    return out
 
 
 # ---------- the layout ----------
@@ -133,18 +149,22 @@ def _sentences(body: str, chk) -> list[str]:
 
 
 def citation_failures(body: str, chk) -> list[str]:
-    """A sentence that cites no clause; a link to a page, or to a whole document, in place of a clause."""
+    """A sentence that cites no clause in the group of citations that ends it; a link to a page, or to a whole
+    document, standing in that place. A link to a page inside a sentence is a pointer and stays as it is."""
     out = []
     for s in _sentences(body, chk):
-        links = list(store.LINK_RE.finditer(s))
-        if not any(m.group(1).startswith("source-") and m.group(2) for m in links):
-            out.append(f'The sentence "{s[:90]}" cites no clause; end it with the clause it rests on, '
-                       "[[source-<source-name>|<clause reference>]].")
-        for m in links:
-            if not m.group(1).startswith("source-"):
-                out.append(f"[[{m.group(1)}]] cites a page, not a clause; cite the clause the page cites.")
-            elif not m.group(2):
-                out.append(f"[[{m.group(1)}]] cites a whole document, not a clause.")
+        if _source_cites(s):
+            continue  # it ends with a clause; any link before it is a pointer
+        out.append(f'The sentence "{s[:90]}" cites no clause; end it with the clause it rests on, '
+                   "[[source-<source-name>|<clause reference>]].")
+        for u in checks.units(s)[-1:]:  # what stands at its end, in the citation's place
+            for m in _end_links(u):
+                if not m.group(1).startswith(fixpass.SOURCE_SLUG):
+                    out.append(f"[[{m.group(1)}]] stands where the sentence's citation goes: a page is not a clause; "
+                               "end the sentence with the clause it rests on, and keep the page link, if wanted, "
+                               "inside the sentence.")
+                elif not m.group(2):
+                    out.append(f"[[{m.group(1)}]] cites a whole document, not a clause.")
     return list(dict.fromkeys(out))
 
 
@@ -167,14 +187,30 @@ def placement_failures(main: str, apart: str, chk, srcs: dict) -> list[str]:
     return list(dict.fromkeys(out))
 
 
-def references_failures(main: str, refs: str, apart: str) -> list[str]:
-    """Every clause the answer relies on is listed under the clause references."""
-    listed = {f"{sl}|{BASE(lab)}" for sl, lab in _source_cites(refs or "")}
-    out = []
-    for sl, lab in _source_cites((main or "") + "\n" + (apart or "")):
-        if f"{sl}|{BASE(lab)}" not in listed:
-            out.append(f"The clause references do not list [[{sl}|{lab}]], which the answer cites.")
-    return list(dict.fromkeys(out))
+def with_references(answer: str, chk) -> str:
+    """The answer with its clause references built from the citations that end its sentences (the answer and its
+    non-authoritative material), in order of first use, each once; the layout's word for an empty part where there are
+    none. An answer without the references heading is left as it is, for the layout check to report."""
+    head = chk.answer_headings[1]
+    lines = answer.split("\n")
+    at = next((i for i, ln in enumerate(lines) if ln.strip() == head), None)
+    if at is None:
+        return answer
+    _, (main, _refs, _gaps, apart) = split_parts(answer, chk)
+    cited = list(dict.fromkeys(f"[[{sl}|{lab}]]" for sl, lab in _source_cites("\n\n".join(x for x in (main, apart) if x))))
+    nxt = next((j for j in range(at + 1, len(lines)) if lines[j].strip() in chk.answer_headings), len(lines))
+    body = "\n".join(cited) if cited else chk.answer_none
+    return "\n".join(lines[: at + 1] + [body, ""] + lines[nxt:])
+
+
+def brief_failures(apart: str, chk, srcs: dict) -> list[str]:
+    """A kind given more sentences under the non-authoritative material than the schema's Brief kinds allow."""
+    counts: dict[str, int] = {}
+    for s in _sentences(apart, chk):
+        for k in {kind_of(srcs, chk, sl, lab) for sl, lab in _source_cites(s)} & set(chk.brief_kinds):
+            counts[k] = counts.get(k, 0) + 1
+    return [f'"{chk.answer_headings[3]}" gives {k} {n} sentences; the schema allows at most {chk.brief_kinds[k]}: keep '
+            "only what bears on the question." for k, n in counts.items() if n > chk.brief_kinds[k]]
 
 
 def _has(text: str, word: str) -> bool:
@@ -205,8 +241,19 @@ def force_failures(body: str, chk, srcs: dict) -> list[str]:
 
 
 def not_addressed_points(body: str | None, chk) -> list[str]:
-    return [BULLET.sub("", ln).strip() for ln in (body or "").split("\n")
-            if BULLET.sub("", ln).strip() and BULLET.sub("", ln).strip() != chk.answer_none and not ln.strip().startswith("#")]
+    """The points an answer leaves as not addressed, one per line; a line holding only what was searched for (the
+    schema's searched form) belongs to the point above it."""
+    lead = chk.searched_form.split("<", 1)[0].strip()
+    out: list[str] = []
+    for ln in (body or "").split("\n"):
+        x = BULLET.sub("", ln).strip()
+        if not x or x == chk.answer_none or ln.strip().startswith("#"):
+            continue
+        if lead and x.startswith(lead) and out:
+            out[-1] = f"{out[-1]} {x}"
+        else:
+            out.append(x)
+    return out
 
 
 def searched_failures(body: str | None, chk) -> list[str]:
@@ -229,8 +276,8 @@ def failures(answer: str, chk, srcs: dict, cite_ctx: dict) -> list[str]:
                                                absence_allowed=True)(stated)]
     out += fixpass.cite_failures(refs or "", cite_ctx, chk) if refs else []
     out += placement_failures(main or "", apart or "", chk, srcs)
-    out += references_failures(main or "", refs or "", apart or "") if refs is not None else []
     out += force_failures(stated, chk, srcs) if chk.force_words else []
+    out += brief_failures(apart or "", chk, srcs) if chk.brief_kinds else []
     out += searched_failures(gaps, chk)
     return list(dict.fromkeys(out))
 
@@ -242,21 +289,26 @@ def pagecheck_covers(label: str, ref: str, chk) -> bool:
 
 # ---------- the instruction ----------
 
-def instruction(chk) -> str:
-    """The answer's system instruction: the schema's layout, openers, force words and ranking, in its own words."""
+def instruction(chk, schema_md: str = "") -> str:
+    """The answer's system instruction: the schema's own section on answering (the one that points to its Answer layout
+    list), word for word, so its rules are never restated here; then the layout, openers, force words and ranking,
+    read from its Checks lists."""
     h = chk.answer_headings
     names = sorted(set(chk.kinds.values()))
     main_kinds = [k for k in names if k not in chk.non_authoritative]
     openers = "; ".join(f"{k}: {' or '.join(repr(x) for x in v)}" for k, v in chk.openers.items())
     force = "; ".join(f"{g}: {', '.join(repr(w) for w in ws)}" for g, ws in chk.force_words.items())
     ranking = "; then ".join(", ".join(r) for r in chk.kind_ranking)
+    rules = checks.section_using(schema_md, checks.ANSWER_LISTS["answer_headings"])
+    brief = "; ".join(f"{k}: at most {n}" for k, n in chk.brief_kinds.items())
     return "\n".join(x for x in [
-        "You answer questions using ONLY the wiki pages provided, as the schema's Workflow: Answer and check sets out. "
-        "Do not use outside knowledge.",
-        "- Every sentence that states something from a source ends with the clause it rests on, written "
-        "[[source-<source-name>|<clause reference>]] exactly as the pages cite it. Never cite a page or a whole document.",
+        "You answer questions using ONLY the wiki pages provided. Do not use outside knowledge. Follow the schema's "
+        "rules for answers, given here word for word:" if rules else
+        "You answer questions using ONLY the wiki pages provided. Do not use outside knowledge.",
+        f"<answer_rules>\n{rules}\n</answer_rules>" if rules else "",
+        "- Write each citation [[source-<source-name>|<clause reference>]] exactly as the pages cite it.",
         f"- Lay the answer out under these headings, in this order, with no other heading at that level: {h[0]} (the "
-        f"answer); {h[1]} (every clause the answer relies on, one per line, each as its citation); {h[2]} (each point "
+        f"answer); {h[1]} (every clause that ends a sentence of the answer, one per line, each as its citation); {h[2]} (each point "
         f"the standard does not address); {h[3]} (only material from {', '.join(chk.non_authoritative)}, each item "
         f"opening with what it is). Under a heading with nothing to put there, write \"{chk.answer_none}\".",
         f"- Material from {', '.join(main_kinds)} stays under {h[0]}, each sentence opening with what it is." if main_kinds else "",
@@ -266,6 +318,7 @@ def instruction(chk) -> str:
         f"{chk.force_strict or 'obligation'} only where a paragraph you cite uses one, and the one it uses." if force else "",
         f"- Where the pages give conflicting positions, state both, each with its clause, and rank them by kind, highest "
         f"first: {ranking}." if ranking else "",
+        f"- Under {h[3]}, the most sentences given to each of these kinds, in all: {brief}." if brief else "",
         f"- Before listing a point under {h[2]}, check every page given for it, Definitions included.",
     ] if x)
 
@@ -273,17 +326,65 @@ def instruction(chk) -> str:
 NOT_ADDRESSED_TERMS = {
     "type": "object",
     "properties": {"points": {"type": "array", "items": {"type": "object", "properties": {
-        "point": {"type": "string"}, "terms": {"type": "array", "items": {"type": "string"}}},
-        "required": ["point", "terms"]}}},
+        "n": {"type": "integer"}, "terms": {"type": "array", "items": {"type": "string"}}},
+        "required": ["n", "terms"]}}},
     "required": ["points"],
 }
 
 
 def terms_prompt(points: list[str]) -> str:
-    return ("An answer says the standard does not address each point below. For each point, give the terms to search "
-            "the wiki's pages for: its key words as the point puts them, and the words the standard would use for them, "
-            "including any defined term. Return each point as given.\n\n<points>\n"
-            + "\n".join(f"- {p}" for p in points) + "\n</points>")
+    return ("An answer says the standard does not address each point below. For each point, by its number, give the "
+            "terms to search the wiki's pages for, each a word or short phrase of its own (never the point's sentence): "
+            "its key words as the point puts them, and the words the standard would use for them, including any defined "
+            "term.\n\n<points>\n" + "\n".join(f"{i}. {p}" for i, p in enumerate(points, 1)) + "\n</points>")
+
+
+def point_text(point: str, chk) -> str:
+    """A point left as not addressed, without the line saying what was searched for (the schema's searched form)."""
+    lead = chk.searched_form.split("<", 1)[0].strip()
+    return point.split(lead, 1)[0].strip() if lead and lead in point else point.strip()
+
+
+WORD = re.compile(r"\w+")
+
+
+def _words(x: str) -> set[str]:
+    return {w.casefold() for w in WORD.findall(x)}
+
+
+def searched_for(point: str, found: list[dict], chk) -> dict | None:
+    """The searched point a point left as not addressed is: the one sharing most of its words, where it shares at least
+    half of them (the point as the answer words it now, its searched line left out)."""
+    own = _words(point_text(point, chk))
+    best = max(found, key=lambda f: len(own & _words(f["point"])), default=None)
+    return best if best and own and 2 * len(own & _words(best["point"])) >= len(own) else None
+
+
+def unsearched(answer: str, chk, found: list[dict]) -> list[str]:
+    """The points an answer leaves as not addressed that the search has not looked for yet."""
+    return [p for p in not_addressed_points(split_parts(answer, chk)[1][2], chk) if not searched_for(p, found, chk)]
+
+
+def with_searched(answer: str, chk, found: list[dict]) -> str:
+    """Each point left as not addressed ends with the line saying what was actually searched for: that of the searched
+    point it is (searched_for). A point not searched yet is left as it is."""
+    head = chk.answer_headings[2]
+    if not found or not chk.searched_form.split("<", 1)[0].strip():
+        return answer
+    lines = answer.split("\n")
+    at = next((i for i, ln in enumerate(lines) if ln.strip() == head), None)
+    if at is None:
+        return answer
+    for i in range(at + 1, len(lines)):
+        if lines[i].strip() in chk.answer_headings:
+            break
+        own = point_text(BULLET.sub("", lines[i]), chk)
+        if own and own != chk.answer_none and (best := searched_for(own, found, chk)):
+            lines[i] = f"{(BULLET.match(lines[i]) or [''])[0]}{own} {best['searched']}"
+            j = next((k for k in range(i + 1, len(lines)) if lines[k].strip()), None)  # its searched line, written apart
+            if j is not None and not point_text(BULLET.sub("", lines[j]), chk) and BULLET.sub("", lines[j]).strip():
+                lines[j] = ""
+    return "\n".join(lines)
 
 
 def search_prompt(question: str, pages_md: str, draft: str, found: list[dict], chk) -> str:
@@ -319,18 +420,24 @@ async def search_not_addressed(wiki: dict, chk, points: list[str], have: set[str
     """Each point an answer says is not addressed, searched for in the text of every section and subtopic page: what
     was searched for, the pages found, and the pages to read that were not read yet (under the Sources setting)."""
     s = get_settings()
+    points = [x for x in (point_text(p, chk) for p in points) if x]  # a point with no words of its own is no search
     out = await llm.generate_json(prompts.MAINTAINER_SYSTEM, terms_prompt(points), NOT_ADDRESSED_TERMS)
-    asked = {" ".join(x["point"].split()): x["terms"] for x in out["points"]}
+    asked = {x["n"]: [t.strip() for t in x["terms"] if t.strip()] for x in out["points"]}
     listed = {p["slug"]: p for p in await store.list_pages(wiki["id"])}
     sections = {sl for sl, p in listed.items() if p["type"] in ("topic", "subtopic")}
     everything = await store.list_pages(wiki["id"], with_content=True)
     definitions = terms_page_title(everything, chk)
     found, more = [], []
-    for p in points:
-        terms = asked.get(" ".join(p.split())) or [p]
-        hits = [h for h in await search.shortlist(wiki["id"], " ".join(terms), s.shortlist_size) if h["slug"] in sections]
-        new = [h["slug"] for h in hits[:5] if h["slug"] not in have and h["slug"] not in {m["slug"] for m in more}]
+    for n, p in enumerate(points, 1):
+        terms = list(dict.fromkeys(t for t in (asked.get(n) or [p]) if t))  # no terms given back: the point itself
+        rank: dict[str, int] = {}
+        for t in terms:  # each term searched on its own; a page ranks by its best place in any of them
+            for i, h in enumerate(await search.shortlist(wiki["id"], t, s.shortlist_size)):
+                if h["slug"] in sections:
+                    rank[h["slug"]] = min(rank.get(h["slug"], i), i)
+        hits = sorted(rank, key=rank.get)[:5]
+        new = [sl for sl in hits if sl not in have and sl not in {m["slug"] for m in more}]
         more += await restrict(await store.get_pages(wiki["id"], new)) if new else []
-        found.append({"point": p, "terms": terms, "pages": [h["slug"] for h in hits[:5]],
-                      "searched": searched_line(chk, terms, definitions)})
+        found.append({"point": p, "terms": terms, "pages": hits, "searched": searched_line(chk, terms, definitions),
+                      **({} if asked.get(n) else {"terms_missing": True})})
     return found, more

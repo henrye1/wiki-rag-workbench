@@ -90,6 +90,8 @@ class Checks:
     answer_none: str = ""  # what a part with nothing in it says
     non_authoritative: list[str] = field(default_factory=list)  # the schema's kind names kept under the last heading
     searched_form: str = ""  # how a point left as not addressed ends: <terms> and <definitions page> filled in
+    brief_kinds: dict[str, int] = field(default_factory=dict)  # kind name -> the most sentences an answer gives it
+    # under its non-authoritative material
     force_words: dict[str, list[str]] = field(default_factory=dict)  # group -> the words of that force
     force_strict: str = ""  # the group whose word an answer uses only where a paragraph it cites uses one
     standard_only: str = ""  # the label of the Sources setting that keeps only the Standard's own text
@@ -138,6 +140,7 @@ LISTS = {  # attribute -> how the schema names the list (its label up to the fir
 ANSWER_LISTS = {  # read like LISTS, but used only when answering and by lint: a missing one is reported there
     "answer_headings": "answer layout", "force_words": "answer force words", "standard_only": "standard only",
     "kind_ranking": "kind ranking", "verdicts": "client-statement verdicts", "lint_checks": "lint checks",
+    "brief_kinds": "brief kinds",
 }
 PLACEHOLDER = re.compile(r"<[^<>]+>")
 AGENDA = LISTS["agenda_markers"].rsplit(" ", 1)[0]  # the Openers entry an agenda decision takes: its list's name, less "marker"
@@ -154,6 +157,15 @@ def _mapping(value: str) -> dict[str, str]:
             k, v = item.split("=", 1)
             out[k.strip().strip('"').casefold()] = v.strip()
     return out
+
+
+def section_using(schema_md: str, label: str) -> str:
+    """The schema's section (its heading and text) that points to a Checks list as "Checks (<its label>)": the
+    workflow that uses it. Empty where none does."""
+    for sec in re.split(r"(?m)^(?=## )", schema_md or ""):
+        if not SECTION.match(sec) and re.search(r"\bChecks \(" + re.escape(label) + r"\)", sec, re.I):
+            return sec.strip()
+    return ""
 
 
 def load(schema_md: str) -> Checks | None:
@@ -318,6 +330,8 @@ def load(schema_md: str) -> Checks | None:
         elif attr == "standard_only":  # "<label>" = paragraphs of no kind listed in Paragraph kinds ...
             if re.search(r"\bno kind listed in paragraph kinds\b", value, re.I):
                 c.standard_only = (QUOTED.findall(value) or [""])[0]
+        elif attr == "brief_kinds":  # <kind> = <n>; ...
+            c.brief_kinds = {k: int(v.strip().rstrip(".")) for k, v in _mapping(value).items() if v.strip().rstrip(".").isdigit()}
         elif attr == "kind_ranking":  # a; b, c; d: highest first, kinds of one rank joined by commas
             c.kind_ranking = [[x.strip().casefold() for x in r.split(",") if x.strip()] for r in value.rstrip(".").split(";")]
             c.kind_ranking = [r for r in c.kind_ranking if r]
@@ -576,7 +590,8 @@ def routed_to_examples(c: Checks | None, reader_kind: str) -> bool:
     return bool(c and reader_kind and c.kinds.get(reader_kind) in c.routed_kinds)
 
 
-AFTER_LINK = re.compile(r"\]\]([.;:!?]?)\s+(?=([A-Z(]|\[\[))")
+# what may open the next sentence after a link: a capital, a bracket, a link, or a quotation opening with a capital
+AFTER_LINK = re.compile(r"\]\]([.;:!?]?)\s+(?=([A-Z(]|[\"\u201c](?=[A-Z])|\[\[))")
 LINK_GROUP_END = re.compile(r"(?:\s*\[\[[^\]]*\]\][,;]?)+$")
 
 
@@ -624,6 +639,8 @@ def sentences(line: str) -> list[str]:
 # inline list item ("\u2022 ...") follows the link group
 PART_START = re.compile(r"(?<=\]\])[;:,]?\s*(?=\|)|(?<=\]\])[;:,]?\s+(?=\((?:[a-z]{1,3}|[ivxlc]{1,6}|\d{1,2})\)\s|[\u2022*-]\s)")
 TRAILING_GROUP = re.compile(r"(?:\[\[source-[^\]]+\]\](?:\s*(?:,|;|and)\s*|\s+)?)+(?=[\s.;:,|*]*$)")
+# at a line's end, one joining word after a list part's comma or semicolon ("...[[source|B5.5.5]]; <word>")
+LINE_END_JOIN = re.compile(r"(?<=\]\])\s*[;,]\s*\w+[\s.:]*$")
 
 
 def units(line: str) -> list[str]:
@@ -638,7 +655,7 @@ def closing_links(text: str) -> list[re.Match]:
     out = []
     for line in (text or "").split("\n"):
         for u in units(line):
-            if g := TRAILING_GROUP.search(u.rstrip()):
+            if g := TRAILING_GROUP.search(LINE_END_JOIN.sub("", u.rstrip())):
                 out += [m for m in store.LINK_RE.finditer(g.group(0))]
     return out
 

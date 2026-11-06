@@ -3959,11 +3959,14 @@ Q_PREFIX = re.compile(r"^Q\d+[.):]\s*")
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z*\[(])")
 APPENDIX = re.compile(r"^\s*App(?:endix)?\.?\s*([A-Z])\s*[:.\-–]\s*", re.I)
 ```
-- **Extraction (L148-167):**
-  - The answer is split per line, then per sentence.
+- **Extraction (`citations`, `_end_group`; version `checks-3` from 2026-11-06):**
+  - The answer is split per line, then per sentence, and each sentence into units where a list part ("; (b) ...", ": (i) ...", a bullet) or a table cell ends with its own citations (`UNIT_START`).
   - Kinds: "source" (`[[slug|label]]`), "page" (`[[page]]`), and "bare" (`[label]` containing a digit or an Appendix prefix, `_is_clause`).
-  - The statement is the sentence with citations removed, whitespace normalised, and " *-•" stripped.
+  - **Only the group of citations that ends a unit counts** as what it rests on: links and bracketed labels joined only by spaces, commas or semicolons, with only closing punctuation after them (`END_TAIL`; at a line's end, one joining word after a list part's comma or semicolon). A citation followed by more of its sentence is a pointer in passing and is not counted.
+  - The statement is the sentence without the citations it ends with; a link in passing keeps what it shows (`[[page|term]]` gives "term"); whitespace normalised, " *-•" stripped.
+  - **A line holding only citations** (a statement with no word left, such as the wiki's "Clause references" list) states nothing and is not counted.
   - Duplicates by (kind, source, label, statement) are removed.
+  - **Change from `checks-2`** (runs up to and including 20261105-233215): every citation in a sentence counted, wherever it sat, and each line of a "Clause references" list counted as a citation with an empty statement, which the judge marked not supported. In that run this added 510 empty-statement entries to the wiki's 1,404 citations (RAG: none), lowering the wiki's citation accuracy (82.1% reported; about 95.5% without them, re-scored from the saved verdicts). Links in passing were 31 of the wiki's citations, 7 of RAG (per topic)'s and 4 of RAG (per question)'s. `checks-2` also removed every link's text from the statement, so "a [[page|loss allowance]] for" was judged as "a for". Results under the two versions are not directly comparable for citation accuracy; the run records `version` in each answer's checks.
 - **Label parts (`_parts`):**
   - Standard names and "paragraph(s)/para(s)/para." are removed.
   - An appendix label becomes "Appendix X: term".

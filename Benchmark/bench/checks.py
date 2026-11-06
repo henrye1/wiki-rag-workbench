@@ -27,7 +27,8 @@ from . import judge
 from .config import get_settings
 from .library import Library
 
-VERSION = "checks-2"  # 2: Standard-only exact match (facts tagged)
+VERSION = "checks-3"  # 2: Standard-only exact match (facts tagged); 3: a sentence's citations are the group that
+#   ends it (a citation inside a sentence is a pointer), and a line holding only citations is not counted
 MAX_CITATIONS = 40   # per answer, after removing repeats; any beyond are counted, not checked
 MAX_PARAGRAPH = 3000  # characters of a cited paragraph's text given to the judge
 WEIGHT = {"answered": 1.0, "partly": 0.5, "not_answered": 0.0, "supported": 1.0, "not_supported": 0.0}
@@ -145,19 +146,56 @@ def _lookup_keys(part: str) -> list[str]:
     return keys
 
 
+# what may follow a unit's last citation: closing punctuation, and at a line's end one joining word after a list part's
+# comma or semicolon ("...; <word>")
+END_TAIL = re.compile(r"[\s.;:,!?)*\u2022|-]*(?:[;,]\s*\w+[\s.:]*)?")
+# where a sentence's part ends with its citations: a table cell, or a list part ("; (b) ...", ": (i) ...", "\u2022 ...")
+UNIT_START = re.compile(r"(?<=[\])])[;:,]?\s*(?=\|)|(?<=[\])])[;:,]?\s+(?=\((?:[a-z]{1,3}|[ivxlc]{1,6}|\d{1,2})\)\s|[\u2022*-]\s)")
+GROUP_JOIN = re.compile(r"[\s,;]*")                # what may join the citations of one group
+
+
+def _end_group(sent: str) -> list[tuple[int, int, tuple[str, str, str]]]:
+    """The citations a sentence rests on: the group of citations it ends with (links and bracketed labels joined only
+    by spaces, commas or semicolons, with only closing punctuation after them). A citation followed by more of the
+    sentence is a pointer in passing, not a citation of it. Each with where it sits in the sentence."""
+    marks = [(m.start(), m.end(), ("source", m.group(1).strip(), m.group(2).strip())) for m in WIKI_CITE.finditer(sent)]
+    marks += [(m.start(), m.end(), ("page", m.group(1).strip(), "")) for m in WIKI_LINK.finditer(sent)]
+    blank = lambda m: " " * len(m.group(0))  # keep positions while hiding the links from the bracket pattern
+    rest = WIKI_LINK.sub(blank, WIKI_CITE.sub(blank, sent))
+    marks += [(m.start(), m.end(), ("bare", "", m.group(1).strip())) for m in BRACKET.finditer(rest) if _is_clause(m.group(1))]
+    marks.sort()
+    group, upto = [], len(sent)
+    for start, end, found in reversed(marks):
+        if not (END_TAIL if not group else GROUP_JOIN).fullmatch(sent[end:upto]):
+            break
+        group.insert(0, (start, end, found))
+        upto = start
+    return group
+
+
 def citations(answer: str) -> list[dict]:
-    """Each citation in the answer with the statement it is attached to (the sentence it ends, citations removed)."""
+    """Each citation in the answer with the statement it is attached to: the citations in the group that ends a
+    sentence, each with that sentence (citations removed). A line that holds only citations (a list of the clauses
+    relied on) states nothing, and is not counted; a citation inside a sentence is a pointer, and is not counted."""
     out, seen = [], set()
     for line in answer.splitlines():
         for sent in SENTENCE_END.split(line):
-            found = [("source", m.group(1).strip(), m.group(2).strip()) for m in WIKI_CITE.finditer(sent)]
-            found += [("page", m.group(1).strip(), "") for m in WIKI_LINK.finditer(sent)]
-            rest = WIKI_LINK.sub(" ", WIKI_CITE.sub(" ", sent))
-            found += [("bare", "", m.group(1).strip()) for m in BRACKET.finditer(rest) if _is_clause(m.group(1))]
-            if not found:
+            group, at = [], 0
+            for unit in UNIT_START.split(sent):  # each part of the sentence that ends with its own citations
+                at = sent.index(unit, at)
+                group += [(a + at, b + at, f) for a, b, f in _end_group(unit)]
+                at += len(unit)
+            if not group:
                 continue
-            statement = " ".join(BRACKET.sub(" ", WIKI_LINK.sub(" ", WIKI_CITE.sub(" ", sent))).split()).strip(" *-•")
+            # the statement: the sentence without the citations it ends with; a link in passing keeps what it shows
+            show = lambda x: WIKI_LINK.sub(lambda m: m.group(1), WIKI_CITE.sub(lambda m: m.group(2), x))
+            cuts = [0] + [x for a, b, _ in group for x in (a, b)] + [len(sent)]
+            said = "".join(show(sent[cuts[i]:cuts[i + 1]]) for i in range(0, len(cuts), 2))
+            found = [f for _, _, f in group]
+            statement = " ".join(said.split()).strip(" *-•")
             statement = re.sub(r"\s+([.,;:])", r"\1", statement)
+            if not re.search(r"\w", statement):
+                continue  # only citations: a list entry, not a statement
             for kind, src, label in found:
                 key = (kind, src, label, statement)
                 if key in seen:
