@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from psycopg.errors import UniqueViolation
 from pydantic import BaseModel, Field
 
-from .. import storage
+from ..files import remove_unless_held
 from ..db import get_pool
 
 router = APIRouter(tags=["collections"])
@@ -86,5 +86,4 @@ async def delete_collection(c: str):
             await conn.execute("select file from documents where collection_id = %s and file is not null", (col["id"],))
         ).fetchall()
         await conn.execute("delete from collections where id = %s", (col["id"],))  # cascades to documents and chunks
-    for f in files:
-        await storage.remove(f["file"])
+    await remove_unless_held([f["file"] for f in files])  # another collection may hold the same file

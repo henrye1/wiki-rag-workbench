@@ -1,7 +1,6 @@
 import io
 import pathlib
 import zipfile
-from typing import Literal
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,28 +15,27 @@ from ..wiki import checks, store
 from .deps import wiki_dep
 
 router = APIRouter(tags=["wikis"])
-DEFAULT_SCHEMA = (pathlib.Path(__file__).resolve().parent.parent / "schema_default.md").read_text(encoding="utf-8")
+# A new wiki follows the newest schema, read from its own file so there is no second copy to drift
+DEFAULT_SCHEMA_FILE = pathlib.Path(__file__).resolve().parents[2] / "schemas" / "ifrs9-schema-3.17.md"
+DEFAULT_SCHEMA = DEFAULT_SCHEMA_FILE.read_text(encoding="utf-8")
 
 
-AnswerMethod = Literal["search_pick", "browse", "search_browse", "search_browse_2"]
+def schema_problem(schema_md: str) -> str | None:
+    """Why a schema cannot run a wiki, or None. Why: the engine has one way of working, driven by a Checks section and a
+    fixed list of sections; there is no fallback for a schema without them."""
+    from ..ops.ingest import _sections  # ingest imports this package's dependencies; import here to avoid a cycle
+    if checks.load(schema_md) is None:
+        return "The schema has no Checks section."
+    if not _sections(schema_md):
+        return "The schema has no fixed list of sections."
+    return None
 
 
 class WikiIn(BaseModel):
     slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")
     name: str
     description: str = ""
-    schema_md: str | None = Field(None, description="Conventions doc; defaults to the built-in generic schema")
-    answer_method: AnswerMethod | None = Field(None, description="How answers choose pages; defaults to search_browse")
-
-
-class SettingsIn(BaseModel):
-    answer_method: AnswerMethod = Field(description="search_pick: a search's top pages plus the model's picks from the "
-                                                    "index, read at once; browse: the model reads the page list, chooses "
-                                                    "pages and follows their links until it has enough; search_browse: "
-                                                    "browse, with a shortlist from a search of every page's text (scores "
-                                                    "and matching passages) beside the page list; search_browse_2: "
-                                                    "search_browse, judging enough only after reading the pages chosen, "
-                                                    "with each round's choices and reasons kept in the log")
+    schema_md: str | None = Field(None, description="Conventions doc; defaults to the built-in schema")
 
 
 class SchemaIn(BaseModel):
@@ -46,13 +44,14 @@ class SchemaIn(BaseModel):
 
 @router.post("/wikis", status_code=201)
 async def create_wiki(body: WikiIn):
+    if body.schema_md and (problem := schema_problem(body.schema_md)):
+        raise HTTPException(422, problem)
     try:
         async with get_pool().connection() as conn:
             row = await (
                 await conn.execute(
-                    "insert into wiki.wikis (slug, name, description, schema_md, answer_method) "
-                    "values (%s,%s,%s,%s,coalesce(%s, 'search_browse')) returning *",
-                    (body.slug, body.name, body.description, body.schema_md or DEFAULT_SCHEMA, body.answer_method),
+                    "insert into wiki.wikis (slug, name, description, schema_md) values (%s,%s,%s,%s) returning *",
+                    (body.slug, body.name, body.description, body.schema_md or DEFAULT_SCHEMA),
                 )
             ).fetchone()
     except UniqueViolation:
@@ -128,18 +127,12 @@ async def get_schema(wiki: dict = Depends(wiki_dep)):
 
 @router.put("/wikis/{w}/schema")
 async def put_schema(body: SchemaIn, wiki: dict = Depends(wiki_dep)):
+    if problem := schema_problem(body.schema_md):
+        raise HTTPException(422, problem)
     async with get_pool().connection() as conn:
         await conn.execute("update wiki.wikis set schema_md = %s where id = %s", (body.schema_md, wiki["id"]))
     await store.add_log(wiki["id"], "edit", "Schema updated")
     return {"ok": True}
-
-
-@router.put("/wikis/{w}/settings")
-async def put_settings(body: SettingsIn, wiki: dict = Depends(wiki_dep)):
-    async with get_pool().connection() as conn:
-        await conn.execute("update wiki.wikis set answer_method = %s where id = %s", (body.answer_method, wiki["id"]))
-    await store.add_log(wiki["id"], "edit", f"Answer method: {body.answer_method}")
-    return {"ok": True, "answer_method": body.answer_method}
 
 
 @router.get("/wikis/{w}/graph")

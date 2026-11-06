@@ -82,7 +82,7 @@ def names_no_location(text: str, ctx: dict, chk: checks.Checks | None = None) ->
     the schema's citation forms (a defined term, an editorial note: their form's opening words), or with a number in
     its label, stays, for the citation checks to judge."""
     labels = ctx["labels"]
-    forms = [chk.defined_term_form, *chk.unlabelled_forms.values()] if chk else []
+    forms = [chk.defined_term_form, *chk.unlabelled_forms.values()]
     opens = [f.split("<", 1)[0] for f in forms if f and "<" in f and not f.startswith("<")]
 
     def one(m):

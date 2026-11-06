@@ -26,8 +26,6 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto", only: list[str] |
     wiki_id, schema = wiki["id"], wiki["schema_md"]
     chk = checks.load(schema)
     use_schema_headings(chk)
-    if chk is None:
-        return {"skipped": "the schema has no Checks section"}
     sections = _sections(schema)
     pages = [p for p in await store.list_pages(wiki_id, with_content=True) if p["type"] != "synthesis"]
     cite_ctx = await fixpass.cite_context(wiki_id, [x["name"] for x in sections])

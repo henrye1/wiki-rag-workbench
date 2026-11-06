@@ -22,11 +22,6 @@ NOTES_SCHEMA = {
             "description": "Statements the source itself ASSERTS as fact (rules, definitions, numbers). Keep location labels like [<paragraph label>] or [page 4] if present. Never turn a question, request or hypothesis into a claim.",
             "items": {"type": "string"},
         },
-        "open_questions": {
-            "type": "array",
-            "description": "Questions, requests, hypotheses or instructions the source poses without answering them",
-            "items": {"type": "string"},
-        },
         "entities": {
             "type": "array",
             "items": {"type": "object", "properties": {"name": {"type": "string"}, "description": {"type": "string"}}, "required": ["name", "description"]},
@@ -36,28 +31,16 @@ NOTES_SCHEMA = {
             "items": {"type": "object", "properties": {"name": {"type": "string"}, "description": {"type": "string"}}, "required": ["name", "description"]},
         },
     },
-    "required": ["summary", "claims", "open_questions", "entities", "concepts"],
+    "required": ["summary", "claims", "entities", "concepts"],
 }
 
 
-def notes_schema(open_questions: bool = True) -> dict:
-    """The notes' reply schema; without open questions where the schema's pages record none (fixed sections)."""
-    if open_questions:
-        return NOTES_SCHEMA
-    return {**NOTES_SCHEMA, "properties": {k: v for k, v in NOTES_SCHEMA["properties"].items() if k != "open_questions"},
-            "required": [k for k in NOTES_SCHEMA["required"] if k != "open_questions"]}
-
-
-def notes_prompt(source_title: str, idx: int, total: int, section: str, open_questions: bool = True) -> str:
-    """open_questions: whether the notes record the questions a source raises (a schema without fixed sections)."""
+def notes_prompt(source_title: str, idx: int, total: int, section: str) -> str:
     return (
         f"Source: {source_title} (section {idx} of {total}).\n"
         "Extract notes for building wiki pages: a short summary; the claims the source itself asserts (complete, precise, "
         "with every condition); "
-        + ("the questions/requests it poses without answering (as open questions, not claims); " if open_questions else "")
-        + "and the entities and concepts that deserve or relate to wiki pages. "
-        + ("If the source is mainly a questionnaire, checklist or instructions, most content belongs in open_questions. "
-           if open_questions else "") +
+        "and the entities and concepts that deserve or relate to wiki pages. "
         "Follow the wiki schema for what to capture and how to label it.\n\n"
         f"<section>\n{section}\n</section>"
     )
@@ -88,8 +71,7 @@ PLAN_SCHEMA = {
 }
 
 
-def plan_prompt(source_title: str, source_slug: str, notes: str, index: str, candidates: str, max_pages: int,
-                open_questions: bool = True) -> str:
+def plan_prompt(source_title: str, source_slug: str, notes: str, index: str, candidates: str, max_pages: int) -> str:
     return (
         f"A new source has been added: \"{source_title}\" (its source page will be [[{source_slug}]], written separately).\n"
         f"Decide which wiki pages to create or update so the wiki integrates this source. At most {max_pages} pages.\n"
@@ -97,9 +79,7 @@ def plan_prompt(source_title: str, source_slug: str, notes: str, index: str, can
         "- Create pages for important entities/concepts/topics that the source covers substantively.\n"
         "- Always include the `overview` page (create it if missing, otherwise update it).\n"
         "- If the schema defines a fixed list of sections, include one page for every section.\n"
-        "- Do not include the source page itself.\n"
-        + ("- Do not create a page whose content would come only from open questions; those belong on the source page.\n"
-           if open_questions else "") + "\n"
+        "- Do not include the source page itself.\n\n"
         f"<current_index>\nslug | type | title | summary\n{index}\n</current_index>\n\n"
         f"<related_existing_pages>\n{candidates}\n</related_existing_pages>\n\n"
         f"<source_notes>\n{notes}\n</source_notes>"
@@ -144,14 +124,10 @@ def write_page_prompt(
     linkable: str, source_slug: str | None, source_paragraphs: str | None = None,
     background_paragraphs: str | None = None, auto_gaps: bool = False,
     part: tuple[int, int] | None = None, earlier_parts: str = "", fill: bool = False, others_md: str | None = None,
-    open_questions: bool = True,
 ) -> str:
-    """open_questions: whether a page may record the questions a source raises (a schema without fixed sections)."""
     cite = (
         f"The source page is [[{source_slug}]]; cite it exactly as the wiki schema requires. "
-        "Only state as fact what the source paragraphs or the Claims in the material support"
-        + ("; material listed under Open questions may be recorded as open questions the source raises, never as facts.\n"
-           if open_questions else ".\n")
+        "Only state as fact what the source paragraphs or the Claims in the material support.\n"
         if source_slug else ""
     )
     if background_paragraphs and source_paragraphs:
@@ -166,7 +142,7 @@ def write_page_prompt(
     gaps = (
         "Every paragraph in <source_paragraphs> is assigned to this page and to no other: write up each one, even where "
         "it seems to sit at the edge of this section; a paragraph left out is missing from the wiki. "
-        "Do not write a 'Not yet covered' list; it is added automatically.\n"
+        "Do not write a list of what the page leaves out.\n"
         if auto_gaps else ""
     )
     paragraphs = (
@@ -200,7 +176,7 @@ def write_page_prompt(
             + ("Start the page.\n" if n == 1 else
                "Continue the page: no introduction, and do not restate, summarise or re-head anything already in "
                f"<earlier_parts>.\n<earlier_parts>\n{earlier_parts}\n</earlier_parts>\n")
-            + ("" if auto_gaps else "Do not write a 'Not yet covered' list; it is added after all parts are written.\n")
+            + ("" if auto_gaps else "Do not write a list of what the page leaves out.\n")
         )
         if existing_md:  # the first part only: it integrates the current page, all of it, once
             current += (
@@ -432,13 +408,6 @@ def requirement_prompt(brief: str, requirements: str, lines: str) -> str:
     )
 
 
-def index_prompt_focus(name: str) -> str:
-    """Focus for a split section's own page: the index of its subtopic pages, as the wiki schema sets out."""
-    return (f"{name}. This section is split: write its page as the index of its subtopic pages, as the wiki schema "
-            "sets out, from <material>, which lists each subtopic page with its headings and the clauses each cites. "
-            "Keep the index lines already on the current page for subtopic pages not in <material>.")
-
-
 def route_prompt(briefs: str, lines: str, outline: str = "", note: str = "") -> str:
     return (
         "Assign each source paragraph to the ONE section whose brief says it belongs there (follow the briefs' hand-off "
@@ -456,13 +425,6 @@ SELECT_SCHEMA = {
     "properties": {"slugs": {"type": "array", "items": {"type": "string"}}},
     "required": ["slugs"],
 }
-
-
-def select_prompt(question: str, index: str, max_pages: int) -> str:
-    return (
-        f"Pick up to {max_pages} wiki pages most useful for answering the question. Return their slugs.\n\n"
-        f"<index>\nslug | type | title | summary\n{index}\n</index>\n\nQuestion: {question}"
-    )
 
 
 BROWSE_SCHEMA = {
@@ -608,12 +570,4 @@ def lint_prompt(pages_md: str, index: str) -> str:
         "between existing pages (both slugs must exist in the index); good questions to investigate; sources that would fill gaps. "
         "Only report real, specific issues.\n\n"
         f"<index>\nslug | type | title | summary\n{index}\n</index>\n\n<pages>\n{pages_md}\n</pages>"
-    )
-
-
-def add_links_prompt(slug: str, content_md: str, targets: str) -> str:
-    return (
-        f"Edit the wiki page `{slug}` minimally to add links to the pages below where they fit naturally "
-        "(link an existing mention, or add a short sentence or a `## Related` entry). Do not change anything else.\n\n"
-        f"<links_to_add>\n{targets}\n</links_to_add>\n\n<current_page>\n{content_md}\n</current_page>"
     )

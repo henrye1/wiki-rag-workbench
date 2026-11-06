@@ -21,16 +21,16 @@ Schema change: edit migration, then `npx supabase db reset` (wipes data). `EMBED
 | Method | Path | Notes |
 |---|---|---|
 | GET / POST | `/collections` | list (document and chunk counts) / create `{slug, name, description?}` |
-| PATCH / DELETE | `/collections/{c}` | rename `{name?, slug?, description?}` / delete with its documents, chunks and stored files |
+| PATCH / DELETE | `/collections/{c}` | rename `{name?, slug?, description?}` / delete with its documents, chunks and stored files (a stored file another document still points to is kept) |
 | POST | `/collections/{c}/documents` | multipart `file` (.pdf/.txt/.md) into collection `c`. IFRS PDFs auto-detected; others chunked generically. 409 if already in that collection. |
 | GET | `/collections/{c}/documents` | the collection's documents w/ chunk counts (`GET /documents`: all collections) |
-| DELETE | `/documents/{id}` | removes doc + chunks |
-| POST | `/collections/{c}/query` | `{question, top_k?, source_types?, include_editorial?, sources?}` → `{answer, citations[]}`, searching only collection `c`; `sources`: `all` (default) or `standard` (Part A types only) |
+| DELETE | `/documents/{id}` | removes doc + chunks, and its stored file unless another document points to it |
+| GET | `/chunks?para_ref=5.5.3&collection=c` | look up a paragraph by reference (`collection` optional); editorial notes are left out |
+| POST | `/collections/{c}/query` | `{question, include_editorial?, sources?, retrieval?}` → `{answer, citations[]}`, searching only collection `c`; `TOP_K` passages (a setting); `sources`: `all` (default) or `standard` (Part A types only); `retrieval`: `whole` (default) or `per_question` (one search per numbered question, as the bulk run does) |
 | POST | `/collections/{c}/query/stream` | same body; SSE events `token` (JSON string), `citations`, `done` |
 | POST | `/collections/{c}/bulk` | multipart `file` = query-set (`TOPIC n of N:` blocks); `?topics=1&topics=3` to subset, `?revise=false` to skip the self-check revision pass. JSON per topic: prose, source list, not addressed, word count, rendered markdown, citations, `draft_issues`/`issues` (rule checks) |
-| POST | `/bulk/parse` | dry run of query-set parsing (no LLM) |
 
-Source types: `standard`, `appendix_a`, `appendix_b`, `general` (binding/default) · `example`, `implementation_guidance`, `basis_for_conclusions`, `dissenting_opinion` (Parts B and C, recognised by their IE / IG / BC… / DO numbering; searched by default, labelled by kind) · `note`, `intro`, `appendix_c`, `back_matter` (excluded unless `include_editorial` or named in `source_types`). An upload whose layout is not recognised is chunked page by page and returns `warnings`.
+Source types: `standard`, `appendix_a`, `appendix_b`, `general` (binding/default) · `example`, `implementation_guidance`, `basis_for_conclusions`, `dissenting_opinion` (Parts B and C, recognised by their IE / IG / BC… / DO numbering; searched by default, labelled by kind) · `note`, `intro`, `appendix_c`, `back_matter` (excluded unless `include_editorial`). An upload whose layout is not recognised is chunked page by page and returns `warnings`.
 
 ## Examples
 ```powershell
@@ -51,7 +51,8 @@ app/retrieval.py       hybrid_search call, context formatting, citations
 app/prompts.py         system prompts + bulk JSON schema
 app/bulk.py            query-set parser + per-topic retrieval/generation
 app/ingest/pdf_ifrs.py layout-aware IFRS PDF parser
-app/ingest/text.py     generic chunker
+app/ingest/text.py     generic chunker (`CHUNK_MAX_WORDS` windows, 50-word overlap)
+app/files.py           removes a deleted document's stored file unless another document holds it
 app/ingest/pipeline.py parse → embed → insert
 supabase/migrations/   tables, indexes, hybrid_search()
 postman/               Postman collection

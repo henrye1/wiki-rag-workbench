@@ -7,7 +7,7 @@ blind labels, Message Batches with the normal API for the rest), against only th
 touched. Each answer's score is the mean of its two orders; a topic's is the mean over its repetitions; a run's is the
 mean of topic means, with the wiki-minus-RAG gap and its 95% interval as for the other tests. A topic with no point
 tagged standard is not scored. The result is stored in the run's results under "standard_similarity".
-Each RAG column's pair is judged (rag vs wiki; in newer runs also rag_q vs wiki). The wiki's own score is from its pair
+Each RAG column's pair is judged (rag vs wiki, and rag_q vs wiki). The wiki's own score is from its pair
 with rag, as in every run; its score in each other pair is kept with that pair (`pairs`), with that pair's gap.
 
   python -m bench.std_similarity RUN_ID [RUN_ID ...]
@@ -164,7 +164,7 @@ async def compute(data: dict, use_batch: bool, save, log=print) -> None:
 
 
 async def run(run_id: str, conn: psycopg.Connection):
-    """Add the measure to a stored run (batches unless the judge runs on a Claude subscription, which has none)."""
+    """Add the measure to a stored run (through Message Batches, the normal API for the rest)."""
     row = conn.execute("select results from bench.runs where id = %s", (run_id,)).fetchone()
     if not row:
         sys.exit(f"Run {run_id} not found")
@@ -174,7 +174,7 @@ async def run(run_id: str, conn: psycopg.Connection):
     async def save():
         conn.execute("update bench.runs set results = jsonb_set(results, '{standard_similarity}', %s) where id = %s",
                      (Jsonb(data["standard_similarity"]), run_id))
-    await compute(data, get_settings().judge_backend != "claude-code", save, lambda m: print(m, flush=True))
+    await compute(data, True, save, lambda m: print(m, flush=True))
 
 
 async def main():

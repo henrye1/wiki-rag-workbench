@@ -8,14 +8,11 @@ from .. import llm, prompts
 from ..config import get_settings
 from ..db import get_pool
 from ..jobs import JobContext
-from ..wiki import checks, citecheck, search, store
-from ..wiki.store import Op, slugify
-from . import fixpass, pagecheck
+from ..wiki import checks, store
+from ..wiki.store import slugify
+from . import answering, fixpass, pagecheck
 
-EXEMPT_ORPHAN = ("overview",)
-
-
-async def structural(wiki_id: UUID, chk: checks.Checks | None = None) -> dict:
+async def structural(wiki_id: UUID, chk: checks.Checks) -> dict:
     """The SQL checks. chk: the schema's Checks; a page holding only its Empty section text is not a thin page."""
     async with get_pool().connection() as conn:
         async def q(sql):
@@ -68,7 +65,7 @@ async def structural(wiki_id: UUID, chk: checks.Checks | None = None) -> dict:
 
 def _only_empty_text(md: str, chk: checks.Checks | None) -> bool:
     """Whether a page's text, headings aside, is only the schema's Empty section text."""
-    if not (chk and chk.empty_text):
+    if not (chk.empty_text):
         return False
     body = " ".join(ln for ln in (md or "").split("\n") if ln.strip() and not ln.lstrip().startswith("#"))
     return " ".join(body.split()) == " ".join(chk.empty_text.split())
@@ -113,77 +110,12 @@ async def llm_check(wiki: dict, ctx: JobContext) -> dict:
     return merged
 
 
-async def _mentions(wiki_id: UUID, slugs: list[str], term: str) -> str:
-    pages = [p for p in await store.get_pages(wiki_id, slugs) if p["type"] not in MATERIAL]
-    if not pages:
-        pages = [await store.get_page(wiki_id, h["slug"]) for h in await search.search_pages(wiki_id, term, 8)]
-        pages = [p for p in pages if p and p["type"] not in MATERIAL][:4]
-    return "\n\n".join(f"<page slug=\"{p['slug']}\">\n{p['content_md']}\n</page>" for p in pages if p)
-
-
-async def fix(wiki: dict, report: dict, llm_report: dict | None, ctx: JobContext, mode: str) -> dict:
-    s = get_settings()
-    wiki_id, schema = wiki["id"], wiki["schema_md"]
-    from .ingest import _sections
-    if _sections(schema):
-        # a schema with fixed sections makes every page from its controlled lists, never from free text: lint makes no
-        # page; a link to a page that does not exist is proposed to be written as plain text (the schema's links rule)
-        proposals = await unlink_proposals(wiki_id, report)
-        await ctx.progress(stage="fix", new_pages=0, link_proposals=len(proposals))
-        return {"status": "proposed", "link_proposals": proposals}
-    index = await store.compact_index(wiki_id)
-    system = prompts.MAINTAINER_SYSTEM
-
-    # New pages: broken link targets + LLM-suggested missing pages (skip singular/plural variants of existing/queued slugs)
-    def key(slug: str) -> str:
-        return re.sub(r"(es|s)$", "", slug)
-
-    taken = {key(p["slug"]) for p in await store.list_pages(wiki_id)}
-    new_pages: dict[str, dict] = {}
-
-    def queue(slug: str, info: dict):
-        if key(slug) not in taken:
-            taken.add(key(slug))
-            new_pages[slug] = info
-
-    for b in report["broken_links"]:
-        queue(b["slug"], {"title": b["slug"].replace("-", " ").title(), "type": "concept", "mentioned_in": b["linked_from"],
-                          "reason": "Linked from other pages but does not exist"})
-    for m in (llm_report or {}).get("missing_pages", []):
-        queue(slugify(m["slug"]), m)
-    new_items = list(new_pages.items())[: s.max_pages_per_ingest]
-    linkable = index + "\n" + "\n".join(f"{k} | {v['type']} | {v['title']} (being written now)" for k, v in new_items)
-
-    async def write_new(slug, info):
-        out = await llm.generate_json(
-            system,
-            prompts.with_schema(schema, prompts.write_page_prompt(
-                slug=slug, title=info["title"], ptype=info["type"],
-                focus=f"{info['reason']}. Write the page from what the wiki already says; keep claims attributed to their sources.",
-                existing_md=None, material=await _mentions(wiki_id, info.get("mentioned_in", []), info["title"]),
-                linkable=linkable, source_slug=None,
-            )),
-            prompts.PAGE_SCHEMA,
-        )
-        return Op(op="create", slug=slug, title=out["title"], type=info["type"], summary=out["summary"],
-                  content_md=out["content_md"], tags=out["tags"], change_note=f"Lint fix: {info['reason']}")
-
-    # Links to add: LLM missing_links + orphans (from their best related page): proposals, no page is changed
-    add: dict[str, set[str]] = {}
-    for m in (llm_report or {}).get("missing_links", []):
-        add.setdefault(m["from_slug"], set()).add(m["to_slug"])
-    for o in report["orphans"]:
-        hits = [h for h in await search.search_pages(wiki_id, o["title"], 3) if h["slug"] != o["slug"]]
-        add.setdefault(hits[0]["slug"] if hits else "overview", set()).add(o["slug"])
-    proposals = [{"page": slug, "link": f"[[{t}]]", "proposal": "add"} for slug, ts in sorted(add.items()) for t in sorted(ts)]
-
-    await ctx.progress(stage="fix", new_pages=len(new_items), link_proposals=len(proposals))
-    ops = [o for o in await llm.gather_limited([write_new(k, v) for k, v in new_items]) if o]
-    citations = await citecheck.check_ops(wiki_id, ops)  # every citation must name a source that holds the clause
-    if citations["corrected"] or citations["flagged"]:
-        await ctx.progress(citations=citations)
-    made = await store.commit(wiki_id, "lint", "Lint fixes", ops, mode, job_id=ctx.id) if ops else {"status": "nothing to write"}
-    return {**made, "citations": citations, "link_proposals": proposals}
+async def fix(wiki: dict, report: dict, ctx: JobContext) -> dict:
+    """Lint writes no page. Why: every page is made from the schema's controlled lists, never from free text. A link to
+    a page that does not exist is proposed to be written as plain text (the schema's links rule)."""
+    proposals = await unlink_proposals(wiki["id"], report)
+    await ctx.progress(stage="fix", new_pages=0, link_proposals=len(proposals))
+    return {"status": "proposed", "link_proposals": proposals}
 
 
 async def unlink_proposals(wiki_id: UUID, report: dict) -> list[dict]:
@@ -205,7 +137,7 @@ async def maintain(wiki: dict) -> dict:
     cannot run reported as not run, with the reason (never passed). No AI call; nothing is changed."""
     from .ingest import _covers, _sections, _split_also, _uncited, use_schema_headings
     chk = checks.load(wiki["schema_md"])
-    if not chk or (not chk.lint_checks and not chk.lint_not_run):
+    if not chk.lint_checks and not chk.lint_not_run:
         return {"not_run": "the schema has no Lint checks list in its Checks, so lint runs none of its Maintain checks"}
     use_schema_headings(chk)
     pages = [p for p in await store.list_pages(wiki["id"], with_content=True) if p["type"] not in MATERIAL]
@@ -227,7 +159,7 @@ async def maintain(wiki: dict) -> dict:
         for sl, info in sorted(srcs.items()):
             own = [x for lab, ps in info["by_label"].items() if not chk.kinds.get(info["kinds"].get(lab, ""))
                    for x in ps if not checks.is_stub(x, chk)]
-            out += [f"{sl}: paragraph {lab} of the Standard's own text is cited as its own source on no page."
+            out += [f"{sl}: paragraph {lab} of {answering.own_text_label(chk)} is cited as its own source on no page."
                     for lab in dict.fromkeys(pagecheck.BASE(re.match(r"^\[([^\]]+)\]", x).group(1)) for x in _uncited(text, own, not chk.range_ends))]
         return out
 
@@ -250,7 +182,7 @@ async def maintain(wiki: dict) -> dict:
     return {"checks": out}
 
 
-async def run(ctx: JobContext, wiki: dict, use_llm: bool, do_fix: bool, mode: str) -> dict:
+async def run(ctx: JobContext, wiki: dict, use_llm: bool, do_fix: bool) -> dict:
     await ctx.progress(stage="structural")
     report = await structural(wiki["id"], checks.load(wiki["schema_md"]))
     await ctx.progress(stage="maintain")
@@ -258,7 +190,7 @@ async def run(ctx: JobContext, wiki: dict, use_llm: bool, do_fix: bool, mode: st
     llm_report = await llm_check(wiki, ctx) if use_llm else None
     result = {"structural": report, "maintain": maintained, "llm": llm_report}
     if do_fix:
-        result["fix"] = await fix(wiki, report, llm_report, ctx, mode)
+        result["fix"] = await fix(wiki, report, ctx)
     counts = {k: len(v) for k, v in report.items()}
     detail = "Structural: " + ", ".join(f"{k}={v}" for k, v in counts.items())
     detail += "\nMaintain checks: " + ("; ".join(

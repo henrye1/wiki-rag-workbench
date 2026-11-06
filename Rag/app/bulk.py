@@ -9,6 +9,7 @@ from .config import get_settings
 
 TOPIC_RE = re.compile(r"^TOPIC (\d+) of (\d+):\s*(.+)$", re.M)
 # Chat-only instructions (one-topic-per-reply flow) that do not apply to an API run
+QUESTION_RE = re.compile(r"^Q\d+\..*$", re.M)  # a numbered question line ("Q1. ..."): also the query route's per-question searches
 DROP_RULE_RE = re.compile(r"^(HOW THIS RUN WORKS:|END OF EACH REPLY:|Rule 12 in bulk mode:).*$", re.M)
 # IFRS paragraph refs such as 5.5.3, 4.1.2A, B5.5.17 (two+ dot-separated numbers)
 PARA_NUM_RE = re.compile(r"\b(?:B|BC|IE|IG)?\d+\.\d+(?:\.\d+)*[A-Z]?\b")
@@ -53,7 +54,7 @@ def parse_query_set(text: str) -> tuple[str, list[Topic]]:
                 word_guide=int(wg.group(1)) if wg else None,
                 leave_out=_field(block, "Leave out"),
                 search_terms=[t.strip() for t in _field(block, "Search terms").split(",") if t.strip()],
-                questions=re.findall(r"^Q\d+\..*$", block, re.M),
+                questions=QUESTION_RE.findall(block),
             )
         )
     return rules, topics

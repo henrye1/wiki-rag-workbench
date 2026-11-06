@@ -96,8 +96,8 @@ Each service reads its own `.env` file (never committed; copy `.env.example`). O
 | RAG | `BULK_CONCURRENCY`, `BULK_K_PER_QUERY`, `BULK_MAX_CHUNKS` | 3, 6, 30 | Bulk run parallelism and retrieval budget |
 | Wiki | `API_KEY`, `GEMINI_API_KEY` (required) | none | As for RAG |
 | Wiki | `DATABASE_URL` | local Supabase `:54322` | Same database, `wiki` schema |
-| RAG, Wiki | `SUPABASE_SECRET_KEY`, `SUPABASE_URL`, `STORAGE_BUCKET` | empty, from `DATABASE_URL`, `sources` | Optional: keep each uploaded file in a private Supabase Storage bucket, opened from the UI with **View original** (signed links valid for one hour). Files ingested earlier can be attached with `python -m app.attach_file` in `Rag/` or `Wiki/` |
-| Wiki | `MAX_PAGES_PER_INGEST` | 17 | Cap on pages one ingest creates or updates, including the source page (15 sections + overview + source) |
+| RAG, Wiki | `SUPABASE_SECRET_KEY`, `SUPABASE_URL`, `STORAGE_BUCKET` | empty, from `DATABASE_URL`, `sources` | Optional: keep each uploaded file in a private Supabase Storage bucket, opened from the UI with **View original** (signed links valid for one hour). Deleting a RAG document or collection keeps a stored file another document still points to |
+| Wiki | `MAX_PAGES_PER_INGEST` | 17 | Used only by lint fix for a schema without fixed sections, which no wiki has now. An ingest writes one page per schema section plus the overview and the source page (15 sections + overview + source = 17), with subtopic pages on top |
 | Wiki | `LLM_CONCURRENCY`, `JOB_WORKERS` | 4, 2 | Parallel LLM calls per job; jobs running at once |
 | Wiki | `TEMPERATURE` | 0.2 (set to 0.1 here to match RAG) | Sampling |
 | Benchmark | `ANTHROPIC_API_KEY` | none | Claude judge |
@@ -105,7 +105,7 @@ Each service reads its own `.env` file (never committed; copy `.env.example`). O
 | Benchmark | `RAG_URL` / `RAG_API_KEY`, `WIKI_URL` / `WIKI_API_KEY` | `:8000`, `:8001` | Systems under test |
 | Benchmark | `RAG_COLLECTION`, `WIKI_SLUG` | none | CLI runs only: the RAG collection and the wiki to compare (UI runs choose them; a resumed run uses what it stored) |
 | Benchmark | `SOURCES` | `all` | CLI runs only: `standard` (both systems use only the Standard, Part A) or `all` (Parts A, B and C). Both systems always get the same setting; it is stored with the run and shown on its results |
-| Benchmark | `REFERENCE_DOCX` | `../Docs/reference_assessment.docx` | Human-written assessment with the reference answers |
+| Benchmark | `REFERENCE_DOCX` | Reference memo 1, in `../Docs/` | Human-written assessment with the reference answers |
 | Benchmark | `RUNS`, `CONCURRENCY`, `SEED` | 3, 4, 42 | Repeats per topic, parallel topics, A/B shuffle seed |
 | UI server | `RAG_API_KEY`, `WIKI_API_KEY` (required) | none | Keys the server adds when it calls RAG and Wiki |
 | UI server | `UI_PASSWORD`, `SESSION_SECRET` | empty | Shared-password login; empty = no login (local use) |
@@ -128,14 +128,14 @@ The RAG API answers each question from scratch: it finds the paragraphs of the S
    - Documents published with a Standard (Parts B and C of the IFRS volumes, any Standard) are recognised by their own paragraph numbers and tagged by kind: `example` (IE…), `implementation_guidance` (IG…), `basis_for_conclusions` (BC…, BCZ…, BCIN…, BCE…) and `dissenting_opinion` (DO…). They are searched by default, each passage labelled with its kind. A Standard (Part A) is read exactly as before.
    - A PDF whose layout is not recognised is kept as page-by-page chunks, and the upload returns a warning (shown in the UI).
    - Paragraphs longer than 500 words are split at sentence boundaries.
-   - Other PDFs and text files are split into overlapping ~400-word windows (`general`).
+   - Other PDFs and text files are split into windows of up to 500 words (`CHUNK_MAX_WORDS`), each repeating the last 50 words of the one before (`general`).
 3. **Embed** each chunk with Gemini (768-dimension vectors) and store it in Postgres with a full-text index.
 
 The IFRS 9 PDF yields 927 chunks: 256 Standard, 338 Application Guidance, 30 defined terms and 298 editorial notes.
 
 ### How answering works
 
-1. **Hybrid search.** The question is embedded and matched two ways: vector similarity and keyword full-text search. The two rankings are merged with reciprocal rank fusion. Editorial notes, introduction pages and Appendix C are excluded unless you ask for them (`include_editorial` or `source_types`).
+1. **Hybrid search.** The question is embedded and matched two ways: vector similarity and keyword full-text search. The two rankings are merged with reciprocal rank fusion. Editorial notes, introduction pages and Appendix C are excluded unless you ask for them (`include_editorial`; the Ask page and the benchmark both ask for them).
 2. **Answer.** The top 8 passages go to Gemini, each labelled with its citation key (for example `[5.5.3]`). The prompt requires every statement to be supported by a passage, every if/unless condition to be kept, and citations to copy the key exactly.
 3. **Citations.** The response lists the passages the answer actually cited, with paragraph, page, source type and a snippet.
 
@@ -160,12 +160,11 @@ All require the `X-API-Key` header except `/health`. Interactive docs: <http://1
 | PATCH / DELETE | `/collections/{c}` | Rename `{name?, slug?, description?}` / delete a collection with its documents, chunks and stored files |
 | POST | `/collections/{c}/documents` | Upload a document into a collection (multipart `file`); the same file can be in several collections, once per collection |
 | GET | `/collections/{c}/documents` | List a collection's documents with chunk counts (`GET /documents` lists all collections) |
-| DELETE | `/documents/{id}` | Remove a document and its chunks |
-| GET | `/chunks?para_ref=5.5.3&collection=c` | Look up a paragraph by its reference (used by citation viewers); `collection` optional |
-| POST | `/collections/{c}/query` | `{question, top_k?, source_types?, include_editorial?}` returns `{answer, citations}`, searching only that collection |
+| DELETE | `/documents/{id}` | Remove a document and its chunks (its stored file is kept if another document points to it) |
+| GET | `/chunks?para_ref=5.5.3&collection=c` | Look up a paragraph by its reference (used by citation viewers); `collection` optional; editorial notes are always left out |
+| POST | `/collections/{c}/query` | `{question, include_editorial?, sources?, retrieval?}` returns `{answer, citations}`, searching only that collection; the number of passages is the `TOP_K` setting |
 | POST | `/collections/{c}/query/stream` | Same, streamed as server-sent events: `token`, `citations`, `done` |
 | POST | `/collections/{c}/bulk?topics=1&revise=true` | Run a query-set file (multipart `file`) on one collection |
-| POST | `/bulk/parse` | Dry run: show how a query-set file parses, no LLM calls |
 | GET | `/health` | Database check |
 
 A Postman collection is in `Rag/postman/`.
@@ -179,7 +178,7 @@ The Wiki does the reading once: when a source is added, the LLM turns it into wi
 | Concept | What it is |
 | --- | --- |
 | Wiki | An independent knowledge base with its own slug (for example `ifrs9`). You can run several. |
-| Schema | The wiki's conventions document, sent with every LLM call: page types, `[[slug]]` link syntax, how to cite sources, how to flag contradictions. A generic default is used until you edit it. |
+| Schema | The wiki's conventions document, sent with every LLM call: page types, `[[slug]]` link syntax, how to cite sources, how to flag contradictions. A new wiki uses `Wiki/schemas/ifrs9-schema-3.17.md` unless you give one. A schema must have a Checks section and fixed sections (`### 01. <name>`); a wiki or schema without them is refused. Older versions are in `archive/schemas/`. |
 | Source | A raw, immutable input: PDF, DOCX, MD/TXT, URL or pasted text. Each source also gets a source page (`source-<name>`). |
 | Page | An LLM-written markdown page with a type: overview, topic, concept, entity, comparison, synthesis or source. Every change creates a new version. |
 | Links | `[[slug]]` or `[[slug\|label]]`. Links to pages that do not exist yet are allowed and reported by lint as broken links. |
@@ -191,10 +190,10 @@ The Wiki does the reading once: when a source is added, the LLM turns it into wi
 ### Ingest
 
 1. **Extract.** The source becomes text split into sections of about 3,000 words. IFRS PDFs reuse the RAG paragraph parser: from a Standard (Part A) only the binding text is kept; from a document published with it (Part B or C) every numbered paragraph is kept and marked with its kind, e.g. `[IE1] (Illustrative example)`, `[BC5.190] (Basis for Conclusions)`. Illustrative examples go straight to the schema's examples section. A PDF whose layout is not recognised is kept page by page, with a warning.
-2. **Notes.** Each section is summarised, following the schema, into claims the source asserts, open questions it only poses, and entities and concepts. Questions are never turned into claims, so a questionnaire produces open questions, not facts. A section the model refuses to process (Gemini blocks verbatim reproduction of copyrighted text) is split in half and retried.
-3. **Route.** If the schema defines fixed sections (`### 01. <name>` briefs), every source paragraph goes to exactly one section. Paragraphs carrying an issuer example label ("Example 1", "Instrument A", "Scenario 2") go to the worked-examples section, and nothing else does. The LLM assigns the rest, following the briefs' hand-off rules and seeing each paragraph's heading and the source's numbered outline, so a topic such as hedge accounting (chapter 6 and B6) stays together. Paragraphs it misses get a second round; any still missing go where most of their paragraph group went, else to the closest section brief. The job result lists which paragraphs went where (`routing`) and any the LLM did not assign itself (`unassigned`).
-4. **Plan.** The LLM sees the schema, the current index and the existing pages most related to the new material, and picks the pages to create or update. Every schema section gets a page and `overview` is the only top-level page; the source page counts toward the limit of 17.
-5. **Write.** The source page and each planned page are written in parallel. A section page writes up only its own paragraphs, cited by paragraph number; a few related paragraphs from other sections come without numbers, as context only. Long pages are written in parts of about 4,000 source words, each part seeing the earlier ones, and repeated blocks are dropped. Every own paragraph must be written up; any the page still does not cite get one more writing pass, and the page ends with a "Not yet covered" list of its own paragraphs it still does not cite. A section with no paragraphs gets a one-line empty page (an existing page is left as it is). Links to pages that do not exist become plain text. Updated pages keep their existing correct content; contradictions are flagged with a `> [!warning] Contradiction` callout naming both sources.
+2. **Notes.** Each section is summarised, following the schema, into a short summary, the claims the source asserts, and entities and concepts. A section the model refuses to process (Gemini blocks verbatim reproduction of copyrighted text) is split in half and retried.
+3. **Route.** Every source paragraph goes to exactly one of the schema's fixed sections (`### 01. <name>` briefs). Paragraphs carrying an issuer example label ("Example 1", "Instrument A", "Scenario 2") go to the worked-examples section, and nothing else does. The LLM assigns the rest, following the briefs' hand-off rules and seeing each paragraph's heading and the source's numbered outline, so a topic such as hedge accounting (chapter 6 and B6) stays together. Paragraphs it misses get a second round; any still missing go where most of their paragraph group went, else to the closest section brief. The job result lists which paragraphs went where (`routing`) and any the LLM did not assign itself (`unassigned`).
+4. **Plan.** The LLM sees the schema, the current index and the existing pages most related to the new material, and picks the pages to create or update. Every schema section gets a page and `overview` is the only top-level page; an ingest writes one page per section plus the overview, besides the source page (17 for 15 sections).
+5. **Write.** The source page and each planned page are written in parallel. A section page writes up only its own paragraphs, cited by paragraph number; a few related paragraphs from other sections come without numbers, as context only. Long pages are written in parts of about 4,000 source words, each part seeing the earlier ones, and repeated blocks are dropped. Every own paragraph must be written up; any the page still does not cite get one more writing pass, and any still uncited are listed in the job result (`missed_paragraphs`), not on the page. A section with no paragraphs gets a one-line empty page (an existing page is left as it is). Links to pages that do not exist become plain text. Updated pages keep their existing correct content; contradictions are flagged with a `> [!warning] Contradiction` callout naming both sources.
 6. **Commit.** The edits become a changeset: applied now (*auto*) or left pending (*review*). Applying stores versions, rebuilds links and search chunks, and records which sources each page draws on.
 
 The IFRS 9 PDF (26 sections) produces 17 pages.
@@ -210,15 +209,15 @@ With a collection or wiki that holds only Part A, both settings give the same RA
 
 ### Query
 
-1. Hybrid search over page chunks finds related pages; the LLM also picks pages from the index.
-2. Up to about 8 full pages are read, with the schema, and the answer cites them as `[[slug]]`.
+1. A search of every page's text gives a shortlist of up to 15 pages, with scores and the passages that matched, shown beside the page list (every page's title and summary).
+2. The LLM chooses pages from both, reads them and follows their links, in rounds, until it has enough (safety limits: 6 rounds, 30 pages, 150,000 words). The answer is written from those pages, with the schema, and cites them as `[[slug]]`.
 3. With `save: true`, the answer is filed back as a synthesis page, so good answers become part of the wiki.
 
 ### Lint
 
 - **Structural** (instant, no LLM): broken links, orphan pages with no inbound links, missing summary or tags, thin pages, pages that cite no source, possible duplicate titles.
 - **LLM health-check** (job): contradictions between pages, stale claims, missing concept pages, missing cross-links, questions worth investigating and sources that would fill gaps.
-- **Fix** (job): writes pages for broken links and missing concepts from what the wiki already says, adds missing links and links orphan pages, up to 15 pages per run, as a changeset.
+- **Fix** (job): proposes that each link to a page that does not exist be written as plain text. It writes no pages: every page comes from the schema's fixed sections.
 
 ### Endpoints
 
@@ -228,7 +227,7 @@ All require `X-API-Key` except `/health` and the HTML viewer. Interactive docs: 
 | --- | --- | --- |
 | POST / GET | `/wikis` | Create (`slug`, `name`, `description`, optional `schema_md`) / list wikis |
 | GET / DELETE | `/wikis/{w}` | Read / delete a wiki and everything in it |
-| GET / PUT | `/wikis/{w}/schema` | Read / replace the conventions document |
+| GET / PUT | `/wikis/{w}/schema` | Read / replace the conventions document (a schema with no Checks section or no fixed sections is refused) |
 | POST | `/wikis/{w}/sources?mode=auto\|review` | Upload a file; returns a `job_id` |
 | POST | `/wikis/{w}/sources/url`, `/sources/text` | Ingest a web page or pasted text |
 | GET / DELETE | `/wikis/{w}/sources[/{slug}]` | List, read or delete raw sources |
@@ -265,7 +264,7 @@ From `Benchmark/` with RAG and Wiki running:
 - `.venv\Scripts\python -m bench.run` for the full run (26 topics x 3 runs: about 100 Claude calls and 156 Gemini calls, roughly 10 minutes)
 - `--topics 1,4,10-12` selects topics; `--run-id <id>` resumes a run that stopped
 - Or start runs from the UI's Benchmark screen: upload the reference .docx and the query set (later runs reuse the last uploaded files), watch progress, resume interrupted runs
-- First time: `.venv\Scripts\python -m bench.migrate` creates the `bench.runs` table; `python -m bench.import_results results\<folder>` imports runs saved by older versions
+- First time: `.venv\Scripts\python -m bench.migrate` creates the `bench.runs` table
 
 Results are stored in the database (`bench.runs`, one row per run, together with the uploaded inputs and the run log): the configuration (models, document and page counts, git commit), each topic's key points, every answer with its grades and the judge's notes, and per-topic and overall averages.
 
@@ -328,8 +327,8 @@ The Workbench is the easiest way to use everything: open <http://127.0.0.1:8080>
 
 **Grow the wiki**
 
-1. **Lint** > choose *Apply fixes* > **LLM check + fix**.
-2. When the job finishes, check **Graph**: new pages appear and broken links shrink. Each run writes up to 15 pages.
+1. **Wiki** > your wiki > **Sources & ingest**: add more sources. Every page comes from the schema's fixed sections, so lint writes no pages.
+2. **Lint** > **LLM check + fix** proposes plain text for each link to a page that does not exist; check **Graph** for broken links.
 
 **Run and read a benchmark**
 
@@ -372,7 +371,7 @@ Things to know:
 | Wiki ingest returns 409 for a source | Same text already ingested into that wiki | Delete the source (or discard its changeset), then re-ingest |
 | Wiki job shows "failed sections" with RECITATION | Gemini refused to reproduce copyrighted text verbatim | Usually resolved by the automatic split-and-retry; the rest of the ingest still succeeds |
 | Changeset apply reports conflicts | Those pages changed after the changeset was written | Re-ingest the source, or apply with force only if you accept overwriting |
-| Wiki answers "the pages do not cover this" | The wiki has no page on that topic yet | Run lint with fix, ingest more sources, or check the Graph for missing pages |
+| Wiki answers "the pages do not cover this" | The wiki has no page on that topic yet | Ingest more sources, or check the Graph for missing pages |
 | Benchmark fails at start: topic does not match heading | Wrong or missing `REFERENCE_DOCX` | Point `REFERENCE_DOCX` in `Benchmark/.env` at the assessment; check with `python -m bench.data` |
 | Benchmark judge errors with authentication | No Anthropic key | Set `ANTHROPIC_API_KEY` in `Benchmark/.env` |
 | Gemini 429 errors | Rate limit | Calls retry with backoff automatically; lower `BULK_CONCURRENCY`, `LLM_CONCURRENCY` or `CONCURRENCY` |

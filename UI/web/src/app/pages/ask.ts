@@ -428,8 +428,10 @@ export class Ask {
     const m = this.messages()[i];
     this.patch(i, (x) => ({ ...x, rag: x.mode !== 'wiki' ? pane() : null, wiki: x.mode !== 'rag' ? pane() : null, created_at: undefined }));
     const body = { question: m.searched, sources: m.sources };
+    // the RAG also searches the Standard's editorial text, as the benchmark asks it (Benchmark RAG_INCLUDE_EDITORIAL)
+    const ragBody = { ...body, include_editorial: true };
     await Promise.all([
-      m.mode !== 'wiki' ? this.stream(i, 'rag', `/api/rag/collections/${enc(m.rag_collection!)}/query/stream`, 'citations', body) : null,
+      m.mode !== 'wiki' ? this.stream(i, 'rag', `/api/rag/collections/${enc(m.rag_collection!)}/query/stream`, 'citations', ragBody) : null,
       m.mode !== 'rag' ? this.stream(i, 'wiki', `/api/wiki/wikis/${enc(m.wiki_slug!)}/query/stream`, 'pages', body) : null,
     ]);
     const done = this.messages()[i];

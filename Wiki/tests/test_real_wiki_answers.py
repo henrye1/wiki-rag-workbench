@@ -1,25 +1,25 @@
 """The answer side and lint against a real wiki's pages and sources, read only: every query is a SELECT and nothing is
-written. The wiki is WIKI4 (env TEST_WIKI, default ifrs9-wiki4), checked with schema 3.17's Checks; skipped where the
-database cannot be reached. No AI call. Run from Wiki/: .venv/bin/python -m unittest tests.test_wiki4_answers"""
+written. The wiki is ifrs9-wiki3 (env TEST_WIKI to choose another), checked with schema 3.17's Checks; skipped where the
+database cannot be reached. No AI call. Run from Wiki/: .venv/bin/python -m unittest tests.test_real_wiki_answers"""
 import os
 import pathlib
 import re
 import unittest
 
 from app.db import close_pool, get_pool, open_pool
-from app.ops import answering, fixpass, lint, pagecheck, watchdog
+from app.ops import answering, lint, pagecheck, watchdog
 from app.ops.query import standard_only
 from app.wiki import checks, store
 
 SCHEMA = (pathlib.Path(__file__).resolve().parent.parent / "schemas" / "ifrs9-schema-3.17.md").read_text()
 CHK = checks.load(SCHEMA)
-WIKI = os.environ.get("TEST_WIKI", "ifrs9-wiki4")
+WIKI = os.environ.get("TEST_WIKI", "ifrs9-wiki3")
 H, NONE = CHK.answer_headings, CHK.answer_none
 OBLIGE = CHK.force_words[CHK.force_strict]
 AG = "application guidance"
 
 
-class Wiki4(unittest.IsolatedAsyncioTestCase):
+class RealWiki(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         try:
             await open_pool()
@@ -108,13 +108,26 @@ class Wiki4(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_page_holding_only_the_empty_text_is_not_thin(self):
         with_schema = {r["slug"] for r in (await lint.structural(self.wiki["id"], CHK))["thin_pages"]}
-        without = {r["slug"] for r in (await lint.structural(self.wiki["id"]))["thin_pages"]}
+        without = {r["slug"] for r in (await lint.structural(self.wiki["id"], checks.Checks()))["thin_pages"]}  # a schema giving no empty text
         empty = {p["slug"] for p in self.pages if lint._only_empty_text(p["content_md"], CHK)}
         self.assertEqual(with_schema, without - empty)
 
     async def test_the_page_list_is_never_cut(self):
         index = await store.compact_index(self.wiki["id"])
         self.assertEqual(len(index.split("\n")), len(self.pages))
+
+    async def test_entity_summaries_follow_the_schemas_entity_summary_line(self):
+        import copy
+        from app.ops.ingest import _sections, composed_ops
+        existing = {p["slug"]: p for p in self.pages}
+        built = lambda c: composed_ops(self.wiki["id"], c, _sections(SCHEMA), existing, [])
+        as_concept = {o.slug: o.summary for o in (await built(CHK))[0] if o.type == "entity"}
+        self.assertTrue(CHK.entity_summary and as_concept)
+        self.assertTrue(all(x.startswith(CHK.concept_summary_lead) for x in as_concept.values()))
+        off = copy.copy(CHK)
+        off.entity_summary = False  # a schema whose Entity summary line does not say "as Concept summary"
+        self.assertEqual({o.slug: o.summary for o in (await built(off))[0] if o.type == "entity"},
+                         {sl: "" for sl in as_concept})
 
 
 if __name__ == "__main__":

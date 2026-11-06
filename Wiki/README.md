@@ -17,7 +17,7 @@ copy .env.example .env                  # set API_KEY, GEMINI_API_KEY
 - Every API route needs the `X-API-Key` header except `/view` and `/health`.
 
 ## Concepts
-- **Wiki**: an independent knowledge base. You can have several, each with its own **schema** (the conventions doc every LLM call follows; edit it with `PUT /wikis/{w}/schema`).
+- **Wiki**: an independent knowledge base. You can have several, each with its own **schema** (the conventions doc every LLM call follows; edit it with `PUT /wikis/{w}/schema`). A new wiki uses `schemas/ifrs9-schema-3.17.md` unless you give one. A schema must have a Checks section and fixed sections (`### 01. <name>`); creating a wiki or saving a schema without them is refused (422). Older schema versions are kept in `archive/schemas/` at the repo root.
 - **Source**: raw, immutable input (PDF, DOCX, MD/TXT, URL or pasted text). IFRS-layout PDFs reuse the Rag paragraph parser (Standards, and their Parts B and C by IE / IG / BC… / DO numbering); a PDF whose layout is not recognised is kept page by page and the upload returns a warning.
 - **Page**: an LLM-maintained markdown page with a type (overview, topic, concept, entity, comparison, synthesis or source). Links use `[[slug]]` or `[[slug|label]]`. Every change is stored as a version.
 - **Changeset**: the proposed page edits from an ingest, a saved query or a lint fix.
@@ -33,7 +33,7 @@ copy .env.example .env                  # set API_KEY, GEMINI_API_KEY
 | `POST /wikis`, `GET /wikis`, `GET/DELETE /wikis/{w}` | manage wikis |
 | `POST /wikis/{w}/copy` `{slug, name, description?}` | copy a wiki under a new slug: settings, schema, sources, pages with every version, links, flags and search index (no AI calls; the copy's sources share the original's stored files; log, jobs and changesets start empty) |
 | `POST /wikis/{w}/summaries` `{dry_run?}` | make every page's summary again by the schema's summary rules from the page text as it stands; no AI calls, no text changes; changed summaries are saved as new page versions |
-| `GET/PUT /wikis/{w}/schema` | conventions doc |
+| `GET/PUT /wikis/{w}/schema` | conventions doc (PUT refuses a schema with no Checks section or no fixed sections) |
 | `POST /wikis/{w}/sources?mode=` | upload file → `{job_id}` |
 | `POST /wikis/{w}/sources/url?mode=`, `/sources/text?mode=` | ingest a URL / pasted text |
 | `GET /wikis/{w}/sources`, `GET/DELETE /wikis/{w}/sources/{slug}` | raw sources |
@@ -53,20 +53,21 @@ copy .env.example .env                  # set API_KEY, GEMINI_API_KEY
 ## How the operations work
 **Ingest**
 1. The source is split into sections of about 3,000 words.
-2. Notes are extracted from each section, with the schema. Claims the source makes are kept separate from questions it only poses; sections blocked by the model are split and retried.
-3. If the schema defines fixed sections (`### 01. <name>`), every source paragraph is assigned to exactly one section: labelled issuer examples to the worked-examples section, the rest by the LLM (with a retry and fallbacks, so none is left out). The job result lists the assignment and any paragraphs the LLM did not assign itself.
-4. A plan is made: which pages to create or update. It's based on the index and a hybrid search for the entities found, up to `MAX_PAGES_PER_INGEST` pages including the source page. Every schema section gets a page; `overview` is the only top-level page.
-5. The source page and the planned pages are written. A section page writes up only its own paragraphs (other sections' paragraphs are unnumbered context), long pages are written in parts, own paragraphs a page leaves out get one more writing pass, and a "Not yet covered" list of any still uncited is added. Links to pages that do not exist become plain text.
+2. Notes are extracted from each section, with the schema: a summary, the claims the source makes, and its entities and concepts; sections blocked by the model are split and retried.
+3. Every source paragraph is assigned to exactly one of the schema's fixed sections (`### 01. <name>`): labelled issuer examples to the worked-examples section, the rest by the LLM (with a retry and fallbacks, so none is left out). The job result lists the assignment and any paragraphs the LLM did not assign itself.
+4. A plan is made: which pages to create or update. It's based on the index and a hybrid search for the entities found: one page per schema section plus the overview, besides the source page (subtopic pages of split sections come on top). Every schema section gets a page; `overview` is the only top-level page.
+5. The source page and the planned pages are written. A section page writes up only its own paragraphs (other sections' paragraphs are unnumbered context), long pages are written in parts, own paragraphs a page leaves out get one more writing pass, and any still uncited are listed in the job result (`missed_paragraphs`), not on the page. Links to pages that do not exist become plain text.
 6. The changeset is applied or left pending, depending on the mode.
 
 **Query**
-1. Hybrid search over page chunks, plus the LLM picking pages from the index.
-2. The LLM reads the full pages and answers with `[[slug]]` citations.
+1. A search of every page's text gives a shortlist (up to 15 pages, with scores and the passages that matched), shown beside the page list (every page's title and summary).
+2. The LLM chooses pages from both, reads them and follows their links, in rounds, until it has enough (at most 6 rounds, 30 pages and 150,000 words).
+3. The LLM reads the full pages and answers with `[[slug]]` citations.
 
 **Lint**
 - Structural checks: broken links, orphan pages, missing metadata, thin pages, unsourced pages, possible duplicates.
 - With `llm`: contradictions, stale claims, missing pages, missing links, questions to investigate, sources to find.
-- With `fix`: creates pages for broken links and missing concepts, adds missing links, and links orphan pages.
+- With `fix`: proposes that each link to a page that does not exist be written as plain text (every page comes from the schema's fixed sections, so lint makes no page); nothing is changed.
 
 ## Layout
 ```
@@ -81,7 +82,7 @@ app/ops/              ingest, query, lint
 app/prompts.py        prompts + JSON schemas
 app/routers/          API + viewer
 app/templates/        viewer HTML
-app/schema_default.md default wiki conventions
+schemas/             wiki schemas: ifrs9-schema-3.17.md (the default for a new wiki), client-schema-1.17.md
 ```
 
 ## Limits / next steps

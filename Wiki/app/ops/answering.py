@@ -18,13 +18,11 @@ TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{3,}")
 
 def ready(chk) -> bool:
     """Whether the schema lays answers out (Answer layout: its four parts)."""
-    return bool(chk and len(chk.answer_headings) == 4)
+    return bool(len(chk.answer_headings) == 4)
 
 
 def checks_off(chk) -> list[str]:
     """The answer lists the schema does not give, or gives in wording the engine cannot read: what uses them is off."""
-    if not chk:
-        return []
     answer_lists = set(checks.ANSWER_LISTS.values())
     return list(chk.answer_missing) + [x for x in chk.unreadable if x in answer_lists]
 
@@ -50,6 +48,14 @@ def own_text_name(chk) -> str:
     """How the schema's Kind ranking names the Standard's own text (the entry no paragraph kind has)."""
     names = set(chk.kinds.values())
     return next((x for rank in chk.kind_ranking for x in rank if x not in names), "")
+
+
+OWN_TEXT = "the source's own text"  # why: a neutral name where the schema's Kind ranking does not name it
+
+
+def own_text_label(chk) -> str:
+    """The name messages give the text of no listed paragraph kind: the schema's (own_text_name), else a neutral one."""
+    return own_text_name(chk) or OWN_TEXT
 
 
 def passages_cited(srcs: dict, slug: str, label: str) -> list[str]:
@@ -172,7 +178,7 @@ def placement_failures(main: str, apart: str, chk, srcs: dict) -> list[str]:
     """Non-authoritative material (the layout's kinds) in the answer itself, and authoritative material under the
     non-authoritative heading: application guidance is authoritative and stays in the answer."""
     out = []
-    own = own_text_name(chk) or "the Standard's own text"
+    own = own_text_label(chk)
     for s in _sentences(main, chk):
         for sl, lab in _source_cites(s):
             if (k := kind_of(srcs, chk, sl, lab)) and k in chk.non_authoritative:

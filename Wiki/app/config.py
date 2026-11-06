@@ -24,22 +24,17 @@ class Settings(BaseSettings):
 
     section_words: int = 3000  # source split size for note extraction
     chunk_max_words: int = 500  # page chunk size for search / IFRS parser
-    max_pages_per_ingest: int = 17  # including the source page
-    page_source_words: int = 12000  # schema without fixed sections: source paragraphs given to each page writer
+    page_source_words: int = 12000  # a source with no paragraphs to route: the most relevant paragraphs given to a page writer
     page_part_words: int = 4000  # source words per writing call; longer pages are written in parts
     page_background_words: int = 2000  # other sections' paragraphs given to a section page as context only
     route_batch: int = 120  # paragraphs per call when assigning paragraphs to schema sections
     route_batch_last: int = 5  # the last routing round: what the earlier rounds left unplaced, a few paragraphs per call
     llm_concurrency: int = 4  # parallel LLM calls inside one job
     job_workers: int = 2  # jobs running at once
-    query_top_k: int = 8  # answer_method search_pick: pages from the search, of which the top 5 are read
-    query_max_pages: int = 8  # answer_method search_pick: pages the model picks from the index
-    page_list_chars: int = 60000  # answer_method search_pick: the most of the page list one choosing call is given;
-    # a longer list is given in parts, every page in one
-    browse_max_rounds: int = 6  # answer_method browse and search_browse: safety nets only; the model stops when it has enough
+    browse_max_rounds: int = 6  # choosing pages to answer from: safety nets only; the model stops when it has enough
     browse_max_pages: int = 30
     browse_max_words: int = 150000  # words of page text read for one question
-    shortlist_size: int = 15  # answer_method search_browse: pages the search lists for the model to choose from
+    shortlist_size: int = 15  # pages the search lists for the model to choose from when answering
     lint_batch_pages: int = 12
     max_upload_mb: int = 50
 

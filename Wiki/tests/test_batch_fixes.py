@@ -8,7 +8,7 @@ import re
 import unittest
 
 from app import prompts
-from app.ops import fixpass, pagecheck
+from app.ops import fixpass
 from app.ops.ingest import (_covers, _deciding, _failing_pieces, _footnote_of, _index_md, _pieces_together, _quoted,
                             _with_openers)
 from app.sources import extract
@@ -151,7 +151,7 @@ class Routing(unittest.TestCase):
     def test_without_the_list_footnotes_only(self):
         chk = checks.load(SCHEMA.read_text().replace("- Notes filed with their clause", "- Notes filed with their x"))
         paras = ["[1.1] A rule.", f"[{ed('1.1')}] A note.", f"[{ed('1.1')}] A footnote."]
-        self.assertEqual(_footnote_of(paras, ED, ["standard", "note", "footnote"], chk if chk.note_kinds else None), {2: 0})
+        self.assertEqual(_footnote_of(paras, ED, ["standard", "note", "footnote"], chk), {2: 0})
 
 
 class Pieces(unittest.TestCase):
@@ -234,13 +234,11 @@ class SourcePage(unittest.TestCase):
         self.assertEqual(len(got), 1)
         self.assertTrue(got[0].startswith("[IG intro] This guidance"), got[0])
 
-    def test_open_questions_off(self):
-        s = prompts.notes_schema(False)
-        self.assertNotIn("open_questions", s["properties"])
-        self.assertNotIn("open_questions", s["required"])
-        self.assertNotIn("open questions", prompts.notes_prompt("T", 1, 1, "x", False))
-        self.assertNotIn("open questions", prompts.plan_prompt("T", "source-t", "n", "i", "c", 5, False))
-        self.assertIn("open_questions", prompts.notes_schema(True)["required"])
+    def test_no_open_questions(self):  # every schema has fixed sections, and those record no open questions
+        self.assertNotIn("open_questions", prompts.NOTES_SCHEMA["properties"])
+        self.assertNotIn("open_questions", prompts.NOTES_SCHEMA["required"])
+        self.assertNotIn("open questions", prompts.notes_prompt("T", 1, 1, "x"))
+        self.assertNotIn("open questions", prompts.plan_prompt("T", "source-t", "n", "i", "c", 5))
 
 
 RAW = pathlib.Path("/Users/henrymac/Desktop/Wiki Project/LLM-Wiki-IFRS9/challenger/05_Technical_Build/raw")

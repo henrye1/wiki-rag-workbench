@@ -11,6 +11,7 @@ This document describes the application **exactly as the code is at the commit b
 | Branch | `main` (local; the GitHub default branch may be behind this commit) |
 | Working tree (`git status --short`) | **dirty only by untracked files**: ?? .DS_Store; ?? Benchmark_Overview.html; ?? METHODOLOGY.md. `METHODOLOGY.md` itself is added in the commit after this one. No tracked file is modified, so the code described is exactly the commit. |
 | Tracked files | 186 (`git ls-files`) |
+| Correction pass | 2026-11-06, at commit `b1056c4` (branch `simplify`): every passage describing code that the simplification removed (the wiki's other answer methods, schemas without a Checks section or fixed sections, the attach scripts, unused shared code, RAG query options and `/bulk/parse`, the claude-code judge, old-run fallbacks and the maintenance CLIs) was removed or rewritten to match that commit. The rest of this document still describes the pinned commit above, including its line numbers; code added between the two commits is not described. |
 
 Confidentiality: the benchmark's human reference document is a client memo. Its file name is never written here; the code itself shows it only as a neutral label such as "Reference memo 1" (§8.5, §9.2). The `Docs/` folder holding source documents is git-ignored (`.gitignore`) and is not part of the codebase described.
 
@@ -29,7 +30,6 @@ Excludes `node_modules`, `.venv`, `__pycache__`, `.git`, build output and everyt
 │   │   ├── context.py
 │   │   ├── data.py
 │   │   ├── gaps.py
-│   │   ├── import_results.py
 │   │   ├── judge.py
 │   │   ├── library.py
 │   │   ├── metrics.py
@@ -70,10 +70,10 @@ Excludes `node_modules`, `.venv`, `__pycache__`, `.git`, build output and everyt
 │   │   │   ├── documents.py
 │   │   │   └── query.py
 │   │   ├── __init__.py
-│   │   ├── attach_file.py
 │   │   ├── bulk.py
 │   │   ├── config.py
 │   │   ├── db.py
+│   │   ├── files.py
 │   │   ├── llm.py
 │   │   ├── main.py
 │   │   ├── migrate.py
@@ -131,6 +131,7 @@ Excludes `node_modules`, `.venv`, `__pycache__`, `.git`, build output and everyt
 │   │   │   │   │   │   ├── rubric.ts
 │   │   │   │   │   │   ├── run.ts
 │   │   │   │   │   │   ├── runs.ts
+│   │   │   │   │   │   ├── systems.ts
 │   │   │   │   │   │   └── topic.ts
 │   │   │   │   │   ├── wiki/
 │   │   │   │   │   │   ├── changeset.ts
@@ -211,7 +212,6 @@ Excludes `node_modules`, `.venv`, `__pycache__`, `.git`, build output and everyt
 │   │   │   ├── search.py
 │   │   │   └── store.py
 │   │   ├── __init__.py
-│   │   ├── attach_file.py
 │   │   ├── auth.py
 │   │   ├── config.py
 │   │   ├── db.py
@@ -220,7 +220,6 @@ Excludes `node_modules`, `.venv`, `__pycache__`, `.git`, build output and everyt
 │   │   ├── main.py
 │   │   ├── migrate.py
 │   │   ├── prompts.py
-│   │   ├── schema_default.md
 │   │   └── storage.py
 │   ├── migrations/
 │   │   ├── 0001_init.sql
@@ -260,10 +259,10 @@ Every tracked file, grouped by folder. The audit at the end (§Coverage audit) t
 
 - **(root)**: `.dockerignore`, `.gitignore`, `DEPLOY.md`, `README.md`, `render.yaml`
 - **Benchmark/**: `.env.example`, `.gitignore`, `README.md`, `requirements.txt`
-- **Benchmark/bench/**: `__init__.py`, `checks.py`, `config.py`, `context.py`, `data.py`, `gaps.py`, `import_results.py`, `judge.py`, `library.py`, `metrics.py`, `migrate.py`, `prices.json`, `rubric.py`, `run.py`, `suggest.py`, `systems.py`
+- **Benchmark/bench/**: `__init__.py`, `checks.py`, `config.py`, `context.py`, `data.py`, `gaps.py`, `judge.py`, `library.py`, `metrics.py`, `migrate.py`, `prices.json`, `rubric.py`, `run.py`, `suggest.py`, `systems.py`
 - **Benchmark/migrations/**: `0001_init.sql`, `0002_rag_collection.sql`, `0003_sources.sql`, `0004_rubrics.sql`, `0005_use_saved.sql`, `0006_ask_chats.sql`, `0007_run_mode.sql`, `0008_rubric_review.sql`, `0009_facts.sql`, `0010_rubric_v3.sql`, `0011_reference_labels.sql`
 - **Rag/**: `.env.example`, `.gitignore`, `Dockerfile`, `README.md`, `requirements.txt`, `run.py`
-- **Rag/app/**: `__init__.py`, `attach_file.py`, `bulk.py`, `config.py`, `db.py`, `llm.py`, `main.py`, `migrate.py`, `prompts.py`, `retrieval.py`, `storage.py`
+- **Rag/app/**: `__init__.py`, `bulk.py`, `config.py`, `db.py`, `files.py`, `llm.py`, `main.py`, `migrate.py`, `prompts.py`, `retrieval.py`, `storage.py`
 - **Rag/app/ingest/**: `__init__.py`, `models.py`, `pdf_ifrs.py`, `pipeline.py`, `text.py`
 - **Rag/app/routers/**: `__init__.py`, `bulk.py`, `collections.py`, `documents.py`, `query.py`
 - **Rag/postman/**: `RAG_API.postman_collection.json`
@@ -279,11 +278,11 @@ Every tracked file, grouped by folder. The audit at the end (§Coverage audit) t
 - **UI/web/src/app/**: `app.config.ts`, `app.routes.ts`, `app.ts`
 - **UI/web/src/app/core/**: `api.ts`, `auth.ts`, `collections.ts`, `sse.ts`
 - **UI/web/src/app/pages/**: `ask.ts`, `bulk.ts`, `documents.ts`, `home.ts`
-- **UI/web/src/app/pages/benchmark/**: `compare.ts`, `rubric.ts`, `run.ts`, `runs.ts`, `topic.ts`
+- **UI/web/src/app/pages/benchmark/**: `compare.ts`, `rubric.ts`, `run.ts`, `runs.ts`, `systems.ts`, `topic.ts`
 - **UI/web/src/app/pages/wiki/**: `changeset.ts`, `changesets.ts`, `graph.ts`, `jobs.ts`, `lint.ts`, `page.ts`, `pages.ts`, `settings.ts`, `sources.ts`, `wiki-layout.ts`, `wiki-select.ts`
 - **UI/web/src/app/shared/**: `citation-service.ts`, `citations.ts`, `diff.ts`, `file-drop.ts`, `login.ts`, `markdown.ts`, `poll.ts`
 - **Wiki/**: `.env.example`, `.gitignore`, `Dockerfile`, `README.md`, `llm-wiki.md`, `requirements.txt`, `run.py`
-- **Wiki/app/**: `__init__.py`, `attach_file.py`, `auth.py`, `config.py`, `db.py`, `jobs.py`, `llm.py`, `main.py`, `migrate.py`, `prompts.py`, `schema_default.md`, `storage.py`
+- **Wiki/app/**: `__init__.py`, `auth.py`, `config.py`, `db.py`, `jobs.py`, `llm.py`, `main.py`, `migrate.py`, `prompts.py`, `storage.py`
 - **Wiki/app/ops/**: `__init__.py`, `ingest.py`, `lint.py`, `query.py`, `synthesis.py`
 - **Wiki/app/routers/**: `__init__.py`, `deps.py`, `ops.py`, `pages.py`, `sources.py`, `view.py`, `wikis.py`
 - **Wiki/app/sources/**: `__init__.py`, `extract.py`, `models.py`, `pdf_ifrs.py`, `text.py`
@@ -299,7 +298,7 @@ Every tracked file, grouped by folder. The audit at the end (§Coverage audit) t
 The repository is a research workbench that compares two ways of answering questions about IFRS Standards (IFRS 9 and IFRS 7 in practice) from the same source PDFs:
 
 - **RAG API (`Rag/`)**, the control: it splits each PDF into IFRS paragraphs (`Rag/app/ingest/pdf_ifrs.py`), embeds them (`Rag/app/llm.py:embed`), and answers a question from the top hybrid-search passages (`Rag/app/retrieval.py:search`, `Rag/app/routers/query.py`).
-- **Wiki API (`Wiki/`)**, the system under test: an LLM reads each source and writes and maintains a persistent, interlinked markdown wiki (`Wiki/app/ops/ingest.py`). Questions are answered from whole wiki pages that the model picks (`Wiki/app/ops/query.py`). This implements the "LLM wiki" idea in `Wiki/llm-wiki.md` (§6.0).
+- **Wiki API (`Wiki/`)**, the system under test: an LLM reads each source and writes and maintains a persistent, interlinked markdown wiki (`Wiki/app/ops/ingest.py`). Questions are answered from whole wiki pages that the model chooses from a search shortlist and the page list, following their links (`Wiki/app/ops/query.py`). This implements the "LLM wiki" idea in `Wiki/llm-wiki.md` (§6.0).
 - **Benchmark (`Benchmark/`)**: asks both systems the same questions from a query set, then has Claude grade both answers blind against a human-written reference memo. It produces similarity, key-point coverage, wins and further answer-level tests with confidence intervals (§8).
 - **UI (`UI/`)**, the "Workbench": an Angular app plus a FastAPI backend-for-frontend. It lets a user manage RAG collections and wikis, ask both systems side by side, run bulk requirement blocks, run and inspect benchmarks, and review the grading rubric (§9).
 
@@ -312,7 +311,7 @@ All service-to-service traffic is HTTP/JSON. Streaming answers use Server-Sent E
 - **API keys.** RAG and Wiki each require `X-API-Key` on every route except `/health` (and, for the Wiki, the `/view` routes) (`Rag/app/main.py:require_api_key`, `Wiki/app/auth.py`).
 - **Benchmark process.** The UI server starts benchmark work as a child process: `python -m bench.run --run-id …`, and also `bench.rubric`, `bench.suggest` and `bench.checks` (`UI/server/app/bench.py:_spawn`).
   - The benchmark process calls the RAG and Wiki APIs directly, with `RAG_URL`/`WIKI_URL` passed in its environment (`Benchmark/bench/systems.py`).
-  - It calls the Anthropic API, or the local `claude` CLI, for judging (`Benchmark/bench/judge.py`).
+  - It calls the Anthropic API for judging, with the Message Batches API where batching is on (`Benchmark/bench/judge.py`).
   - It writes progress and results into `bench.runs` in the shared database (`Benchmark/bench/run.py:Store`).
   - The UI reads results back from the database (`UI/server/app/bench.py`).
 - **Ask chats.** These are stored by the UI server in schema `ask` (`UI/server/app/ask.py`, `Benchmark/migrations/0006_ask_chats.sql`). Follow-up questions are rewritten by a direct Gemini REST call from the UI server (`ask.py:_gemini_json`).
@@ -328,7 +327,7 @@ flowchart LR
   BENCH -- "POST /collections/c/query" --> RAG
   BENCH -- "POST /wikis/w/query, /read-text" --> WIKI
   BENCH -- "POST /search/paragraphs" --> RAG
-  BENCH -- "Messages / Batches API or claude -p" --> CLAUDE[(Anthropic Claude)]
+  BENCH -- "Messages / Batches API" --> CLAUDE[(Anthropic Claude)]
   RAG -- "generate, embed" --> GEM[(Google Gemini)]
   WIKI -- "generate, embed" --> GEM
   UI -- "Ask rewrite (REST v1beta)" --> GEM
@@ -398,8 +397,6 @@ The RAG and Wiki pin different FastAPI (0.142.2 vs 0.142.4) and google-genai (2.
 ### 2.4 Benchmark dependencies (`Benchmark/requirements.txt`, exact pins)
 
 `anthropic==1.12.1`, `httpx==0.28.1`, `pydantic-settings==2.15.0`, `python-docx==1.2.0`, `psycopg[binary]==3.3.6`.
-
-The optional `claude-code` judge backend needs the Claude Code CLI (`claude`) on the PATH (`Benchmark/bench/config.py:claude_bin`). It is not a Python dependency and is not installed by any Dockerfile.
 
 ### 2.5 UI server dependencies (`UI/server/requirements.txt`, exact pins)
 
@@ -525,7 +522,7 @@ Every setting below is read by pydantic-settings from the named `.env` file or t
 | `supabase_secret_key` (20) | str | `""` | turns original-file storage on |
 | `storage_bucket` (21) | str | `"sources"` | Storage bucket name |
 | `db_pool_max` (22) | int | `10` | pool `max_size` |
-| `top_k` (23) | int | `8` | default passages per query |
+| `top_k` (23) | int | `8` | passages per query (a request cannot change it) |
 | `chunk_max_words` (24) | int | `500` | max words per chunk (IFRS parser and generic chunker) |
 | `temperature` (25) | float | `0.1` | generation temperature |
 | `bulk_concurrency` (26) | int | `3` | topics run in parallel (semaphore) |
@@ -571,17 +568,19 @@ Every setting below is read by pydantic-settings from the named `.env` file or t
 | supabase_secret_key | str | `""` | Storage is off unless set (`storage.py:34-35`) |
 | storage_bucket | str | `sources` | Private bucket name |
 | db_pool_max | int | 10 | Pool max size. Comment: "keep low on hosted Postgres" |
-| section_words | int | 3000 | Source split size for note extraction (`_pack`, used by the `routers/sources.py` uploads and `attach_file.py`) |
+| section_words | int | 3000 | Source split size for note extraction (`_pack`, used by the `routers/sources.py` uploads) |
 | chunk_max_words | int | 500 | Page chunk size for search (`store._chunks`). The comment also says "IFRS parser", but `extract.from_pdf` calls `pdf_ifrs.parse_document(doc)` without it, so the parser uses its hard-coded default `max_words=500` (`extract.py:75`, `pdf_ifrs.py:117`) |
-| max_pages_per_ingest | int | 17 | "including the source page". Used in ops/ingest and lint |
-| page_source_words | int | 12000 | Source paragraphs given to each page writer when the schema has no fixed sections (ops/ingest) |
+| max_pages_per_ingest | int | 17 | "including the source page". Used only by lint fix's no-fixed-sections branch, which no wiki reaches now (every schema must have fixed sections); an ingest writes one page per section plus the overview, besides the source page (ops/ingest) |
+| page_source_words | int | 12000 | Source paragraphs given to a page writer for a source with no paragraphs to route to sections (ops/ingest) |
 | page_part_words | int | 4000 | Source words per writing call; longer pages are written in parts (ops/ingest) |
 | page_background_words | int | 2000 | Context-only paragraphs from other sections (ops/ingest) |
 | route_batch | int | 120 | Paragraphs per call when assigning paragraphs to schema sections. ops/ingest retries with 40 (`ops/ingest.py:360`) |
 | llm_concurrency | int | 4 | Default cap in `llm.gather_limited` (`llm.py:129`) |
 | job_workers | int | 2 | Global job semaphore (`jobs.py:34`) |
-| query_top_k | int | 8 | Search hits for a query (`ops/query.py:21`) |
-| query_max_pages | int | 8 | Pages the LLM may pick (`ops/query.py:27,33`) |
+| browse_max_rounds | int | 6 | Rounds of choosing pages for an answer; a safety net, the model stops when it has enough (`ops/query.py:_browse`) |
+| browse_max_pages | int | 30 | Most pages read for one question (`ops/query.py:_browse`) |
+| browse_max_words | int | 150000 | Most words of page text read for one question (`ops/query.py:_browse`) |
+| shortlist_size | int | 15 | Pages the search lists for the model to choose from (`ops/query.py:_read`) |
 | lint_batch_pages | int | 12 | Pages per LLM lint call (`ops/lint.py:72`) |
 | max_upload_mb | int | 50 | Upload size cap, 413 above it (`routers/sources.py:51-52`) |
 
@@ -608,11 +607,7 @@ The local `.env` (not committed per `.gitignore` [UNVERIFIED]) has these keys on
 |---|---|---|---|
 | anthropic_api_key | str\|None | None | If unset, the SDK uses the env var or an `ant auth login` profile (`judge.client`) |
 | judge_model | str | "claude-opus-5-5" | key points, grading, facts, suggestions |
-| judge_effort | str | "high" | `output_config.effort` / `--effort` for **all** Claude calls, checks and context included (`judge._params` L69-70, `_cli_call` L40) |
-| judge_backend | str | "api" | "api" or "claude-code" |
-| claude_code_oauth_token | str | "" | required for claude-code |
-| claude_bin | str | "claude" | CLI binary |
-| judge_timeout_s | int | 900 | timeout of the claude-code subprocess |
+| judge_effort | str | "high" | `output_config.effort` for **all** Claude calls, checks and context included (`judge._params`) |
 | rag_url | str | "http://127.0.0.1:8000" | trailing "/" stripped; "http://" added if no scheme |
 | rag_api_key | str | required | X-API-Key header |
 | wiki_url | str | "http://127.0.0.1:8001" | same validator as rag_url |
@@ -637,32 +632,22 @@ The local `.env` (not committed per `.gitignore` [UNVERIFIED]) has these keys on
 Settings are cached with `lru_cache` (`get_settings`). `run.main` mutates the cached object per run.
 
 **.env.example (masked):**
-- `ANTHROPIC_API_KEY=` (empty), `JUDGE_MODEL=claude-opus-5-5`, `JUDGE_EFFORT=high`, `JUDGE_BACKEND=api`, `CLAUDE_CODE_OAUTH_TOKEN=` (empty).
+- `ANTHROPIC_API_KEY=` (empty), `JUDGE_MODEL=claude-opus-5-5`, `JUDGE_EFFORT=high`, and a comment that the judge is the Anthropic API (with Message Batches where possible).
 - `RAG_URL=http://127.0.0.1:8000`, `RAG_API_KEY=<masked>`, `WIKI_URL=http://127.0.0.1:8001`, `WIKI_API_KEY=<masked>`.
 - `RAG_COLLECTION=ifrs9`, `SOURCES=all`, `WIKI_SLUG=ifrs9`.
 - `DATABASE_URL=postgresql://postgres:<masked>@127.0.0.1:54322/postgres`.
 - `REFERENCE_DOCX=../Docs/<reference memo .docx>`.
 - `RUNS=3`, `CONCURRENCY=4`, `SEED=42`.
-- Not in .env.example: MODE, USE_BATCH, USE_SAVED, CHECKS_MODEL, CONTEXT_MODEL, CLAUDE_BIN, JUDGE_TIMEOUT_S, BATCH_*, QUERY_SET. They are settable through pydantic.
+- Not in .env.example: MODE, USE_BATCH, USE_SAVED, CHECKS_MODEL, CONTEXT_MODEL, BATCH_*, QUERY_SET. They are settable through pydantic.
 
 **Runs-default inconsistency:**
 - config.py says 2.
 - .env.example and the DB column default (0001) say 3.
 - README says both "default 3" (L26) and "Runs default to 2 repetitions" (L50).
 
-**API backend, `judge._json_call` L83-92 and `_params` L67-70:**
+**The judge call, `judge._json_call` and `_params`** (the API is the only judge):
 - `client().beta.messages.create(model, max_tokens=16000, system, messages=[user], output_config={"effort": judge_effort, "format": {"type":"json_schema","schema": schema}}, betas=["server-side-fallback-2026-07-01"], fallbacks="default")`.
 - `AsyncAnthropic(max_retries=5)` (L23); the SDK retries 408/409/429/5xx.
-
-**claude-code backend, `judge._cli_call` L31-64:**
-- Requires `CLAUDE_CODE_OAUTH_TOKEN`, otherwise RuntimeError.
-- Env: a copy of os.environ minus `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL`, with `CLAUDE_CODE_OAUTH_TOKEN` set.
-- Exact args: `[claude_bin, "-p", "--output-format", "json", "--json-schema", json.dumps(schema), "--model", model or judge_model, "--effort", judge_effort, "--system-prompt", system, "--tools", "", "--strict-mcp-config", "--setting-sources", "", "--disable-slash-commands", "--no-session-persistence"]`.
-- cwd is an empty TemporaryDirectory. The user prompt goes on stdin. `asyncio.wait_for(..., timeout=judge_timeout_s)`; on timeout the process is killed and a RuntimeError raised.
-- An error is raised on non-JSON output, a non-zero exit or `is_error`.
-- Data is read from `structured_output`, or else `json.loads(result)`.
-- Usage comes from `modelUsage[model]` (or the first entry): input = inputTokens + cacheReadInputTokens + cacheCreationInputTokens; output = outputTokens.
-- There is no max_tokens and no fallback on this path.
 
 ---
 
@@ -718,16 +703,16 @@ This table collects every number that shapes behaviour. "Setting" means it can b
 | RAG bulk | concurrency / k per query / max passages / word tolerance | 3 / 6 / 30 / 25% | setting ×3 / hard-coded | `Rag/app/config.py`, `Rag/app/bulk.py:WORD_TOLERANCE` |
 | Wiki search | RRF k / candidates per list / snippet | 50 / `match_count*4` / 400 characters | SQL | `wiki.search_pages` in `Wiki/migrations/0001_init.sql` |
 | Wiki page chunks | max words / split | 500 / at headings `#`–`###`, then sentences | setting / hard-coded | `Wiki/app/wiki/store.py:_chunks` |
-| Wiki ingest | pages per ingest (incl. source page) | 17 | setting `MAX_PAGES_PER_INGEST` | `Wiki/app/config.py`, `ops/ingest.py` |
+| Wiki ingest | pages per ingest | one per schema section plus the overview, besides the source page (17 for 15 sections) | from the schema | `ops/ingest.py` (plan `cap`) |
 | Wiki ingest | source section / page part / page source / background words | 3000 / 4000 / 12000 / 2000 | settings | `Wiki/app/config.py` |
 | Wiki ingest | routing batch | 120 paragraphs, retried at 40 | setting / hard-coded | `Wiki/app/config.py:route_batch`, `ops/ingest.py` |
-| Wiki query | search hits / pages the model may pick / max pages read / saved answers | 8 / 8 / 13 / 2 | setting / setting / hard-coded / hard-coded | `Wiki/app/config.py`, `ops/query.py` (§6.5) |
-| Wiki index | compact index cap | 60,000 characters | hard-coded | `Wiki/app/wiki/store.py:compact_index` |
+| Wiki query | shortlist / rounds / max pages read / max words read / saved answers | 15 / 6 / 30 / 150,000 / 2 | settings ×4 / hard-coded | `Wiki/app/config.py`, `ops/query.py` (§6.5) |
+| Wiki index | compact index | every page, never cut | hard-coded | `Wiki/app/wiki/store.py:compact_index` |
 | Wiki jobs | concurrent jobs / LLM concurrency | 2 / 4 | settings | `Wiki/app/config.py:job_workers`, `llm_concurrency` |
 | Wiki lint | pages per lint call | 12 | setting | `Wiki/app/config.py:lint_batch_pages` |
 | Uploads | Wiki max upload / UI benchmark upload cap | 50 MB / 20 MB | setting / hard-coded | `Wiki/app/config.py:max_upload_mb`, `UI/server/app/bench.py:MAX_UPLOAD` |
 | Benchmark | repetitions per topic / seed / concurrency | 2 / see §3.3 / see §3.3 | settings | `Benchmark/bench/config.py` |
-| Benchmark | judge max_tokens / CLI judge timeout | 16000 / 900 s | hard-coded / setting | `Benchmark/bench/judge.py`, `config.py:judge_timeout_s` |
+| Benchmark | judge max_tokens | 16000 | hard-coded | `Benchmark/bench/judge.py:_params` |
 | Benchmark | system HTTP timeout / attempts / backoff | 300 s / 3 / `5*(i+1)` s | hard-coded | `Benchmark/bench/systems.py:_post` |
 | Benchmark | bootstrap resamples / CI | 10,000 / 95% | hard-coded | `Benchmark/bench/gaps.py` |
 | Benchmark | citations checked per answer / paragraph chars / claims | 40 / 3000 / 40 | hard-coded | `checks.py:MAX_CITATIONS`, `MAX_PARAGRAPH`; `context.py:MAX_CLAIMS` |
@@ -1138,6 +1123,7 @@ The comment lists only `'needs_checking'`, but the code also writes `kind='citat
   - `page_versions.job_id` has no FK.
   - `links.to_slug` is a slug, not an FK, so it can point at a missing page.
 - **Mixed search**: in the RRF fusion, a full-text query that matches nothing gives `tsq` = null, so only semantic hits count.
+- **`wikis.answer_method`** (added after the pinned commit by `0003_answer_method.sql`; later migrations widened its allowed values): `0009_one_answer_method.sql` sets every row to `search_browse` and allows only that value, the one way the code now answers (§6.5). The column stays only so that a service still running older code can read it; it can be dropped once every service runs the new code.
 
 #### `app/migrate.py`
 - `python -m app.migrate` connects with `psycopg.connect(url, autocommit=True, connect_timeout=15)` (`:41`).
@@ -1400,11 +1386,9 @@ The RAG API is a conventional retrieve-then-generate service over IFRS paragraph
 7. Returns `{document_id, filename, parser, chunks, by_source_type: {type: count}, warnings}`.
 
 **Source-type constants** (`Rag/app/ingest/models.py`):
-- `BINDING_TYPES = ("standard","appendix_a","appendix_b","general")`
 - `STANDARD_TYPES = ("standard","appendix_a","appendix_b")`
 - `ACCOMPANYING_TYPES = ("example","implementation_guidance","basis_for_conclusions","dissenting_opinion")`
 - `NON_BINDING_TYPES = ("note","intro","appendix_c","back_matter")`
-- `ALL_TYPES` = the concatenation of all of the above.
 
 **`Chunk` dataclass:** `para_ref: str|None, source_type, page: int, heading: str|None, content, part: int = 0`.
 
@@ -1414,7 +1398,7 @@ The RAG API is a conventional retrieve-then-generate service over IFRS paragraph
 - `clean`: collapses whitespace with `_WS = re.compile(r"\s+")`, then `re.sub(r"\s+([,.;:)])", r"\1", ...)` removes spaces before punctuation.
 - `_SENT = re.compile(r"(?<=[.;:])\s+")` is the sentence splitter. It also breaks after `;` and `:`.
 - `split_long(text, max_words)`: returns `[text]` if it has ≤ max_words; otherwise greedily packs sentences up to max_words. A single sentence longer than the limit is kept whole.
-- `chunk_plain(pages, max_words=400, overlap=50)`. The defaults are overridden by the caller: max_words=500 comes from settings, and the overlap stays at `50` words.
+- `chunk_plain(pages, max_words)`. The caller passes max_words=500 from settings (`CHUNK_MAX_WORDS`); the overlap is the constant `OVERLAP_WORDS = 50`.
   - Per page, it splits paragraphs on `\n\s*\n` and cleans them.
   - It packs pieces into a buffer. When adding a piece would exceed max_words, it emits a chunk, and the new buffer starts with the last 50 words of the emitted chunk.
   - Chunks never cross pages. Fields: `para_ref=None, source_type="general", heading=None, part=0`.
@@ -1505,23 +1489,19 @@ Building chunks from the paragraphs:
 - Upload failures are logged and return None; the ingest never fails because of storage.
 - `CONTENT_TYPES`:
   - `.pdf` → application/pdf
-  - `.docx` → the OOXML type
-  - `.md` / `.markdown` → text/markdown
+  - `.md` → text/markdown
   - `.txt` → text/plain
   - anything else → application/octet-stream
 - `signed_url(file, expires_s=3600)`: POSTs `/object/sign/...` with `{"expiresIn":3600}` and re-encodes the path.
 - `remove`: `DELETE /object/{bucket}` with `{"prefixes":[path]}`; errors are logged and swallowed.
 
-**`Rag/app/attach_file.py`** (`python -m app.attach_file <path>`):
-- Backfills stored originals for documents ingested before storage existed.
-- Finds every document with a matching sha256 across all collections, uploads to `rag/<doc_id>/<doc filename>`, and sets `documents.file`.
-- Exits with an error if storage is disabled, nothing matches, or an upload fails.
+**`Rag/app/files.py:remove_unless_held(files)`**: called after documents are deleted (`DELETE /documents/{id}` and `DELETE /collections/{c}`). It removes each stored file only when no remaining document has the same `file->>'bucket'` and `file->>'path'`, because two collections can hold the same original; otherwise deleting one collection would break "View original" in the other.
 
 ### 5.3 Retrieval: hybrid full-text + vector search fused with RRF
 
-**`search(query, k, include_types=None, include_editorial=False, embedding=None, collection_id=None)`** (lines 23-40):
+**`search(query, k, include_types=None, include_editorial=False, embedding=None, *, collection_id)`** (lines 25-43). `collection_id` is required (keyword-only), as it is for `search_each`: every search names its collection.
 - If no embedding is passed, it calls `embed_query` (RETRIEVAL_QUERY, 768 dimensions, normalised).
-- `exclude = None if (include_editorial or include_types) else list(NON_BINDING_TYPES)`. Passing any `source_types` therefore turns off the editorial exclusion, and the include list alone governs.
+- `exclude = None if (include_editorial or include_types) else list(NON_BINDING_TYPES)`. When an include list is given (only `sources="standard"` gives one), the include list alone governs.
 - SQL: `select * from hybrid_search(%s, %s, %s, %s, %s, p_collection_id => %s)`. `full_text_weight=1`, `semantic_weight=1` and `rrf_k=50` are always the SQL defaults; Python never overrides them.
 
 **Fusion** (in SQL):
@@ -1531,15 +1511,14 @@ Building chunks from the paragraphs:
 - Defaults: k=8 gives 16 candidates per side; bulk k=6 gives 12 per side.
 
 **Defaults:**
-- `top_k` is 8 (settings). The query request can override it within 1..50.
+- `top_k` is 8 (the `TOP_K` setting). A query request cannot change it.
 - By default, `note`, `intro`, `appendix_c` and `back_matter` are excluded; Standard, appendices A/B, `general` and the accompanying types (IE/IG/BC/DO) are included.
 
 **`sources` switch** (`Rag/app/routers/query.py:_retrieve`, lines 61-66):
-- When `sources == "standard"`: `types = [t for t in (types or STANDARD_TYPES) if t in STANDARD_TYPES]`, which gives a Part A-only include list.
-- Caveat: if the user's `source_types` has no Part A types, the list becomes `[]`. An empty list is not None, so in SQL `c.source_type = any('{}')` is false and nothing is returned. Python also sees `include_types=[]` as falsy, so `exclude` is the NON_BINDING list. [UNVERIFIED in a run, but this follows from the code.]
-- `"all"` (the default) uses the types as given.
+- When `sources == "standard"`: `types = list(STANDARD_TYPES)`, a Part A-only include list.
+- `"all"` (the default): `types = None`, so the editorial exclusion above applies unless `include_editorial`.
 
-**Collection scoping:** `p_collection_id` = the collection's id for the query and bulk endpoints. `search` with `collection_id=None` searches all collections, but no router does that except `/search/paragraphs`, which uses its own SQL.
+**Collection scoping:** `p_collection_id` = the collection's id for the query and bulk endpoints; `search` always names a collection. Only `/search/paragraphs`, with its own SQL, searches across collections.
 
 **Other functions:**
 - `chunk_id(row)` = `f"C{row['id']}"`.
@@ -1559,7 +1538,7 @@ return "\n\n---\n\n".join(blocks)
 **`POST /search/paragraphs`** (`query.py`, lines 18-49):
 - Body `ParagraphSearchIn {text: str min_length=3, k: int = 8 (1..30), filenames: list[str] | None}`.
 - Pure vector search (no FTS, no RRF), across **all collections**: `embedding <=> emb`.
-- Filters: `para_ref is not null` and source_type not in ('note','intro','back_matter','appendix_c'); optionally `d.filename = any(filenames)`.
+- Filters: `para_ref is not null` and source_type not in `NON_BINDING_TYPES` ('note','intro','appendix_c','back_matter'); optionally `d.filename = any(filenames)`.
 - Fetches `k*4` rows, de-duplicates by (filename, para_ref), and returns up to k items of `{filename, para_ref, source_type, similarity: round(1-distance, 4)}`.
 - The docstring says it is used by the benchmark's rubric tag check. It needs the API key (query router).
 
@@ -1686,7 +1665,7 @@ Regexes and constants:
   - `word_guide`: from `about (\d+) words` in `Word guide:`
   - `leave_out`: the `Leave out:` line
   - `search_terms`: `Search terms:`, comma-split
-  - `questions`: lines matching `^Q\d+\..*$`
+  - `questions`: lines matching `QUESTION_RE = ^Q\d+\..*$` (defined once in `bulk.py`; the query route's per-question searches use the same pattern)
 - No TOPIC lines raises `ValueError` → 422.
 
 **`_retrieve(topic, collection_id)`:**
@@ -1722,7 +1701,6 @@ Regexes and constants:
 
 **Routes and limits:**
 - `POST /collections/{c}/bulk`: multipart `file` (decoded as UTF-8 with replace), query `topics: list[int]|None`, `revise: bool = True`. The run is synchronous: one HTTP request covers all topics. There is no timeout, size cap or job queue.
-- `POST /bulk/parse`: multipart `file`; no LLM and no collection. Returns `{"rules_chars", "topics": [Topic.__dict__ with block=None]}`. It still requires the API key.
 
 ### 5.6 HTTP endpoints
 
@@ -1734,21 +1712,20 @@ Everything except `/health` needs `X-API-Key`.
 | GET | `/collections` | none | rows `{id, slug, name, description, created_at, documents, chunks}`, ordered by created_at |
 | POST | `/collections` (201) | `CollectionIn {slug: pattern ^[a-z0-9][a-z0-9-]{1,62}$, name: min_length 1, description: str = ""}` | the inserted row; 409 on a duplicate slug |
 | PATCH | `/collections/{c}` | `CollectionPatch {slug?, name?, description?}` | updated row (unchanged row if no fields); 404 or 409 |
-| DELETE | `/collections/{c}` (204) | none | cascades documents and chunks, then removes the stored files |
+| DELETE | `/collections/{c}` (204) | none | cascades documents and chunks, then removes each stored file no remaining document points to (`files.remove_unless_held`) |
 | POST | `/collections/{c}/documents` (201) | multipart `file`; extension must be in `(".pdf",".txt",".md")`, else 415 | ingest dict plus `collection` slug; 409 `{"message","document_id"}` for a duplicate; 422 for no text |
 | GET | `/collections/{c}/documents` | none | `{id, filename, parser, created_at, has_file, chunks, collection}`, newest first |
 | GET | `/documents` | none | the same, across all collections |
-| GET | `/chunks` | query `para_ref` (required), `document_id: UUID?`, `collection: slug?`, `include_notes: bool=False` | rows `{id, para_ref, part, source_type, page, heading, content, filename, document_id}`, ordered by doc created_at, non-notes first, then part; 404 if none. Exact `para_ref` match. |
+| GET | `/chunks` | query `para_ref` (required), `collection: slug?` | rows `{id, para_ref, part, source_type, page, heading, content, filename, document_id}`, notes always left out, ordered by doc created_at, then part; 404 if none. Exact `para_ref` match. |
 | GET | `/documents/{doc_id}/file` | none | `{url (signed, 3600s), name, content_type}`; 404, 503 (storage off) or 502 |
-| DELETE | `/documents/{doc_id}` (204) | none | deletes the doc (chunks cascade) and the stored file; 404 |
+| DELETE | `/documents/{doc_id}` (204) | none | deletes the doc (chunks cascade) and its stored file unless another document points to it; 404 |
 | POST | `/search/paragraphs` | `{text (min 3), k=8 (1..30), filenames?}` | `[{filename, para_ref, source_type, similarity}]` |
-| POST | `/collections/{c}/query` | `QueryIn {question: min_length 3; top_k: int? 1..50 (None → 8); source_types: list[str]?; include_editorial: bool=False; sources: "standard"\|"all" = "all"}` | `{answer, citations, read, usage}` |
+| POST | `/collections/{c}/query` | `QueryIn {question: min_length 3; include_editorial: bool=False; sources: "standard"\|"all" = "all"; retrieval: "whole"\|"per_question" = "whole"}`; passages per search are the `TOP_K` setting | `{answer, citations, read, usage}` |
 | POST | `/collections/{c}/query/stream` | same `QueryIn` | SSE `token`/`citations`/`done` |
 | POST | `/collections/{c}/bulk` | multipart file, `?topics=`, `?revise=` | `{topics_total, topics[]}` |
-| POST | `/bulk/parse` | multipart file | `{rules_chars, topics[]}` |
 
 Validation and error notes:
-- `source_types` values are **not validated** against ALL_TYPES; the description only lists them.
+- `QueryIn` has no `top_k` or `source_types`; pydantic ignores unknown body fields, so a request that still sends them gets the defaults.
 - `{c}` is looked up by slug via `collection_dep` (404 `"Collection '<c>' not found"`).
 - Swagger is at `/docs` (README:16).
 
@@ -1761,12 +1738,13 @@ Validation and error notes:
   - `POST {{baseUrl}}/query/stream`
   - `POST {{baseUrl}}/bulk`
   The real paths are collection-scoped, so these four would 404/405. Only "Bulk - one topic" uses `/collections/{{collection}}/bulk?topics=1&revise=true`.
+- **Also stale since the simplification:** "Parse query set (no LLM)" calls the removed `/bulk/parse`, and the Query requests still send `top_k` and `source_types`, which are now ignored.
 
 ### 5.7 Collections and documents behaviour
 
 **Delete behaviour**
-- Deleting a collection reads the `file` records of its documents first. It then runs `delete from collections` (FK cascade to documents and chunks) and best-effort removes each stored file.
-- Deleting a document runs `delete ... returning file`, then removes the stored file.
+- Deleting a collection reads the `file` records of its documents first. It then runs `delete from collections` (FK cascade to documents and chunks) and best-effort removes each stored file that no remaining document points to (`Rag/app/files.py:remove_unless_held`).
+- Deleting a document runs `delete ... returning file`, then removes the stored file the same way. A file shared with a document in another collection is kept.
 
 **Uploads and duplicates**
 - There is **no explicit upload size limit** in the app. The whole file is read into memory (`await file.read()`). Supabase Storage locally has `file_size_limit = "50MiB"` (config.toml); the hosted limit is [UNVERIFIED].
@@ -1774,7 +1752,7 @@ Validation and error notes:
 - There is no re-ingest or update path: you delete and then upload again.
 
 **Documents and lookups**
-- `.docx` is in the storage CONTENT_TYPES but **not** in ALLOWED, so it cannot be uploaded.
+- The storage `CONTENT_TYPES` match the allowed uploads: `.pdf`, `.md`, `.txt`.
 - PATCH builds `update collections set {k} = %(k)s`. The keys come only from the model fields, so it is safe.
 - `GET /chunks` is not collection-scoped unless `collection` is passed.
 
@@ -1786,16 +1764,17 @@ Validation and error notes:
 
 **The schema document governs the wiki.**
 - Every wiki stores its own schema in `wiki.wikis.schema_md` (`Wiki/migrations/0001_init.sql`).
-- When a wiki is created without one, `Wiki/app/schema_default.md` is used (`Wiki/app/routers/wikis.py:DEFAULT_SCHEMA`, read at import).
+- When a wiki is created without one, `Wiki/schemas/ifrs9-schema-3.17.md` is used, read from that file at import (`Wiki/app/routers/wikis.py:DEFAULT_SCHEMA_FILE`), so there is no second copy to drift. `Wiki/schemas/` also holds `client-schema-1.17.md`; older versions (ifrs9 3.12, 3.14, 3.15, 3.16; client 1.11 to 1.16) are kept in `archive/schemas/` and are not read by the code.
 - It can be replaced with `PUT /wikis/{w}/schema` (`routers/wikis.py`) or on the Settings tab of the UI (`UI/web/src/app/pages/wiki/settings.ts`).
+- **A schema must have a Checks section and fixed sections.** `routers/wikis.py:schema_problem` refuses, with 422, a `POST /wikis` `schema_md` or a `PUT /wikis/{w}/schema` that has no Checks section ("The schema has no Checks section.") or no `### NN.` sections ("The schema has no fixed list of sections."). The engine has one way of working, driven by those two parts; there is no fallback for a schema without them.
 - The schema is prepended to most LLM calls by `prompts.with_schema` (§6.14, §7.2).
 - **The code also parses it.** Schema headings of the form `### NN. Name` define *sections* (`Wiki/app/ops/ingest.py:_sections`, regex `^###\s*(\d+)\.\s*(.+)$`). Each source paragraph is routed to exactly one section, and each section gets one `topic` page (§6.4).
 - A section whose brief contains the word `ADDITIVE` collects one-line "also recorded here" entries from paragraphs owned by other sections (§6.4, step 2b).
-- **The default schema has no `### NN.` sections**, so with it, ingest runs in the "no fixed sections" mode. Each planned page is then written from up to `page_source_words` = 12000 source words (`Wiki/app/config.py`). The section-based behaviour applies only to wikis whose schema defines numbered sections. The IFRS wikis' own schemas live in the database, not in the repository [UNVERIFIED: their content is not part of the codebase].
+- **The default schema (3.17) has fifteen `### NN.` sections and a Checks section**, so every wiki runs the section-based behaviour. `page_source_words` = 12000 (`Wiki/app/config.py`) is used only for a source with no paragraphs to route to sections. A wiki's schema is stored in the database; the repository holds the current versions in `Wiki/schemas/`.
 
-**Page types.** The complete list in the code is `PAGE_TYPES = ("overview", "topic", "concept", "entity", "comparison", "synthesis", "source")` (`Wiki/app/wiki/store.py:PAGE_TYPES`). The same seven appear in the comment on `wiki.pages.type` (`Wiki/migrations/0001_init.sql`); the database itself does not enforce them (no CHECK constraint). Their meaning is given only by the default schema (verbatim below). Which types the code itself creates:
+**Page types.** The complete list in the code is `PAGE_TYPES = ("overview", "topic", "concept", "entity", "comparison", "synthesis", "source")` (`Wiki/app/wiki/store.py:PAGE_TYPES`). The same seven appear in the comment on `wiki.pages.type` (`Wiki/migrations/0001_init.sql`); the database itself does not enforce them (no CHECK constraint). The meanings below are those of the generic default schema at the pinned commit; that file (`schema_default.md`) has since been removed. Schema 3.17 defines eight page types (it adds `subtopic`, also in `PAGE_TYPES` now) and says how each is built. Which types the code itself creates (as at the pinned commit):
 
-| Type | Meaning (`schema_default.md`) | Created by |
+| Type | Meaning (pinned commit's default schema) | Created by |
 |---|---|---|
 | `overview` | the single top-level page `overview` | ingest forces it into every plan (`ops/ingest.py:422-424`); any other page typed overview is dropped |
 | `source` | one per ingested source, `source-<name>` | ingest writes it as the 17th page of every ingest (`ops/ingest.py`, §6.4) |
@@ -1805,44 +1784,7 @@ Validation and error notes:
 | `comparison` | a side-by-side analysis | ingest planner and lint "new page" enums; never forced by code |
 | `synthesis` | an answer filed back from a query | only `save_answer` (Ask/query `save=true`) and `ops/synthesis.py:save`; ingest never writes or rewrites one (`ops/ingest.py:414-421`) |
 
-**`Wiki/app/schema_default.md` (verbatim):**
-
-```markdown
-# Wiki schema
-
-This document tells the wiki maintainer (the LLM) how this wiki is structured. Edit it to fit the domain.
-
-## Purpose
-A persistent, interlinked knowledge base compiled from the sources added to it. Pages are written and maintained by the LLM; humans curate sources and ask questions.
-
-## Page types
-- **overview** — the single top-level page (`overview`) describing what the wiki covers and its main threads.
-- **source** — one per ingested source (`source-<name>`): what it is, key takeaways, which pages it informed.
-- **entity** — a specific thing: organisation, person, product, standard, document, instrument.
-- **concept** — an idea, term, rule, method or definition.
-- **topic** — a broader theme that ties several entities/concepts together.
-- **comparison** — a side-by-side analysis of two or more things.
-- **synthesis** — an analysis or answer filed back from a query.
-
-## Slugs and links
-- Slugs are lowercase kebab-case, unique, stable (e.g. `expected-credit-losses`). Never rename an existing slug.
-- Link to other pages with `[[slug]]` or `[[slug|display text]]`. Link the first mention of every entity/concept that has (or should have) a page.
-- Cite sources by linking their source page, e.g. `[[source-ifrs-9]]`, right after the claim they support.
-
-## Page content
-- Start with a one-paragraph definition/summary, then sections with `##` headings.
-- Only state what the sources support. Attribute claims to sources.
-- Keep pages focused; split when a page covers several distinct things.
-- End with a `## Related` list of links where useful.
-
-## Contradictions and updates
-- When a new source contradicts an existing claim, keep both and flag it:
-  `> [!warning] Contradiction: <source A> says X; <source B> says Y.`
-- When a newer source supersedes a claim, update the text and note what changed and why.
-
-## Style
-- Plain, precise language. No filler. Prefer short paragraphs and lists.
-```
+The generic default schema reproduced here at the pinned commit (`Wiki/app/schema_default.md`) has been removed; a new wiki now starts from `Wiki/schemas/ifrs9-schema-3.17.md`, which is not reproduced here (its main parts: Purpose, Page types, The fifteen sections `### 01.` to `### 15.`, Slugs and links, Page content, Contradictions and updates, Style, Writing page text, Workflow: Ingest, Workflow: Answer and check, Workflow: Maintain, Checks).
 
 ### 6.1 Service bootstrap and authentication
 
@@ -1963,18 +1905,12 @@ HEADER_Y, FOOTER_Y = 110, 720
 
 **`models.py`**
 - `Chunk(para_ref, source_type, page, heading, content, part=0)` with `embed_text()`.
-- Type groups:
-  - `BINDING_TYPES = ("standard","appendix_a","appendix_b","general")`
-  - `STANDARD_TYPES = ("standard","appendix_a","appendix_b")`
-  - `ACCOMPANYING_TYPES = ("example","implementation_guidance","basis_for_conclusions","dissenting_opinion")`
-  - `NON_BINDING_TYPES = ("note","intro","appendix_c","back_matter")`
-  - `ALL_TYPES`
-- Only `ACCOMPANYING_TYPES` and `Chunk` are used in Wiki/app. `BINDING_TYPES`, `STANDARD_TYPES`, `NON_BINDING_TYPES`, `ALL_TYPES` and `embed_text` are unused code shared with Rag.
+- Type group: `ACCOMPANYING_TYPES = ("example","implementation_guidance","basis_for_conclusions","dissenting_opinion")`, the only one left (the unused copies of the RAG's other type groups were removed).
+- `embed_text` is unused code shared with Rag.
 
 **`text.py`**
 - `clean`: collapses whitespace and removes the space before `,.;:)`.
 - `split_long(text, max_words)`: splits on `(?<=[.;:])\s+` and packs sentences up to max_words.
-- `chunk_plain(..., 400, overlap 50)`: unused in Wiki/app.
 
 **DOCX** (`extract.py:99-114`, python-docx)
 - Non-empty paragraphs become blocks; paragraphs whose style name starts with "heading" become `## <text>`.
@@ -2010,10 +1946,6 @@ HEADER_Y, FOOTER_Y = 110, 720
 - Delete: DELETE `/object/<bucket>` with prefixes `[path]` (`:101-108`).
 - Base URL: `SUPABASE_URL` if set, else `https://<ref>.supabase.co` taken from `://postgres.<ref>[:@]` in DATABASE_URL (`:25-31`).
 
-**`app/attach_file.py`**
-- CLI: `python -m app.attach_file <wiki-slug> <source-slug> <path>`.
-- For sources ingested before storage existed. It re-extracts the file (with `section_words`), requires the same SHA-256 of the text, then uploads and attaches it. It exits if storage is not enabled (`:21-43`).
-
 ### 6.3 Shared plumbing used by every operation
 
 **Models and settings** (`config.py:8-37`). These are defaults and can be changed through env vars or `.env` (`config.py:9`, pydantic-settings):
@@ -2027,15 +1959,17 @@ HEADER_Y, FOOTER_Y = 110, 720
 | `temperature` | `0.1` |
 | `section_words` | `3000` (source split size for note extraction) |
 | `chunk_max_words` | `500` (page chunk size for search) |
-| `max_pages_per_ingest` | `17` ("including the source page") |
-| `page_source_words` | `12000` |
+| `max_pages_per_ingest` | `17` ("including the source page"; read only by lint fix's no-fixed-sections branch) |
+| `page_source_words` | `12000` (a source with no paragraphs to route to sections) |
 | `page_part_words` | `4000` |
 | `page_background_words` | `2000` |
 | `route_batch` | `120` |
 | `llm_concurrency` | `4` |
 | `job_workers` | `2` |
-| `query_top_k` | `8` |
-| `query_max_pages` | `8` |
+| `browse_max_rounds` | `6` |
+| `browse_max_pages` | `30` |
+| `browse_max_words` | `150000` |
+| `shortlist_size` | `15` |
 | `lint_batch_pages` | `12` |
 | `max_upload_mb` | `50` |
 
@@ -2066,7 +2000,7 @@ The API keys (`api_key`, `gemini_api_key`) have no defaults. Their values are no
 
 **Compact index for prompts** (`wiki/store.py:compact_index:312-323`):
 - One `slug | type | title | summary` line per page, ordered by type and then slug (`list_pages`, `store.py:72`).
-- Capped at `limit_chars=60000`. Past the cap it adds `"... (N more pages not shown)"`.
+- Every page, never cut (the 60,000-character cap of the pinned commit is gone, and so is `index_parts`, which gave a long list in parts).
 - An empty wiki gives `"(wiki is empty)"`.
 
 ---
@@ -2108,15 +2042,15 @@ The API keys (`api_key`, `gemini_api_key`) have no defaults. Their values are no
   - `### Section i`
   - the summary
   - `Claims:` bullets
-  - `Open questions (posed by the source, NOT facts):`
   - `Entities:` and `Concepts:` as `- name: description`
+  - (The notes no longer collect open questions: `NOTES_SCHEMA` has `summary`, `claims`, `entities` and `concepts` only.)
 
 #### 1.2 Step 2: route each paragraph to one schema section (`ingest.py:323-380`)
 - **Paragraphs.** `paras` is `ex.text` split on blank lines. All of them are embedded with `RETRIEVAL_DOCUMENT` (`ingest.py:324-325`).
 - **Schema sections** (`_sections`, `ingest.py:83-90`):
   - Section headings match `^###\s*(\d+)\.\s*(.+)$` in `wiki.schema_md`.
   - A brief runs from its heading to the next line matching `^##`. That also matches `###` and `####`, so a brief ends at the next heading of any level from 2 down, including a sub-heading inside it. This is an observation from the regex; check whether the schema relies on sub-headings inside briefs.
-- **Routing runs only if** the schema has sections and the source has paragraphs. Progress is `stage="route"`.
+- **Routing runs only if** the source has paragraphs (every schema has sections; `routers/wikis.py:schema_problem`). Progress is `stage="route"`.
 - **Headings.** `heads` comes from `meta.headings` if its length equals the paragraph count; otherwise every heading is blank (`ingest.py:331-332`).
 - **Examples section, placed by code** (`ingest.py:334-341`):
   - This is the first section whose name contains "example".
@@ -2151,7 +2085,7 @@ The API keys (`api_key`, `gemini_api_key`) have no defaults. Their values are no
   - **Candidates.** `search.search_many(wiki_id, _names(notes), k=3)`:
     - `_names` gives the top 40 entity and concept names by how often they appear (`ingest.py:71-76`).
     - Synthesis hits are dropped. At most 40 lines are kept, as `slug | type | title | summary`, or `"(none)"` (`ingest.py:405-406`).
-- **Call.** `generate_json(system, with_schema(schema, plan_prompt(ex.title, source["slug"], notes_md, index, candidates, s.max_pages_per_ingest - 1)), PLAN_SCHEMA)`. The model is told "At most 16 pages" (17 - 1).
+- **Call.** `generate_json(system, with_schema(schema, plan_prompt(ex.title, source["slug"], notes_md, index, candidates, cap)), PLAN_SCHEMA)`, with `cap = len(sections) + 1` (every section page and the overview; 16 for fifteen sections). The source page and any subtopic pages come on top.
 - **Update or create is decided by code, not the model.** The plan's `action` is overwritten: `"update" if slug in existing else "create"` (`ingest.py:421`). Slugs are `slugify`'d.
 - **The plan is then cleaned** (`ingest.py:414-421`):
   - The source slug and repeated slugs are skipped.
@@ -2165,8 +2099,7 @@ The API keys (`api_key`, `gemini_api_key`) have no defaults. Their values are no
 - **Every section gets a page** (`ingest.py:430-440`):
   - A missing section gets slug `prefix + slugify(sec name)`. The prefix is taken from an already-mapped page whose slug ends with its section's slugified name, for example `ifrs-9-`.
   - It is added as `type "topic"` with focus `f"Section {num:02d}: {name}"`.
-- **Page cap** (`ingest.py:441-443`). Items are sorted by rank (section pages 0, overview 1, others 2; the sort is stable) and cut to `max_pages_per_ingest - 1` = **16** items. The source page is the 17th.
-  - **Consequence (inference):** if the schema has 16 or more sections, the overview and every non-section page are dropped.
+- **Page cap** (`ingest.py:441-443`). Items are sorted by rank (section pages 0, overview 1, others 2; the sort is stable) and cut to `cap` = sections + 1 items, so every section page and the overview always fit. The source page comes on top. Only `topic` and `overview` items from the planner are kept; composed pages are built by code.
 
 #### 1.5 Step 4: writing pages (`ingest.py:445-640`)
 - Progress: `stage="write"`, `pages=len(items)+1`.
@@ -2192,7 +2125,7 @@ The API keys (`api_key`, `gemini_api_key`) have no defaults. Their values are no
     - `page_material` is only `f"Source: {ex.title}"`, because "the notes cover every section and would leak other sections' points in".
     - `background` is up to 2000 words of other paragraphs most relevant to the section brief (`page_background_words`), with their own paragraphs and also-record paragraphs excluded and their `[label]` removed. Background is gathered only if `given` is non-empty.
 - **Overview, source and other composed pages, when routing ran** (`ingest.py:486-488`). `given=[]`. Background is up to 2000 words relevant to `title\nfocus`, with labels removed. These pages get the full `material`, meaning all the notes.
-- **Schema without fixed sections** (`ingest.py:489-490`). `given` is the most relevant paragraphs: up to `page_part_words` (4000) words for `overview` or `source` pages, otherwise `page_source_words` (12000).
+- **A source with no paragraphs to route to sections** (`ingest.py:489-490`). `given` is the most relevant paragraphs: up to `page_part_words` (4000) words for `overview` or `source` pages, otherwise `page_source_words` (12000).
 - **Parts** (`ingest.py:491-512`):
   - `_parts(given, 4000)` makes document-order groups of about 4000 words. A tail under 1000 words (`max_words // 4`) is folded into the previous part (`ingest.py:137-152`).
   - Pages with no `given` paragraphs are written once, unless there are only `extra` lines, in which case they get zero writing calls.
@@ -2218,10 +2151,8 @@ The API keys (`api_key`, `gemini_api_key`) have no defaults. Their values are no
   - Still missing: `missed` gets `{"page","paragraphs","reason":"not recorded after two tries"}`.
 - **Rebuilding the "Also recorded here" section** (`ingest.py:602-605`):
   - Old lines come first, but an old line is dropped when a new line has the same `_also_key`. The key is the sorted set of `source-…|label` citations, so a later upload replaces the entry for the same paragraph (`ingest.py:256-259`).
-  - `_with_also` places `## Also recorded here` (`ALSO_HEADING`, `ingest.py:230`) before any closing "Not yet covered" note (`ingest.py:246-253`).
-- **"Not yet covered" note** (`ingest.py:606-609`):
-  - On `auto_gaps` pages with given paragraphs, it appends `"\n\nNot yet covered: (paragraphs of this section that it does not cite) <refs>"`, or `"\n\nNot yet covered: none"`.
-  - Otherwise, when the page was written in more than one part, it appends the same note with the default wording `"source paragraphs given for this page"` (`_not_covered`, `ingest.py:222-227`).
+  - `_with_also` places `## Also recorded here` (`ALSO_HEADING`, `ingest.py:230`) at the end, before any closing "Not yet covered" note a page written by older code may still carry (`ingest.py:246-253`).
+- **No "Not yet covered" note.** The page text no longer lists its uncited paragraphs (`_not_covered` was removed; it ran only for a schema without a Checks section). Gaps are reported in the job result instead: `missed_paragraphs`, and per split section `coverage.not_cited_on_their_page`.
 - **The returned `Op`** (`ingest.py:610-617`):
   - Title, summary and change_note come from the first part's output. A fallback is used for pages with only extra lines: summary `f"{title}: items also recorded here"`, change_note `f"Also recorded from {ex.title}"`.
   - Tags are the union of all parts' tags, else the existing tags.
@@ -2297,13 +2228,15 @@ The API keys (`api_key`, `gemini_api_key`) have no defaults. Their values are no
 - `sources` (`"standard"` or `"all"`, default `"all"`)
 - `use_saved=True`
 
-#### `_select_pages` (`query.py:16-34`)
-1. `synth` is the set of all synthesis slugs.
-2. `hits = search_pages(question, query_top_k=8)`. If any synthesis page is in the top 5, it searches again with `8 + len(synth)`. Synthesis hits are then removed.
-3. `index` is the compact index without synthesis pages. The call is `generate_json(MAINTAINER_SYSTEM, select_prompt(question, index, query_max_pages=8), SELECT_SCHEMA)`, without `with_schema`.
-4. `order` is the top **5** search hits, then the model's picks (`slugify`'d), with duplicates and synthesis pages removed. Hits 6 to 8 are fetched but never used.
-5. Pages fetched are `order[: query_max_pages + 5]`, so **at most 13 pages** are read, in that order.
-- **No word budget on what is read.** Each page's full `content_md` is sent. The only limit is the 60,000-character cap on the index in the select prompt.
+#### Choosing the pages: `_read` and `_browse` (`query.py`)
+This is the one way every wiki now answers (called `search_browse`; the other methods, `search_pick`, `browse` and `search_browse_2`, were removed with `_select_pages`, `select_prompt`, `store.index_parts`, the `query_top_k`, `query_max_pages` and `page_list_chars` settings, the `PUT /wikis/{w}/settings` route and the `answer_method` field on create; migration `0009_one_answer_method.sql` fixes the column, §4.2).
+1. **Shortlist.** `search.shortlist(wiki_id, question, shortlist_size=15)` calls the SQL function `wiki.shortlist_pages` (migration `0004_search_browse.sql`, synthesis pages excluded). Each hit has its score, its rank among passages holding the question's labels and numbers as written, among keyword matches and among meaning matches, and the passage that matched.
+2. **Page list.** Every non-synthesis page as `slug | type | title | summary`, the overview first, then by slug (so a subtopic page follows its section page). It is never cut.
+3. **Rounds** (`_browse`, up to `browse_max_rounds` = 6). Each round is `generate_json(MAINTAINER_SYSTEM, with_schema(schema, browse_prompt(question, page_list, pages read so far in full, pages left, shortlist)), BROWSE_SCHEMA)`. The model returns `read` (slugs), `enough` and `why`. It can choose from the page list, the shortlist, or links on the pages already read.
+   - Only known, unread slugs are kept, up to the pages left. Each is filtered by the Sources setting (`_restrict`) and read only while the words read stay within `browse_max_words` = 150,000 (the first page is always read).
+   - It stops when the model says `enough`, when a round adds nothing, or at `browse_max_pages` = 30 pages. A failed call ends the rounds and is recorded.
+4. **Record.** The rounds (the shortlist first, then each round's choices, pages read, `enough`, `why` and words read) are written to the log entry as "Shortlist: …" and "Round n: …" lines.
+- Only the pages the answer cites are listed with it (`listed`): a page counts as cited when the answer links it or cites a source paragraph the page cites.
 
 #### `_select_saved` (`query.py:37-46`)
 - Rows come from `saved.saved_answers(readable_only=True)`. These are synthesis pages tagged `saved-answer`, or whose first version's change_note starts with "Filed from query". Pages carrying a `citation_problems` flag are excluded (`saved.py:12-31`).
@@ -2432,7 +2365,7 @@ The module docstring says the draft uses only the wiki answers, never RAG answer
 - `thin_pages`: under **40** words, split on whitespace.
 - `unsourced_pages`: type not in (`overview`, `synthesis`, `source`), with no `page_sources` row and no `[[source-` in the content.
 - `possible_duplicates`: titles lower-cased, a trailing `s` removed from each word (`s\b`), then non-alphanumerics removed; groups with more than one slug.
-- `EXEMPT_ORPHAN = ("overview",)` is defined (`lint.py:12`) but never used. The SQL hard-codes `'overview'` instead.
+- The SQL hard-codes `'overview'` as the page exempt from the orphan check (the unused `EXEMPT_ORPHAN` constant was removed).
 
 **LLM check** (`llm_check`, `lint.py:68-97`):
 - Pages are sent in batches of `lint_batch_pages`=12. Each batch is one call: `generate_json(MAINTAINER_SYSTEM, with_schema(schema, lint_prompt(pages_md, index)), LINT_SCHEMA)`.
@@ -2445,6 +2378,7 @@ The module docstring says the draft uses only the wiki answers, never RAG answer
 - Pages in different batches are never compared with each other (inference from the batching).
 
 **Fix** (`fix`, `lint.py:107-174`):
+- **Every wiki now takes the fixed-sections branch.** A schema with fixed sections makes every page from its controlled lists, so fix writes no page: it returns `{"status": "proposed", "link_proposals": [...]}`, each link to a page that does not exist proposed to be written as plain text (`unlink_proposals`); nothing is changed. The branch below (as at the pinned commit) is kept in the code but no wiki reaches it, since every schema must have fixed sections.
 - **New pages.**
   - Candidates are the broken-link targets (title from the slug, `type "concept"`, reason `"Linked from other pages but does not exist"`) and the LLM's `missing_pages`.
   - Singular and plural variants are skipped with `key = re.sub(r"(es|s)$","",slug)`.
@@ -2455,9 +2389,7 @@ The module docstring says the draft uses only the wiki answers, never RAG answer
 - **Link edits.**
   - Candidates are the LLM's `missing_links` and the orphans. Each orphan is linked from the best of its top 3 search hits that is not itself, else from `overview`.
   - Capped at **17** pages.
-  - Each is a call to `add_links_prompt(slug, content, "[[t]]\n...")` with `PAGE_SCHEMA`. This call is **not** wrapped in `with_schema`.
-  - The page keeps its existing title and type. The existing summary and tags win over the model's.
-  - `change_note "Lint fix: add links to …"`.
+  - They are returned as proposals (`{page, link, proposal: "add"}`); no page is changed (`add_links_prompt` has been removed).
 - `citecheck.check_ops` runs on all fix ops, then `store.commit(wiki_id,"lint","Lint fixes",ops,mode)`.
 - **Not fixed:** contradictions, stale claims, missing metadata, thin pages, unsourced pages and duplicates are reported only.
 
@@ -2465,7 +2397,7 @@ The module docstring says the draft uses only the wiki answers, never RAG answer
 - The result is `{"structural", "llm", "fix"?}`, stored as the job result.
 - A log entry of kind `"lint"` is written, titled `"Lint"`, `" + LLM"` or `" + fix"`, with counts per key and the fix status.
 - There is no separate findings table.
-- **There is no coverage pass in lint.** The paragraph coverage check exists only in ingest, as "Not yet covered".
+- **There is no coverage pass in lint.** The paragraph coverage check exists only in ingest, reported in its job result (`missed_paragraphs`, `coverage`).
 
 ---
 
@@ -2538,14 +2470,14 @@ There is no overlap between chunks. The summary is not embedded unless the conte
   - Starts with `# <name> — Index`, then the description.
   - Then per PAGE_TYPES group, `## <Type> pages (n)` followed by lines `- [[slug|title]] — summary`.
   - Generated on request; never stored.
-- `compact_index(wiki_id, limit_chars=60000, exclude_types=())` (`:312-323`):
+- `compact_index(wiki_id, exclude_types=())` (`:312-323`):
   - The catalogue given to the LLM: lines `slug | type | title | summary`.
-  - Cut off at 60,000 characters with `... (N more pages not shown)`. Empty wiki: `(wiki is empty)`.
+  - Every page, never cut. Empty wiki: `(wiki is empty)`.
 - `render_log(wiki, limit=500)` (`:326-337`): the last 500 rows in chronological order, as `## [YYYY-MM-DD HH:MM] kind | title` plus detail_md. This is the parseable prefix format from llm-wiki.md.
 
 **Contradiction flags**
 - There is no DB structure for contradictions.
-- They exist only as the schema convention `> [!warning] Contradiction: ...` (`schema_default.md:29-30`), which the viewer renders as a callout (`view.py:19,45`), plus LLM lint (in `ops/`, §6.5).
+- They exist only as the schema convention `> [!warning] Contradiction: ...` (at the pinned commit `schema_default.md:29-30`; schema 3.17, "Contradictions and updates", keeps the same callout form and says contradiction rows are not built yet), which the viewer renders as a callout (`view.py:19,45`), plus LLM lint (in `ops/`, §6.5).
 
 **page_flags**: see §7.
 
@@ -2691,8 +2623,7 @@ Every generative call uses `gemini_chat_model` (default `gemini-2.5-flash`) at `
 | Also record | `ingest.py:577` | FILL_SCHEMA | yes |
 | Lint check | `lint.py:74` | LINT_SCHEMA | yes |
 | Lint new page | `lint.py:134` | PAGE_SCHEMA | yes |
-| Lint add links | `lint.py:160` | PAGE_SCHEMA | no |
-| Query select | `query.py:26` | SELECT_SCHEMA | no |
+| Query: choose pages (each round) | `query.py:_browse` | BROWSE_SCHEMA | yes |
 | Saved-answer select | `query.py:44` | SELECT_SCHEMA | no |
 | Answer | `query.py:157` (`generate`) and `query.py:172` (`stream`) | none; system QUERY_SYSTEM | yes |
 | Save answer | `query.py:178` | PAGE_SCHEMA | yes |
@@ -2712,7 +2643,8 @@ All endpoints need `X-API-Key` except `/`, `/health` and `/view*`. `{w}` is the 
 **Wikis** (`routers/wikis.py`)
 
 `POST /wikis` (201)
-- `WikiIn`: `slug` must match `^[a-z0-9][a-z0-9-]{1,62}$`; `name` (str, required); `description` (default ""); `schema_md` (optional, defaulting to `schema_default.md` read at import, `:17`).
+- `WikiIn`: `slug` must match `^[a-z0-9][a-z0-9-]{1,62}$`; `name` (str, required); `description` (default ""); `schema_md` (optional, defaulting to `Wiki/schemas/ifrs9-schema-3.17.md` read at import). There is no `answer_method` field.
+- A given `schema_md` with no Checks section or no `### NN.` sections gives 422 (`schema_problem`).
 - A duplicate slug gives 409. Logs `edit "Wiki created"`. Returns the row (`:20-44`).
 
 `GET /wikis`
@@ -2725,7 +2657,8 @@ All endpoints need `X-API-Key` except `/`, `/health` and `/view*`. `{w}` is the 
 - Cascades the whole wiki and removes stored files (`:74-83`).
 
 `GET /wikis/{w}/schema` (text) and `PUT /wikis/{w}/schema`
-- PUT takes `{schema_md}` with min_length 20 and logs `edit "Schema updated"` (`:86-96`).
+- PUT takes `{schema_md}` with min_length 20, refuses with 422 a schema with no Checks section or no fixed sections (`schema_problem`), and logs `edit "Schema updated"` (`:86-96`).
+- There is no `PUT /wikis/{w}/settings` route (it set the answer method, now fixed).
 
 `GET /wikis/{w}/graph`
 - Nodes are pages `{id: slug, title, type, summary, missing: false, inbound, outbound, orphan}`. `orphan` means not `overview` and inbound = 0.
@@ -3007,8 +2940,8 @@ You never invent sources, facts or page slugs that you were not given, unless as
 def with_schema(schema_md: str, body: str) -> str:
     return f"<wiki_schema>\n{schema_md}\n</wiki_schema>\n\n{body}"
 ```
-- **Used by:** notes, plan, write page, fill, also_record, lint check, lint new page, query answer, save_answer, synthesis.
-- **Not used by:** route, also (pick), select, select_saved, add_links.
+- **Used by:** notes, plan, write page, fill, also_record, lint check, lint new page, browse (choosing pages), query answer, save_answer, synthesis.
+- **Not used by:** route, also (pick), select_saved.
 
 #### `NOTES_SCHEMA` and `notes_prompt` (`prompts.py:16-52`)
 ```python
@@ -3021,11 +2954,6 @@ NOTES_SCHEMA = {
             "description": "Statements the source itself ASSERTS as fact (rules, definitions, numbers). Keep location labels like [5.5.3] or [page 4] if present. Never turn a question, request or hypothesis into a claim.",
             "items": {"type": "string"},
         },
-        "open_questions": {
-            "type": "array",
-            "description": "Questions, requests, hypotheses or instructions the source poses without answering them",
-            "items": {"type": "string"},
-        },
         "entities": {
             "type": "array",
             "items": {"type": "object", "properties": {"name": {"type": "string"}, "description": {"type": "string"}}, "required": ["name", "description"]},
@@ -3035,7 +2963,7 @@ NOTES_SCHEMA = {
             "items": {"type": "object", "properties": {"name": {"type": "string"}, "description": {"type": "string"}}, "required": ["name", "description"]},
         },
     },
-    "required": ["summary", "claims", "open_questions", "entities", "concepts"],
+    "required": ["summary", "claims", "entities", "concepts"],
 }
 
 
@@ -3043,9 +2971,8 @@ def notes_prompt(source_title: str, idx: int, total: int, section: str) -> str:
     return (
         f"Source: {source_title} (section {idx} of {total}).\n"
         "Extract notes for building wiki pages: a short summary; the claims the source itself asserts (complete, precise, "
-        "with every condition); the questions/requests it poses without answering (as open questions, not claims); "
+        "with every condition); "
         "and the entities and concepts that deserve or relate to wiki pages. "
-        "If the source is mainly a questionnaire, checklist or instructions, most content belongs in open_questions. "
         "Follow the wiki schema for what to capture and how to label it.\n\n"
         f"<section>\n{section}\n</section>"
     )
@@ -3090,8 +3017,7 @@ def plan_prompt(source_title: str, source_slug: str, notes: str, index: str, can
         "- Always include the `overview` page (create it if missing, otherwise update it).\n"
         "- If the schema defines a fixed list of sections, include one page for every section.\n"
         f"{ONE_TOP_PAGE}\n"
-        "- Do not include the source page itself.\n"
-        "- Do not create a page whose content would come only from open questions; those belong on the source page.\n\n"
+        "- Do not include the source page itself.\n\n"
         f"<current_index>\nslug | type | title | summary\n{index}\n</current_index>\n\n"
         f"<related_existing_pages>\n{candidates}\n</related_existing_pages>\n\n"
         f"<source_notes>\n{notes}\n</source_notes>"
@@ -3131,8 +3057,7 @@ def write_page_prompt(
 ) -> str:
     cite = (
         f"The source page is [[{source_slug}]]; cite it exactly as the wiki schema requires. "
-        "Only state as fact what the source paragraphs or the Claims in the material support; material listed under Open "
-        "questions may be recorded as open questions the source raises, never as facts.\n"
+        "Only state as fact what the source paragraphs or the Claims in the material support.\n"
         if source_slug else ""
     )
     if background_paragraphs and source_paragraphs:
@@ -3208,6 +3133,8 @@ def write_page_prompt(
     )
 ```
 
+Since the pinned commit the notes, plan and page prompts no longer mention open questions (`notes_schema()` and the `open_questions` arguments were removed). The two "Do not write a 'Not yet covered' list; it is added ..." lines are still in `write_page_prompt`, but the code no longer adds such a list (§6.4, 1.5).
+
 #### `ROUTE_SCHEMA`, `ALSO_SCHEMA`, `also_prompt`, `also_record_prompt` and `route_prompt` (`prompts.py:214-273`)
 ```python
 ROUTE_SCHEMA = {
@@ -3279,10 +3206,39 @@ SELECT_SCHEMA = {
 }
 
 
-def select_prompt(question: str, index: str, max_pages: int) -> str:
+BROWSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "read": {"type": "array", "items": {"type": "string"}},
+        "enough": {"type": "boolean"},
+        "why": {"type": "string"},
+    },
+    "required": ["read", "enough", "why"],
+}
+
+
+def browse_prompt(question: str, page_list: str, read_md: str, left: int, shortlist: str = "") -> str:
+    found = (
+        "A search of the text of every page found the pages in the shortlist, best first: each with its score, how it "
+        "matched (its rank among passages holding the question's labels and numbers as written, among passages matching "
+        "its words, and among passages close to its meaning; \"-\" where it did not match that way) and the passage that "
+        "matched. A page's title may "
+        "not name everything on it, so the passage shows what the page holds. The shortlist is a guide only: read a "
+        "page from it only where it bears on the question; it may miss pages and list pages that do not help.\n"
+        if shortlist else "")
     return (
-        f"Pick up to {max_pages} wiki pages most useful for answering the question. Return their slugs.\n\n"
-        f"<index>\nslug | type | title | summary\n{index}\n</index>\n\nQuestion: {question}"
+        "You are finding the wiki pages needed to answer a question, the way a reader uses a wiki. The page list gives "
+        "every page's slug, type, title and one-line summary. The pages you have read so far are given in full.\n"
+        + found +
+        "Choose the next pages to read: from the page list" + (" or the shortlist" if shortlist else "") + ", or by "
+        "following a [[link]] on a page you have read (a section page that is an index links to its subtopic pages; "
+        "pages link to related pages). Choose only pages that bear on the question, and do not choose a page you have read.\n"
+        "When the pages read are enough to answer the question, or nothing in the wiki would help, set enough to true "
+        f"and choose none. You can read at most {left} more pages. Return slugs exactly as given; say briefly why.\n\n"
+        + (f"<shortlist>\nslug | score | labels rank | words rank | meaning rank | title | passage that matched\n{shortlist}\n</shortlist>\n\n"
+           if shortlist else "")
+        + f"<page_list>\nslug | type | title | summary\n{page_list}\n</page_list>\n\n"
+        f"<pages_read>\n{read_md or '(none yet)'}\n</pages_read>\n\nQuestion: {question}"
     )
 
 
@@ -3315,7 +3271,7 @@ def query_saved_prompt(question: str, pages_md: str, saved_md: str) -> str:
         f"Question: {question}"
     )
 ```
-- `select_saved_prompt` reuses `SELECT_SCHEMA`.
+- `SELECT_SCHEMA` is used only by `select_saved_prompt` (`select_prompt` was removed with the other answer methods). `browse_prompt` is called with `BROWSE_SCHEMA`, wrapped in `with_schema` (§6.5).
 - The answer call (`query_prompt` or `query_saved_prompt`) uses `QUERY_SYSTEM` as its system prompt and **has no output schema**.
 
 #### Synthesis and save-answer prompts (`prompts.py:322-353`)
@@ -3399,16 +3355,8 @@ def lint_prompt(pages_md: str, index: str) -> str:
         "Only report real, specific issues.\n\n"
         f"<index>\nslug | type | title | summary\n{index}\n</index>\n\n<pages>\n{pages_md}\n</pages>"
     )
-
-
-def add_links_prompt(slug: str, content_md: str, targets: str) -> str:
-    return (
-        f"Edit the wiki page `{slug}` minimally to add links to the pages below where they fit naturally "
-        "(link an existing mention, or add a short sentence or a `## Related` entry). Do not change anything else.\n\n"
-        f"<links_to_add>\n{targets}\n</links_to_add>\n\n<current_page>\n{content_md}\n</current_page>"
-    )
 ```
-`add_links_prompt` is called with `PAGE_SCHEMA`.
+(`add_links_prompt` and `index_prompt_focus` have been removed: lint fix only proposes links, §6.7.)
 
 #### Prompt text built inside the ops files
 | Where | Text |
@@ -3466,7 +3414,7 @@ The judge, rubric-suggestion, answer-check and context-check prompts are reprodu
 - `sources`: `standard` (Part A only) or `all`;
 - `use_saved`: whether the wiki may read saved answers;
 - `mode`: `quick`, or `full`, which adds faithfulness and context recall and requires an approved rubric (`UI/server/app/bench.py:_ensure_approved`, `run.py:main`);
-- `use_batch`: Anthropic Message Batches, used only with the API backend.
+- `use_batch`: Anthropic Message Batches (the API is the only judge).
 
 **3. Querying** (`Benchmark/bench/systems.py`). For every topic and repetition, the identical question text (title plus questions) is sent once to each system:
 - RAG: `POST /collections/{c}/query`
@@ -3476,7 +3424,7 @@ The answer is recorded with its citations, latency, what was read (`read`) and t
 
 **4. Judge** (`Benchmark/bench/judge.py`).
 - Claude, by default `claude-opus-5-5` at effort `high`.
-- Called through the Anthropic API (`JUDGE_BACKEND=api`) or the local Claude Code CLI (`claude-code`) (`config.py`, `judge.py:_cli_call`).
+- Called through the Anthropic API, the only judge (`judge.py:_json_call`; with Message Batches where `use_batch` is on). The claude-code backend (`_cli_call`, `JUDGE_BACKEND`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_BIN`, `JUDGE_TIMEOUT_S`) has been removed.
 
 **5. What is graded against.**
 - Key points are derived once per reference file (keyed by its SHA-256) from the human reference answer and stored as a versioned *rubric* in `bench.rubrics` (`rubric.py`).
@@ -3527,15 +3475,15 @@ All are `python -m bench.<module>`, run from `Benchmark/`.
 | Command | Args | Source |
 |---|---|---|
 | `bench.run` | `--topics` ("e.g. 1,2,5-7 (default: all)"), `--runs` (int), `--run-id` ("stored run to execute or resume") | `run.py:main` L322-327 |
-| `bench.rubric list` / `rebuild <sha256>` / `seed <run-id>` | | `rubric.py:main` L101-116 |
-| `bench.checks facts <sha256>` / `backfill <run-id>\|all` | | `checks.py` L418-425 |
+| `bench.rubric rebuild <sha256>` (the UI's Rebuild button runs this) | | `rubric.py:main` |
+| `bench.checks facts <sha256>` | | `checks.py` (`__main__`) |
 | `bench.suggest <sha256> [topics e.g. 1,5 or ranges]` | | `suggest.py` L343-354 |
-| `bench.metrics backfill <run-id>\|all` | | `metrics.py` L130-134 |
 | `bench.migrate` | none | `migrate.py:main` |
-| `bench.import_results <dir> [dirs...]` | reads `<dir>/results.json`. A relative dir resolves against `Benchmark/`. | `import_results.py:main` |
+| `bench.context <run-id> [...]` | scores a run's saved answers again for faithfulness and context recall | `context.py:main` |
+| `bench.std_similarity <run-id> [...]` | adds Standard-only similarity to a finished run | `std_similarity.py:main` |
 | `bench.data` | prints the topic-to-reference mapping check | `data.py` L82-86 |
 
-**Topic parsing.** `parse_topics` splits on "," and handles "a-b" ranges. An empty spec means all topics 1..n (`run.py:parse_topics` L30-37).
+**Topic parsing.** `data.parse_topics` (shared by `run.py` and `suggest.py`; the UI server keeps its own copy, `bench.py:_numbers`) splits on "," and handles "a-b" ranges; an empty spec gives an empty set, which `run.py` reads as every topic.
 
 **New run (CLI), `run.py:_new_run` L304-319:**
 - It requires `RAG_COLLECTION` and `WIKI_SLUG`, otherwise it exits.
@@ -3547,10 +3495,9 @@ All are `python -m bench.<module>`, run from `Benchmark/`.
 - The row is loaded. It fails if the query_set or reference is missing, or if there is no rag_collection.
 - These settings are overridden from the row:
   - `rag_collection`, `wiki_slug`, `sources` (default "all").
-  - `use_saved = row["use_saved"] is not False`, so null means True.
+  - `use_saved, use_batch = row["use_saved"], row["use_batch"]`, taken as stored (there is no fallback for a null left by older runs).
   - `mode = row.mode or settings`.
-  - `use_batch`: the row value unless null.
-- If `judge_backend == "claude-code"`, `use_batch` is forced to False (L344-345).
+  - A resumed run asks the RAG as it started: `rag_include_editorial` from its stored config.
 - `runs = args.runs or row["runs"]`.
 - `ref_sha` is the SHA-256 of the reference bytes (`rubric.sha256`).
 - The inputs are written to a temp dir and loaded with `data.load`. Topics are filtered by `--topics`, or by the row's `topics` column.
@@ -3619,7 +3566,7 @@ All are `python -m bench.<module>`, run from `Benchmark/`.
 - 4xx raises immediately.
 
 **RAG, `ask` L32-36:**
-- `POST {rag_url}/collections/{quote(rag_collection)}/query` with body `{"question": question, "sources": sources}`.
+- `POST {rag_url}/collections/{quote(rag_collection)}/query` with body `{"question", "sources", "retrieval", "include_editorial"}` (`include_editorial` from `RAG_INCLUDE_EDITORIAL`, default true).
 - `sources` = `[c.get("para_ref") or c.get("chunk_id") for c in data["citations"]]`.
 
 **Wiki, L37-41:**
@@ -3627,14 +3574,14 @@ All are `python -m bench.<module>`, run from `Benchmark/`.
 - `sources` = slugs of `pages` with `cited`.
 - `saved_answers_read` = slugs of `pages` with `saved`.
 
-**Recorded per answer, L44-45:**
+**Recorded per answer, L44-45** (`systems.answers_of(run)` is the one lookup of a repetition's answers: under `systems` once graded, else under `answers`):
 - `answer`, `sources`, (wiki: `saved_answers_read`).
 - `read` and `usage` if the service returned them.
 - `latency_s` = round(perf_counter delta, 2). This **includes retries and backoff sleeps**.
 
 **`describe` (L48-67), the snapshot stored in config.systems:**
 - RAG: `GET /collections/{c}/documents`, giving filename and chunks.
-- Wiki: `GET /wikis/{slug}`, giving id, name, slug, pages, sources, created_at, last_change_id, last_change_at.
+- Wiki: `GET /wikis/{slug}`, giving id, name, slug, pages, sources, created_at, last_change_id, last_change_at (not the answer method).
 - Errors are stored, not raised.
 
 `Benchmark/README.md` line 6 says both systems use "the same Gemini model at temperature 0.1". The Benchmark does not set it; the services' own defaults agree: RAG 0.1 (`Rag/app/config.py:temperature`), Wiki 0.1 (`Wiki/app/config.py:temperature`).
@@ -3719,7 +3666,7 @@ The judge sees each point's tag in the rubric.
 **`_per_order` (L153-162):**
 - It maps A/B back to system names.
 - winner: "tie", or the system name.
-- It stores per-system grades, the integer similarity and contradictions, plus point_notes, rationale, judge_model, judge_usage, batch and backend.
+- It stores per-system grades, the integer similarity and contradictions, plus point_notes, rationale, judge_model, judge_usage and batch.
 
 **`_record` (L170-205), combining the two orders:**
 - `point_weight[id]` = mean over the 2 orders of WEIGHT[grade], with `WEIGHT={"full":1.0,"partial":0.5,"missing":0.0}` (L27).
@@ -3727,7 +3674,7 @@ The judge sees each point's tag in the rubric.
 - `similarity`, `coverage`, `coverage_standard` and `coverage_std_supp` = `_avg` of the per-order values (rounded to 2).
 - `contradictions` = the ordered, de-duplicated union of both orders.
 - **Winner:** `w={x["winner"]}`. If the set has one element it is that value (both rag, both wiki, or both tie); otherwise "tie".
-- Also stored: `winners_by_order`; rationale as the joined text "Order k (X first): ..."; point_notes from order 1; `orders_graded=2`; judge_usage summed over both orders; `judge_batch` = all orders batched; `judge_backend`; `judgement: True`.
+- Also stored: `winners_by_order`; rationale as the joined text "Order k (X first): ..."; point_notes from order 1; `orders_graded=2`; judge_usage summed over both orders; `judge_batch` = all orders batched; `judgement: True`.
 
 **Batch path:**
 - `grade_params` gives the same `_params` without the fallback beta (L200-202).
@@ -3851,7 +3798,7 @@ Give a short reason for each.
    - Items that gain paragraphs are re-asked in a single SUGGEST call. Only those items' verdicts are replaced, with a `second_look` list.
 5. Merge filter (L277-283): a merge needs ≥ 2 ids, all existing key point ids, and exactly one tag across the current kinds and the suggested tags.
 6. Stored in `bench.rubrics.suggestions`:
-   - `made_at`, `model`, `backend`, `base_version`.
+   - `made_at`, `model`, `base_version`.
    - `usage {hard_facts, suggest, second_look?}`.
    - `search`: "words and meaning" or "words only".
    - `points {id: {tag, paragraph, document, found, reason, second_look?, status: None}}`.
@@ -4021,13 +3968,13 @@ Return one entry for every item listed, using its id, with a short note.
 - Then `<answer>...</answer>`.
 - Empty lists render as "(none)".
 - `VERSION="checks-2"`.
-- The model is `checks_model`. Batching is used only if `use_batch` and the backend is api (L361). The checks batch is not resumable (a new batch each time).
+- The model is `checks_model`. Batching is used if `use_batch` is on (L361). The checks batch is not resumable (a new batch each time).
 
 **Faithfulness and context recall (context.py, Full mode only; `VERSION="context-2"`, `MAX_CLAIMS=40`, `WEIGHT` present 1 / partly 0.5 / absent 0):**
 - **Context:**
   - RAG: `"[{para_ref or '?'}] {content}"` for each item in `read`.
   - Wiki: the `read` items without `saved` (saved answers are excluded), sent to `POST {wiki_url}/wikis/{w}/read-text` with `{"read": pages, "sources": sources}`, `timeout=120`. Each page is wrapped as `<page slug=".." version="..">text</page>`.
-  - Not measured if `read` is None ("the run was made before what each answer read was recorded"), if any page text is None ("a page version the answer read is no longer in the wiki"), or if rebuilding fails.
+  - Not measured if `read` is None ("what the answer read was not recorded"), if any page text is None ("a page version the answer read is no longer in the wiki"), or if rebuilding fails.
   - The note "some page text differs from what was read" is recorded when a hash does not match, but the answer is still measured.
 - **Faithfulness:** `100 * #backed / #claims`, using the first 40 claims. Not measured if there are no claims.
 - **Context recall:** `100 * mean(WEIGHT)` over key points with a verdict.
@@ -4130,8 +4077,7 @@ Here `kp` is `"{id}: {point}"` per line, without tags.
 **aggregate (`run.py` L266-301):**
 - Per topic with graded runs, `rec.aggregate` holds:
   - `{rag|wiki: {similarity, coverage, coverage_standard, coverage_std_supp: {mean, sd, n}}}`;
-  - `wins {rag, wiki, tie}`;
-  - `key_point_hit_rate {Kid: {rag, wiki}}`.
+  - `wins {rag, wiki, tie}`.
 - `_mean_sd` uses the sample stdev and gives sd = 0.0 for n = 1.
 - `summary`:
   - `topics_scored`;
@@ -4144,10 +4090,9 @@ Here `kp` is `"{id}: {point}"` per line, without tags.
 ```
 results = {
   config: {started, git_commit (RENDER_GIT_COMMIT[:7] or git rev-parse --short), judge_model, judge_effort,
-           judge_backend ("Anthropic API" | "Claude Code on a Claude subscription (claude -p)"),
            answer_checks {model, version}, context_checks {model, version}|null, runs, seed, topics_selected,
-           expected_judgements (= topics*runs), question_format, rag_collection, wiki_slug, sources, use_saved_answers,
-           mode, grading (text), capture: "read+usage v1", systems {rag{url,collection,documents[{filename,chunks}]}, wiki{url,wiki{...}}},
+           expected_judgements (= topics*runs), rag_collection, wiki_slug, sources, use_saved_answers,
+           mode, systems {rag{url,collection,documents[{filename,chunks}]}, wiki{url,wiki{...}}},
            query_set, reference (file name), reference_sha256, rubric_used {n: rubric-info}, finished},
   topics: {"<n>": {number, code, title, section, question, reference_label, reference, key_points[{id,point,kind}],
            key_points_usage, facts, rubric {built_in, saved_at, version, approved, facts_approved},
@@ -4157,7 +4102,7 @@ results = {
                                  contradictions, metrics{latency_s,cost_usd,completeness,exact_match,exact_match_standard,
                                  citation_accuracy,[faithfulness,context_recall,context_recall_standard]}, checks{...}, context_checks{...}}},
                                  winner, winners_by_order, rationale, point_notes, orders{"1","2"}, orders_graded, judge_model,
-                                 judge_usage{input_tokens,output_tokens}, judge_batch, judge_backend, judgement:true}},
+                                 judge_usage{input_tokens,output_tokens}, judge_batch, judgement:true}},
            aggregate {...}}},
   grading_batch? {id, custom_ids}   (only while a batch is pending),
   metrics: {version:"kept-1", mode, by_system{name:{metric:{mean,sd,n,status,...}}}},
@@ -4167,7 +4112,7 @@ results = {
 ```
 Sources: `run.py` L98-101, 137, 194-202, 371-389, 397, 413-415; `metrics.compute` L105; `checks.score` L307-309; `context.score` L97-99.
 
-**Imported runs:** the status comes from `config.finished`, without the inputs, so they cannot be resumed (`import_results.py`).
+The config no longer records `judge_backend`, `question_format`, `grading` or `capture`, and a topic aggregate no longer holds `key_point_hit_rate`. Code that read older runs without these fields (the `compared()` fallback to rag and wiki, a null `use_saved`, a missing editorial setting, `context_checks_previous`, the legacy judge-usage estimate) has been removed, and so has `import_results.py`: every run is one made by the current code.
 
 ---
 
@@ -4314,8 +4259,7 @@ Runs are held in memory (`_runs: dict`, `bulk.py:13`). A restart loses them.
   - `topics` = count of `config.topics_selected`, or the topics spec, or "all"
   - `query_set` name, `reference` (label), `reference_sha256`, `rag_collection`, `wiki`, `sources`, `use_saved`, `mode`, `use_batch`
   - `summary`, `progress`
-  - `rubric` (from `_rubric_label`): label `v{n}` or `v{a}–v{b}`, title "X of Y topics approved when the run used them", or "—" / "Run made before rubric versions were recorded" (`bench.py:165-173`)
-  - `judge` (from `_judge_label`): `"{judge_model} · subscription|API"`. A missing backend defaults to "Anthropic API" (`bench.py:176-179`)
+  - `rubric` (from `_rubric_label`): label `v{n}` or `v{a}–v{b}`, title "X of Y topics approved when the run used them", or "—" / "No rubric recorded yet (the run records it once its answers are in)" (`bench.py:165-173`)
   - Ordered by created_at desc.
 - **`GET /runs/{id}`** (`bench.py:189-202`): the whole `results` JSON (with masked config/errors/summary) plus `reference_label`, `progress`, and `compared: {rag_collection, wiki, sources, use_saved}` from the run row.
 - **`GET /runs/{id}/status`** (`bench.py:205-209`): progress plus the masked last 15 log lines.
@@ -4324,23 +4268,22 @@ Runs are held in memory (`_runs: dict`, `bulk.py:13`). A restart loses them.
   - Writes them to a temp dir and runs a subprocess with `bench.data.load` (timeout 120 s) to list `{number, code, title, section}`.
   - Returns `{topics, query_set, reference: label}`. With no inputs: `{topics: [], query_set: null}`.
   - A subprocess failure returns 500 "Could not read the query set: …".
-- **`GET /judge`** (`bench.py:286-290`): `{backend: "api"|"claude-code", label: "Anthropic API" | "Claude subscription (Claude Code)", batch_available: backend=="api"}`.
-  - `_judge_backend()` reads the env var `JUDGE_BACKEND`, else the `JUDGE_BACKEND=` line in `Benchmark/.env`. "claude-code" gives claude-code; anything else gives "api" (`bench.py:272-283`).
+- There is no `GET /judge` route: the API is the only judge, so batching is always available.
 - **`GET /estimate?topics&runs=2&mode=quick&use_batch=true&collection&wiki`** (`bench.py:296-409`):
   - Prices come from `Benchmark/bench/prices.json` (`bench.py:229-230`). The topics come from `/topics`.
   - It looks at the last 20 runs that have results and gathers four pools of recorded usage:
     - answer costs, via `_answer_cost`, which skips `embed` steps and returns None if a model price or the tokens are missing (`bench.py:260-269`). These are split into "same collection/wiki" and "other".
     - judge usage, excluding batch gradings
     - key-point usage
-    - answer-check usage, excluding batch and claude-code checks
+    - answer-check usage, excluding batch checks
   - Line items:
     - RAG answers and Wiki answers: `n*runs`, mean of same, else other.
-    - "Grading, both orders": `n*runs*2`, with `jm = prices["claude-opus-5-5"]` and `batch_discount` when batching. On the subscription it is 0 with the basis `SUBSCRIPTION` ("on your Claude subscription: no API charge, counts toward the plan's usage limits", `bench.py:293`).
+    - "Grading, both orders": `n*runs*2`, with `jm = prices["claude-opus-5-5"]` and `batch_discount` when batching. (The subscription items, priced at 0, were removed with the claude-code judge.)
     - "Key points for topics without a saved rubric" (missing rubric topics), or "Key points" 0 with "the saved rubric is reused".
     - "Answer checks: completeness, exact match, citation accuracy (Claude Sonnet 5.5, one call per answer)": `n*runs*2`.
     - Full mode adds "Faithfulness + context recall, RAG/Wiki answers": `n*runs`, with `prices["claude-sonnet-5-5"]`. Input is taken as the mean answer-call context tokens; output as half a recorded grading's output.
   - Items with no basis get `total_usd: null` and a basis such as "no answer with recorded tokens yet: cannot estimate until a run has recorded some". Nothing is guessed (docstring).
-  - Returns `{topics, runs, mode, use_batch, items, judge_backend, total_usd (rounded 2), complete, not_estimated[], note}`.
+  - Returns `{topics, runs, mode, use_batch, items, total_usd (rounded 2), complete, not_estimated[], note}`.
 - **`GET /rubrics`** (`bench.py:412-430`): per reference SHA:
   - topics, key_points total, `standard` count, `approved` (count reviewed_at), `facts_approved`, `facts_made`, built (min created_at), updated (max)
   - plus `reference_name` (label), `rebuilding`, `making_facts`, `suggesting`
@@ -4371,17 +4314,16 @@ Runs are held in memory (`_runs: dict`, `bulk.py:13`). A restart loses them.
   - Upserts `bench.rubric_versions` (note "reviewed").
 - **`POST /rubrics/{sha}/rebuild`** (202): spawns `bench.rubric rebuild <sha>` (`bench.py:624-630`).
 - **`POST /runs`** (202), multipart (`bench.py:691-730`):
-  - Fields: `reference` (.docx, optional), `query_set` (.txt, optional), `topics` (""), `runs` (2, ge 1, le 10), `collection` (required), `wiki` (required), `sources` (standard|all, required), `use_saved` (True), `mode` (quick|full, default quick), `use_batch` (True).
+  - Fields: `reference` (.docx, optional), `query_set` (.txt, optional), `topics` (""), `runs` (2, ge 1, le 10), `collection` (required), `wiki` (required), `sources` (standard|all, required), `use_saved` (False), `mode` (quick|full, default quick), `use_batch` (True).
   - Flow:
     1. `_ensure_idle`.
-    2. `use_batch` is forced false unless the backend is api.
-    3. `_ensure_collection` checks the RAG collection exists and has documents (15 s timeout). Errors: 400 "No RAG collection…" or "…has no documents".
-    4. `_ensure_wiki` returns 400 "No wiki with slug" when the wiki does not exist.
-    5. `_read` checks the extension and size: 400 "empty or larger than 20 MB".
-    6. Files not uploaded are reused from the last run. If either is still missing: 400 "Upload the reference assessment (.docx) and the query set (.txt) for the first run".
-    7. Full mode calls `_ensure_approved`: every chosen topic needs approved key points, a non-null facts list and approved facts. Otherwise 400 with guidance (`bench.py:677-688`).
+    2. `_ensure_collection` checks the RAG collection exists and has documents (15 s timeout). Errors: 400 "No RAG collection…" or "…has no documents".
+    3. `_ensure_wiki` returns 400 "No wiki with slug" when the wiki does not exist.
+    4. `_read` checks the extension and size: 400 "empty or larger than 20 MB".
+    5. Files not uploaded are reused from the last run. If either is still missing: 400 "Upload the reference assessment (.docx) and the query set (.txt) for the first run".
+    6. Full mode calls `_ensure_approved`: every chosen topic needs approved key points, a non-null facts list and approved facts. Otherwise 400 with guidance (`bench.py:677-688`).
   - The run id is `YYYYMMDD-HHMMSS`. The row is inserted into bench.runs together with the file bytes, the cache is cleared, and the run is spawned.
-- **`POST /runs/{id}/resume`** (202): 400 if the run has no stored inputs (imported runs). 409 if it is still running. Re-spawns the same run id (`bench.py:733-742`).
+- **`POST /runs/{id}/resume`** (202): 400 "This run has no stored inputs; start a new run instead" if the run has none. 409 if it is still running. Re-spawns the same run id (`bench.py:733-742`).
 - **`DELETE /runs/{id}`** (204): 409 if running. Otherwise it deletes the row (`bench.py:745-750`).
 
 #### Rubric Word export (`UI/server/app/rubric_export.py`)
@@ -4499,7 +4441,7 @@ Runs are held in memory (`_runs: dict`, `bulk.py:13`). A restart loses them.
   1. Create a chat if there is none: `POST /api/ask/chats`.
   2. `POST /api/ask/chats/{id}/rewrite {question}`.
   3. Append the message.
-  4. `run()` streams in parallel, with body `{question: searched, sources}`:
+  4. `run()` streams in parallel, with body `{question: searched, sources}` (the RAG body adds `include_editorial: true`, as the benchmark asks the RAG):
      - RAG `POST /api/rag/collections/{c}/query/stream`: `token` events are appended (JSON-parsed); the `citations` event becomes the sources list.
      - Wiki `POST /api/wiki/wikis/{w}/query/stream`: `token` events, and the `pages` event becomes the pages list.
      - Each pane records its `ms`.
@@ -4538,7 +4480,7 @@ Runs are held in memory (`_runs: dict`, `bulk.py:13`). A restart loses them.
 
 **Wiki select** (`wiki/wiki-select.ts`)
 - Cards per wiki: name, description, page and source counts.
-- Create: `POST /api/wiki/wikis {slug, name, description}`, slug auto-made from the name. Then it navigates to `/wiki/{slug}/sources`.
+- Create: `POST /api/wiki/wikis {slug, name, description}`, slug auto-made from the name, so a new wiki uses the default schema (3.17). Then it navigates to `/wiki/{slug}/sources`.
 
 **Wiki layout** (`wiki/wiki-layout.ts`)
 - Header shows the wiki name (from `GET /api/wiki/wikis/{w}`) and a "Public viewer ↗" link to `/view/{w}` in a new tab.
@@ -4618,9 +4560,9 @@ Runs are held in memory (`_runs: dict`, `bulk.py:13`). A restart loses them.
 - New run card:
   - Two file drops: "Reference assessment (.docx)" and "Query set (.txt)". Empty means reuse the last run's file.
   - RAG collection select (`GET /api/rag/collections`) "vs" Wiki select (`GET /api/wiki/wikis`). The defaults are the first of each.
-  - Sources toggle (default `all`). "Use saved answers" checkbox (default true).
+  - Sources toggle (default `all`). "Use saved answers" checkbox (starts unticked).
   - Mode Quick/Full (default quick). The tooltip says Full adds faithfulness and context recall, one Claude Sonnet 5.5 call per answer.
-  - Judge: `GET /api/bench/judge`. If `batch_available===false` it shows "Judge: {label}" (subscription tooltip) and forces `useBatch=false`. Otherwise it shows the "Batch grading (half price)" checkbox (default true).
+  - The "Batch grading (half price)" checkbox (default true). There is no judge choice: the API is the only judge.
   - Topics text (default `'2'`). "Choose" opens the topic picker. Runs number input, min 1 max 10, default 2.
 - Topic picker: `GET /api/bench/topics`. Checkboxes grouped by consecutive `section`, with All/None buttons. "Use these" compresses the choice to ranges like `1-3,5`; all topics gives an empty string.
 - **Start…** calls `GET /api/bench/estimate?topics&runs&mode&use_batch&collection&wiki`.
@@ -4648,7 +4590,7 @@ Runs are held in memory (`_runs: dict`, `bulk.py:13`). A restart loses them.
 **Run page** (`benchmark/run.ts`)
 - Calls `GET /api/bench/runs/{id}`.
 - Header: compared collection vs wiki; Sources and Saved answers pills ("the same for both systems").
-- Config line: judge model (effort, backend), runs per topic, RAG chunks (sum of `config.systems.rag.documents[].chunks`), Wiki pages, git commit.
+- Config line: judge model (effort), runs per topic, RAG chunks (sum of `config.systems.rag.documents[].chunks`), Wiki pages, git commit.
 - Rubric line (`rubricLabel`):
   - "built in this run (before rubrics were saved)", or
   - "saved rubric for {reference_label}, built in …", followed by either "· versions … · X of Y topics approved" or "· recorded before rubric review".
@@ -4704,13 +4646,15 @@ Runs are held in memory (`_runs: dict`, `bulk.py:13`). A restart loses them.
   - Questions list
   - Exact-match facts, with the rubric facts version and whether it was approved
   - Citations (checked / not checkable counts)
-  - "Checked by {model} (Claude subscription)"
+  - "Checked by {model}"
 - "Against what it read" details (context_checks): faithfulness, context recall and standard-only context recall pills, claims, key points in what it read, the model.
+
+**System list** (`benchmark/systems.ts`): `SYSTEMS = ['rag', 'rag_q', 'wiki']` with their names (`LABEL`: "RAG (per topic)", "RAG (per question)", "Wiki"; `SHORT`), as `Benchmark/bench/systems.py` defines them. It is the one place the benchmark pages take them from; a run's own list is in its config (`systems_compared`).
 
 **Compare page** (`benchmark/compare.ts`)
 - Calls `GET /api/bench/runs/{a}` and `{b}`.
 - Shows A and B: collection vs wiki and the Sources of each. A "Different sources" warning appears if they differ.
-- Rows are the topics where both runs have an `aggregate`: RAG A/B/Δ, Wiki A/B/Δ (Δ = B − A, mean similarity).
+- Rows are the topics where both runs have an `aggregate`, with A/B/Δ (Δ = B − A, mean similarity) for four columns: RAG (per topic), Wiki (vs RAG per topic), RAG (per question) and Wiki (vs RAG per question). The column names come from `benchmark/systems.ts`.
 - Total cards: mean of the per-topic means, rounded to 2 decimals.
 - "No topics in common." when the set is empty.
 
@@ -4778,7 +4722,7 @@ Runs are held in memory (`_runs: dict`, `bulk.py:13`). A restart loses them.
 
 - **Postgres with the `vector` extension.** Locally this is the Supabase CLI stack defined in `Rag/supabase/config.toml` (Postgres 17, database on port 54322, API on 54321). It is started with `npx supabase start` in `Rag/`, which needs Docker (`README.md` Quick start).
 - **A Google Gemini API key** for the RAG and Wiki (`GEMINI_API_KEY`), and optionally for the UI server's Ask rewrite.
-- **For the benchmark judge,** either an Anthropic API key (`ANTHROPIC_API_KEY`) or the Claude Code CLI with `CLAUDE_CODE_OAUTH_TOKEN`, with `JUDGE_BACKEND=claude-code` (`Benchmark/bench/config.py`, `Benchmark/.env.example`).
+- **For the benchmark judge,** an Anthropic API key (`ANTHROPIC_API_KEY`, or the SDK's env var or `ant auth login` profile); the API is the only judge (`Benchmark/bench/config.py`, `Benchmark/.env.example`).
 - **Supabase Storage (optional),** used to keep original uploads (`SUPABASE_SECRET_KEY`).
 
 ### 10.2 Local start (from `README.md` "Quick start" and "Every time")
@@ -4822,7 +4766,7 @@ There is **no automated test suite.** No Python tests exist, and no `*.spec.ts` 
 - **wiki**: identical to rag, with `./Wiki/Dockerfile`.
 - **envVarGroups** `workbench-shared`: `DB_POOL_MAX: "4"`. Comment: the 3 services share the Supabase pooler's client limit.
 - No health check is set on the pservs. No `disks` are declared, so nothing persists on disk; bulk runs are in memory.
-- Not set in render.yaml: `JUDGE_BACKEND`. `Benchmark/.env` is excluded from the image by `.dockerignore`, so the deployed judge resolves to "api" (`bench.py:272-283`).
+- `Benchmark/.env` is excluded from the image by `.dockerignore`; the deployed judge uses `ANTHROPIC_API_KEY` from the workbench service.
 
 #### UI/Dockerfile
 - Stage `web`: `node:24-slim`. `npm ci` from package.json and the lockfile, then `npm run build` (production by default).
@@ -4886,14 +4830,14 @@ This is a candid list of what the design, schema, documentation or interface all
 | Design element | Status in code | Evidence |
 |---|---|---|
 | Raw sources immutable; LLM-owned wiki; schema document | **Implemented** | `wiki.sources` (text and sha256, no update endpoint); `wiki.pages`; `wikis.schema_md`, `PUT /schema` |
-| Ingest touches many pages, updates index and log | **Implemented**, with a hard cap of 17 pages per ingest including the source page | `ops/ingest.py`, `config.max_pages_per_ingest` |
+| Ingest touches many pages, updates index and log | **Implemented**: one page per schema section plus the overview, besides the source page (17 for fifteen sections) | `ops/ingest.py` |
 | `index.md` and `log.md` files | **Generated on request** from the database; not stored files | `store.render_index`, `render_log` |
 | Query: search, answer with citations, file good answers back | **Implemented.** Filing back exists as the Ask screen's "Create synthesis" and as `save=true` on `POST /query`. The streaming endpoint ignores `save` | `ops/query.py:save_answer`, `ops/synthesis.py`, `routers/ops.py` |
-| Lint: contradictions, stale claims, orphans, missing pages and links, data gaps | **Partly.** Structural checks plus an LLM check that *reports* contradictions and stale claims. The fix step only creates missing pages and adds links; contradictions and stale claims are never fixed. Web search for data gaps is not implemented | `ops/lint.py` (§6.7) |
-| Contradiction flagging | **Convention only.** No table or flag exists; it relies on the model writing `> [!warning] Contradiction:` callouts as the schema asks. The viewer renders them | `schema_default.md`, `routers/view.py` |
+| Lint: contradictions, stale claims, orphans, missing pages and links, data gaps | **Partly.** Structural checks plus an LLM check that *reports* contradictions and stale claims. The fix step only proposes plain text for links to pages that do not exist (every wiki's schema has fixed sections, so it writes no page); contradictions and stale claims are never fixed. Web search for data gaps is not implemented | `ops/lint.py` (§6.7) |
+| Contradiction flagging | **Convention only.** No table or flag exists; it relies on the model writing `> [!warning] Contradiction:` callouts as the schema asks. The viewer renders them | `Wiki/schemas/ifrs9-schema-3.17.md`, `routers/view.py` |
 | Version history | **Implemented in the database** (`wiki.page_versions`), not git; revert is supported | `store.apply_changeset`, `routers/pages.py` revert |
 | Human review of changes | **Implemented** as changesets (`mode=review`). Conflicting operations are skipped, never merged. "Force apply" exists in the API (`apply_changeset(force=True)`) but the UI always sends `force=false` | `store.py`, `UI/web/src/app/pages/wiki/changeset.ts` |
-| Search tooling with re-ranking | **Not implemented.** Hybrid full-text + vector with RRF in SQL; no re-ranker. The query instead has the model pick pages from the compact index | `wiki.search_pages`, `ops/query.py` |
+| Search tooling with re-ranking | **Not implemented.** Hybrid search in SQL; no re-ranker. The query instead gives the model a search shortlist beside the page list and lets it choose pages and follow links in rounds | `wiki.shortlist_pages`, `ops/query.py` |
 | Images and attachments, Marp, charts | **Not implemented**; text only | `sources/extract.py` |
 | Discussing takeaways with the user during ingest | **Not implemented**; ingest is a background job | `jobs.py`, `ops/ingest.py` |
 
@@ -4908,25 +4852,23 @@ This is a candid list of what the design, schema, documentation or interface all
 - **`page_flags.kind`** comment lists only `needs_checking`. The code also writes `citation_problems` (`saved.set_citation_problems`).
 - **Database constraints.** No CHECK constraints anywhere enforce the allowed values of `type`, `kind` or `status` columns (all migrations).
 - **The planner's `action` field** (`create` or `update`) is overwritten by code: "update" if the slug exists, else "create" (`ops/ingest.py:421`).
-- **`EXEMPT_ORPHAN`** in `ops/lint.py` is defined but never used.
 - **Synthesis `check`** computes citation corrections but does not apply them. `save` stores the content as submitted, with problems flagged (`ops/synthesis.py`).
 - **`mdit-py-plugins`** is pinned but never imported (`Wiki/requirements.txt`).
-- **Shared code copied from the RAG but unused in the Wiki:** `text.chunk_plain`, `Chunk.embed_text`, `BINDING_TYPES`, `STANDARD_TYPES`, `NON_BINDING_TYPES` and `ALL_TYPES` (`Wiki/app/sources/*`).
+- **Shared code copied from the RAG but unused in the Wiki:** `Chunk.embed_text` (`Wiki/app/sources/models.py`). The unused `chunk_plain` and type groups have been removed.
 
 ### 11.3 RAG
 
 - **Missing seed file.** `supabase/seed.sql` is referenced by `Rag/supabase/config.toml` but does not exist.
-- **`.docx` uploads.** `.docx` has a storage content type but is not an allowed upload type (`Rag/app/routers/documents.py`: `.pdf`, `.txt`, `.md` only).
 - **Unrecorded usage.** The streaming endpoint records no token usage and returns no `read` record. Bulk runs return no usage (`Rag/app/llm.py`, `routers/query.py`).
 - **Hard-coded fusion.** RRF weights and `rrf_k` are SQL defaults. They cannot be changed through the API or settings (`hybrid_search`).
-- **Stale Postman collection.** `Rag/postman/RAG_API.postman_collection.json` still calls the old un-scoped paths `/ingest`, `/query`, `/query/stream` and `/bulk`, which no longer exist.
+- **Stale Postman collection.** `Rag/postman/RAG_API.postman_collection.json` still calls the old un-scoped paths `/ingest`, `/query`, `/query/stream` and `/bulk`, and the removed `/bulk/parse`, which no longer exist; its Query requests send `top_k` and `source_types`, which are ignored.
 
 ### 11.4 Benchmark
 
 - **Supporting tag.** The key-point generator only ever tags `standard` or `beyond_standard` (enum in `judge.py:KEY_POINTS_SCHEMA`). `supporting` appears only through manual review or accepted suggestions.
 - **Fact tags.** These exist only after suggested hard-fact lists are accepted. Until then, Standard-only exact match is "not measured" (`checks.py:score`).
-- **Full-mode tests and older runs.** Faithfulness, context recall and Standard-only context recall run only in Full mode, and only for answers that recorded `read` (stage-1 capture). Older runs show them as "not measured" with the reason (`context.py`, `metrics.py`).
-- **Batching.** Message Batches are used only with the API backend. The `claude-code` backend never batches (`run.py`, `config.judge_backend`). Answer-check and context-check batches are not resumable (`checks.py`, `context.py`: `batch_id=None`).
+- **Full-mode tests.** Faithfulness, context recall and Standard-only context recall run only in Full mode, and only for answers that recorded `read`; an answer without it shows "not measured" with the reason (`context.py`, `metrics.py`).
+- **Batching.** Message Batches are used whenever `use_batch` is on (the API is the only judge). Answer-check and context-check batches are not resumable (`checks.py`, `context.py`: `batch_id=None`).
 - **Cost per query** covers only the answering model's generation tokens. Embedding tokens are not reported by the services, and judge or check costs are not included (`metrics.py:cost_usd`).
 - **README drift.** `Benchmark/README.md`'s cost note (about 26 key-point plus 78 judge calls) predates grading in both orders and the answer checks. Its statement that both systems answer "with the same Gemini model at temperature 0.1" matches the code: RAG 0.1 (`Rag/app/config.py:temperature`) and Wiki 0.1 (`Wiki/app/config.py:temperature`, changed from 0.2 in commit `f5a776b`). The temperature is not set by the Benchmark; each service uses its own setting.
 
@@ -4957,7 +4899,7 @@ Per service, as found in the code. Items already listed in §11 are not repeated
 - **Stream records no usage.** Bulk results do not include usage.
 - RRF constants are fixed at the SQL defaults: `rrf_k=50`, weights `1`/`1`, candidates `match_count*2`. They are not configurable from Python or the API.
 - `embed_dim` 768 is hard-wired in the SQL `vector(768)` in both migrations. Changing the setting needs a migration.
-- The generic chunk overlap is hard-coded to `50` words. The `chunk_plain` default `max_words=400` is unused because the caller passes 500.
+- The generic chunk overlap is hard-coded to `50` words (`OVERLAP_WORDS`); the window size comes from `CHUNK_MAX_WORDS` (500).
 - The IFRS parser depends on specific fonts and coordinates:
   - fonts "Swift" and "HelveticaLTPro-*"
   - `MARGIN_MAX_X=150`, header y<110, footer y>720 (pixel geometry tied to the IFRS Foundation annotated PDF layout)
@@ -4973,7 +4915,6 @@ Per service, as found in the code. Items already listed in §11 are not repeated
   - The citation key is `para_ref` only. Two documents in one collection that share para_refs (for example two Standards both with a 5.5.3) cannot be told apart in the context or in `_cited` matching. `format_context` does not include the filename.
   - `/search/paragraphs` and `/chunks` work across collections by filename or para_ref.
 - `_cited` falls back to returning **all retrieved rows** as citations when the answer has no recognisable key.
-- `sources="standard"` combined with non-Part A `source_types` gives an empty include list, so there are zero results.
 - Bulk runs synchronously in one request, with no per-request timeout, no cap on the number of topics, and concurrency 3. A topic failure is captured per topic. `json.loads` of the model output can raise, which gives that topic an error entry.
 - Bulk retrieval includes accompanying types (IE/IG/BC/DO) by default, while BULK_SYSTEM says the passages are "the binding text of the Standard".
 - Embedding happens before the DB transaction, so a failed ingest wastes the embed calls. The storage upload happens after commit, so the DB keeps the document if the upload fails.
@@ -4998,7 +4939,7 @@ Per service, as found in the code. Items already listed in §11 are not repeated
 **Hard-coded numbers**
 - The embedding dimension 768 is fixed in the SQL (`vector(768)` in the table and the function). Changing `EMBED_DIM` needs a migration (`config.py:15`).
 - RRF k = 50; candidate pool = `4*k` per list; snippet 400 characters (SQL).
-- `compact_index` 60,000 characters; `render_log` 500 rows; job list 50; changeset list 100; source text preview 2000 characters; saved-flag detail lists capped at 50.
+- `compact_index` never cut; `render_log` 500 rows; job list 50; changeset list 100; source text preview 2000 characters; saved-flag detail lists capped at 50.
 - Retry schedule 2/4/8/16s with 5 attempts; JSON retries 3; URL fetch timeout 30s; storage timeout 120s; signed URL 1h.
 
 **IFRS parser**
@@ -5024,11 +4965,11 @@ Per service, as found in the code. Items already listed in §11 are not repeated
 - The viewer header links to `overview`, assuming such a page exists (`templates/base.html:38`).
 
 **Unused code and stale docs**
-- Unused in Wiki/app: `text.chunk_plain`, `Chunk.embed_text`, `BINDING_TYPES`, `STANDARD_TYPES`, `NON_BINDING_TYPES`, `ALL_TYPES` (shared with Rag).
+- Unused in Wiki/app: `Chunk.embed_text` (shared with Rag).
 - Flag kind `citation_problems` is not documented in the migration comment.
 - Log kind `delete` appears in the schema comment, but page deletes log as `apply` via commit [UNVERIFIED for ops/].
 - README is stale: "Deployment (Dockerfile, hosted Supabase) has been deferred" (README:88), yet a Dockerfile and render.yaml references exist. Its endpoint table omits `/read-text`, `/graph`, `/sources/{slug}/file` and `/pages/{slug}/needs-checking`.
-- No TODO, FIXME or NotImplemented markers in these files. There are also no tests in `Wiki/`.
+- No TODO, FIXME or NotImplemented markers in these files. There were no tests in `Wiki/` at the pinned commit; it now has `Wiki/tests/`, whose real-wiki answer tests (`test_real_wiki_answers.py`, formerly `test_wiki4_answers.py`) run against the wiki `ifrs9-wiki3`.
 
 **Gemini usage gaps**
 - Embedding token use is not recorded (`input_tokens: None`), and streamed answers record no usage (`llm.py:73-74,107-113`).
@@ -5044,9 +4985,9 @@ Per service, as found in the code. Items already listed in §11 are not repeated
 - Plan: 40 names, `k=3` searches each, 40 candidate lines.
 - Notes failure splitting: depth 2.
 - Fill passes and also-record passes: 2 attempts each.
-- Compact index: 60,000 characters.
-- Query: search `top_k` 8 (only the top 5 used), the model picks up to 8, at most 13 pages read, at most 2 saved answers.
-- Lint: batches of 12 pages; thin pages under 40 words; fix caps of 17 new pages and 17 link edits.
+- Compact index: every page, never cut.
+- Query: a shortlist of 15, at most 6 rounds of choosing, 30 pages and 150,000 words read, at most 2 saved answers.
+- Lint: batches of 12 pages; thin pages under 40 words; fix writes no page (every schema has fixed sections) and only proposes changes.
 - Retries: 5 API attempts and 3 JSON attempts.
 - Labels kept in citation reports: 50.
 - Log title: question cut to 200 characters. change_note: question cut to 150 characters.
@@ -5065,15 +5006,14 @@ Per service, as found in the code. Items already listed in §11 are not repeated
 - Section pages depend on the wiki schema using `### NN. Name` headings and the `ADDITIVE` marker.
 
 **Single-source assumptions:**
-- Routing, gap checks and "Not yet covered" look only at the paragraphs of the source being ingested.
+- Routing and gap checks look only at the paragraphs of the source being ingested.
 - When a later source has paragraphs for a section, the section page is rewritten from the existing body plus the new paragraphs.
   - In multi-part mode the prompt keeps only existing content "that relates to this part's source paragraphs", so content from earlier sources may be dropped (inference from the prompt).
-  - The old "Not yet covered" line stays in `cur_body`, and the model is never told to remove it [UNVERIFIED whether it survives].
+  - A "Not yet covered" line written by older code stays in `cur_body`, and the model is never told to remove it [UNVERIFIED whether it survives]; the code no longer writes one.
 - A section page that already exists and gets nothing from the new source is left untouched.
 - An ADDITIVE section that is also routed paragraphs combines both behaviours.
 
 **Designed but not implemented, or dead:**
-- `EXEMPT_ORPHAN` is never used.
 - Lint never fixes contradictions or stale claims.
 - Synthesis `check` computes corrections but does not apply them, and `save` stores the content as submitted.
 - The streaming endpoint ignores `save` and returns no `read` record or `usage`.
@@ -5106,21 +5046,19 @@ Per service, as found in the code. Items already listed in §11 are not repeated
   - MAX_CITATIONS 40; MAX_PARAGRAPH 3000 characters; MAX_CLAIMS 40.
   - Hard facts "At most 10" (in the prompt only, not enforced).
   - BM25 k = 8, per_tier = 2; Finder cap 14.
-  - LOG_LINES 300; heartbeat 30 s; batch poll 30 s and timeout 6 h; CLI judge timeout 900 s; DB connect_timeout 15 s (migrate).
+  - LOG_LINES 300; heartbeat 30 s; batch poll 30 s and timeout 6 h; DB connect_timeout 15 s (migrate).
   - Similarity is an integer 0–10.
 - **Latency includes retry backoff** (systems.py L31-45).
 - **Cost excludes:** embedding calls (no token count), judge, checks and context costs, and any batch discount.
-- **Facts drift:** the checks use the current rubric facts. The grading and context recall use the key points snapshot stored in the run. A run's exact match can therefore change after a backfill.
+- **Facts drift:** the checks use the current rubric facts. The grading and context recall use the key points snapshot stored in the run. A run's exact match can therefore differ from what a later check against newer facts would give.
 - **Rubric tags:** the key point generator only tags standard or beyond_standard. "supporting" relies on manual review or accepted suggestions. Fact `kind` exists only after suggestions are accepted; otherwise Standard-only exact match is not measured.
 - **Reference parsing** assumes Heading 2/3 styles, table 0 as the summary, one table per topic in order, and only the first row with 2 cells. Pairing is positional with a 0.6 fuzzy title check.
 - **Wiki slug** is not URL-quoted (`systems.py` L38); the RAG collection is.
-- **Checks and context batches** are not resumable (always `batch_id=None`, `on_submit` a no-op). The checks backfill never batches (`use_batch=False`, `checks.py` L408).
-- **`checks.backfill`** calls `facts_for_reference` first, which can make new fact lists through judge calls.
+- **Checks and context batches** are not resumable (always `batch_id=None`, `on_submit` a no-op). (The `checks backfill` and `metrics backfill` commands have been removed.)
 - **Citation resolution** matches the slug and label exactly against `wiki.sources` paragraph labels. Citations to documents no wiki holds are not checkable, and a whole-page `[[page]]` link is not checkable. A bare `[x]` must contain a digit or an Appendix prefix.
 - **Semantic search** silently falls back to words only on the first error and stays off for the whole suggest run (`suggest.py` L116-118). This is recorded in `search`.
-- **The claude-code backend** has no max_tokens or refusal fallback. Usage counts cache tokens as input.
 - **The server-side fallback** (`fallbacks="default"`, beta "server-side-fallback-2026-07-01") is on normal API calls only, including checks, context, key points, facts and suggestions, since they all use `_json_call`. Batch requests do not carry it.
-- **Older runs:** `use_saved=null` is treated as True. `rag_collection` was backfilled to 'ifrs9' and `sources` to 'all' (migrations 0002, 0003).
+- **Older runs:** `rag_collection` was backfilled to 'ifrs9' and `sources` to 'all' (migrations 0002, 0003). The code no longer reads older runs specially (for example a null `use_saved` is no longer taken as True).
 - **0006 `ask.*` tables** belong to the UI Ask screen and are not used by bench/*.py.
 - Both systems default to temperature 0.1 (§3.5); the Benchmark itself sets none. Rubric approval, tag edits, accepting suggestions and `tag_sources` writes are done by the UI (`UI/server/app/bench.py`, §9.2).
 
@@ -5217,18 +5155,18 @@ After writing, 58 numbers and claims from §6 (Wiki pipeline), §8 (Evaluation) 
 |---|---|---|
 | §6 PAGE_TYPES (7 types) | `Wiki/app/wiki/store.py` | confirmed |
 | §6 max_pages_per_ingest = 17 | `Wiki/app/config.py` | confirmed |
-| §6 plan cap = max_pages_per_ingest - 1 (16) | `Wiki/app/ops/ingest.py` | confirmed |
+| §6 plan cap = max_pages_per_ingest - 1 (16) | `Wiki/app/ops/ingest.py` | confirmed at the pinned commit; now `len(sections) + 1` |
 | §6 section_words = 3000 | `Wiki/app/config.py` | confirmed |
 | §6 page_source_words = 12000 | `Wiki/app/config.py` | confirmed |
 | §6 page_part_words = 4000 | `Wiki/app/config.py` | confirmed |
 | §6 page_background_words = 2000 | `Wiki/app/config.py` | confirmed |
 | §6 route_batch = 120 | `Wiki/app/config.py` | confirmed |
 | §6 route retry batch 40 | `Wiki/app/ops/ingest.py` | confirmed |
-| §6 query_top_k = 8 | `Wiki/app/config.py` | confirmed |
-| §6 query_max_pages = 8 | `Wiki/app/config.py` | confirmed |
-| §6 top 5 search hits always read | `Wiki/app/ops/query.py` | confirmed |
+| §6 query_top_k = 8 | `Wiki/app/config.py` | confirmed at the pinned commit; setting removed since |
+| §6 query_max_pages = 8 | `Wiki/app/config.py` | confirmed at the pinned commit; setting removed since |
+| §6 top 5 search hits always read | `Wiki/app/ops/query.py` | confirmed at the pinned commit; removed with `_select_pages` |
 | §6 at most 2 saved answers | `Wiki/app/ops/query.py` | confirmed |
-| §6 compact index 60000 chars | `Wiki/app/wiki/store.py` | confirmed manually: `Wiki/app/wiki/store.py:312` `compact_index(..., limit_chars: int = 60000, ...)` |
+| §6 compact index 60000 chars | `Wiki/app/wiki/store.py` | confirmed at the pinned commit (`store.py:312`); now never cut |
 | §6 render_log 500 | `Wiki/app/wiki/store.py` | confirmed manually: `Wiki/app/wiki/store.py:326` `render_log(wiki, limit: int = 500)` |
 | §6 lint_batch_pages = 12 | `Wiki/app/config.py` | confirmed |
 | §6 job_workers = 2 | `Wiki/app/config.py` | confirmed |
@@ -5248,7 +5186,7 @@ After writing, 58 numbers and claims from §6 (Wiki pipeline), §8 (Evaluation) 
 | §8 judge effort high | `Benchmark/bench/config.py` | confirmed |
 | §8 checks model sonnet | `Benchmark/bench/config.py` | confirmed |
 | §8 context model sonnet | `Benchmark/bench/config.py` | confirmed |
-| §8 judge timeout 900 | `Benchmark/bench/config.py` | confirmed |
+| §8 judge timeout 900 | `Benchmark/bench/config.py` | confirmed at the pinned commit; setting removed with the claude-code judge |
 | §8 max_tokens 16000 | `Benchmark/bench/judge.py` | confirmed |
 | §8 WEIGHT full 1 partial .5 missing 0 | `Benchmark/bench/run.py` | confirmed |
 | §8 shuffle seed f'{seed}-{topic}-{rep}' | `Benchmark/bench/run.py` | confirmed |
@@ -5268,7 +5206,7 @@ After writing, 58 numbers and claims from §6 (Wiki pipeline), §8 (Evaluation) 
 | §8 BM25 k1 1.5, b 0.75 | `Benchmark/bench/library.py` | confirmed |
 | §8 Finder cap 14 | `Benchmark/bench/suggest.py` | confirmed |
 | §8 key point kinds enum (standard, beyond_standard) | `Benchmark/bench/judge.py` | confirmed |
-| §11 EXEMPT_ORPHAN defined | `Wiki/app/ops/lint.py` | confirmed |
+| §11 EXEMPT_ORPHAN defined | `Wiki/app/ops/lint.py` | confirmed at the pinned commit; removed since |
 | §11 RAG upload types pdf/txt/md | `Rag/app/routers/documents.py` | confirmed |
 | §11 RAG temperature 0.1 | `Rag/app/config.py` | confirmed |
 | §11 planner action overwritten | `Wiki/app/ops/ingest.py` | confirmed |

@@ -21,8 +21,8 @@ class QueryIn(BaseModel):
     save: bool = Field(False, description="File the answer back into the wiki as a synthesis page")
     mode: Mode = "auto"
     sources: Literal["standard", "all"] = Field(
-        "all", description="standard = only statements citing the Standard's own text, by paragraph kind (the schema's "
-                           "Checks: Standard only); all = every statement")
+        "all", description="standard = only statements citing text of no paragraph kind the schema lists, by paragraph "
+                           "kind (the schema's Standard only list in its Checks); all = every statement")
     use_saved: bool = Field(True, description="Also read relevant saved answers (synthesis pages filed with Save), "
                                               "in addition to the pages chosen for the question")
 
@@ -75,8 +75,7 @@ async def synthesis_save(body: SynthSaveIn, wiki: dict = Depends(wiki_dep)):
 
 class LintIn(BaseModel):
     llm: bool = Field(False, description="Also run the LLM health-check (contradictions, missing pages, ...)")
-    fix: bool = Field(False, description="Create pages for broken links/missing concepts and add missing cross-links")
-    mode: Mode = "review"
+    fix: bool = Field(False, description="Propose plain text for links to pages that do not exist (lint writes no page)")
 
 
 class ReadTextIn(BaseModel):
@@ -126,7 +125,7 @@ async def run_lint(body: LintIn, wiki: dict = Depends(wiki_dep)):
     if not body.llm and not body.fix:
         return {"structural": await lint.structural(wiki["id"], checks.load(wiki["schema_md"])),  # fast path, synchronous
                 "maintain": await lint.maintain(wiki)}
-    job_id = await jobs.submit(wiki["id"], "lint", body.model_dump(), lambda ctx: lint.run(ctx, wiki, body.llm, body.fix, body.mode))
+    job_id = await jobs.submit(wiki["id"], "lint", body.model_dump(), lambda ctx: lint.run(ctx, wiki, body.llm, body.fix))
     return {"job_id": str(job_id)}
 
 
