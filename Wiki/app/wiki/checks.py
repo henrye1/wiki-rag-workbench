@@ -639,6 +639,8 @@ def sentences(line: str) -> list[str]:
 # inline list item ("\u2022 ...") follows the link group
 PART_START = re.compile(r"(?<=\]\])[;:,]?\s*(?=\|)|(?<=\]\])[;:,]?\s+(?=\((?:[a-z]{1,3}|[ivxlc]{1,6}|\d{1,2})\)\s|[\u2022*-]\s)")
 TRAILING_GROUP = re.compile(r"(?:\[\[source-[^\]]+\]\](?:\s*(?:,|;|and)\s*|\s+)?)+(?=[\s.;:,|*]*$)")
+# at a line's end, one joining word after a list part's comma or semicolon ("...[[source|B5.5.5]]; <word>")
+LINE_END_JOIN = re.compile(r"(?<=\]\])\s*[;,]\s*\w+[\s.:]*$")
 
 
 def units(line: str) -> list[str]:
@@ -653,7 +655,7 @@ def closing_links(text: str) -> list[re.Match]:
     out = []
     for line in (text or "").split("\n"):
         for u in units(line):
-            if g := TRAILING_GROUP.search(u.rstrip()):
+            if g := TRAILING_GROUP.search(LINE_END_JOIN.sub("", u.rstrip())):
                 out += [m for m in store.LINK_RE.finditer(g.group(0))]
     return out
 

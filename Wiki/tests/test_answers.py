@@ -211,6 +211,14 @@ class Brief(Base):
         self.assertTrue([f for f in self.fails(answer(main, say(LIMIT + 1))) if f"at most {LIMIT}" in f])
 
 
+class JoiningWord(Base):
+    def test_a_list_part_ending_with_its_citation_and_a_joining_word_cites_it(self):
+        main = f"- the first thing [[{A}|1.1]]; or\n- the second thing [[{A}|1.2]]."
+        self.assertEqual(answering._source_cites(main), [(A, "1.1"), (A, "1.2")])
+        self.assertFalse([f for f in self.fails(answer(main)) if "cites no clause" in f])
+        self.assertEqual(answering._source_cites(f"It [[{A}|1.1]] stays here."), [])  # more than one word after it
+
+
 class SearchTerms(unittest.TestCase):
     """The not-addressed search looks for separate terms taken from each point, and the answer lists those terms."""
 
@@ -255,6 +263,42 @@ class SearchTerms(unittest.TestCase):
         self.assertNotIn("made-up", gaps)
         self.assertEqual(answering.not_addressed_points(gaps, CHK)[1].split(found[1]["searched"])[0].strip(), "Tax is not covered.")
 
+
+    def test_a_searched_line_written_under_its_point_belongs_to_it(self):
+        own = answering.searched_line(CHK, ["fee"], "Definitions")
+        gaps = f"**The fee is not addressed.**\n{own}\n\n**Rent is not covered.**\n{own}"
+        self.assertEqual(answering.not_addressed_points(gaps, CHK),
+                         [f"**The fee is not addressed.** {own}", f"**Rent is not covered.** {own}"])
+        self.assertEqual(self.empty_searches(gaps), [])  # an empty term is never searched
+        found = [{"point": "**The fee is not addressed.**", "terms": ["fee"],
+                  "searched": answering.searched_line(CHK, ["fee", "charge"], "Definitions")}]
+        out = answering.split_parts(answering.with_searched(answer(f"Yes [[{A}|1.1]].", gaps=gaps), CHK, found), CHK)[1][2]
+        self.assertIn(f'**The fee is not addressed.** {found[0]["searched"]}', out)
+        self.assertEqual(out.count(CHK.searched_form.split("<", 1)[0].strip()), 2)  # each point's searched line, once
+
+    def empty_searches(self, gaps: str) -> list[str]:
+        """The empty terms the search would send for the points of gaps (the term model giving none back)."""
+        import asyncio
+        from app.ops import answering as ans
+        sent = []
+
+        async def generate_json(system, prompt, schema):
+            return {"points": []}
+
+        async def shortlist(wiki_id, text, size):
+            sent.append(text)
+            return []
+
+        async def pages(*a, **k):
+            return []
+
+        saved = (ans.llm.generate_json, ans.search.shortlist, ans.store.list_pages, ans.store.get_pages)
+        ans.llm.generate_json, ans.search.shortlist, ans.store.list_pages, ans.store.get_pages = generate_json, shortlist, pages, pages
+        try:
+            asyncio.run(ans.search_not_addressed({"id": 1}, CHK, answering.not_addressed_points(gaps, CHK), set(), pages))
+        finally:
+            ans.llm.generate_json, ans.search.shortlist, ans.store.list_pages, ans.store.get_pages = saved
+        return [t for t in sent if not t.strip()]
 
     def test_a_point_the_search_has_not_looked_for_is_found_and_left_for_it(self):
         found = [{"point": "The fee is not addressed.", "terms": ["fee"],

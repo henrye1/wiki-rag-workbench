@@ -241,8 +241,19 @@ def force_failures(body: str, chk, srcs: dict) -> list[str]:
 
 
 def not_addressed_points(body: str | None, chk) -> list[str]:
-    return [BULLET.sub("", ln).strip() for ln in (body or "").split("\n")
-            if BULLET.sub("", ln).strip() and BULLET.sub("", ln).strip() != chk.answer_none and not ln.strip().startswith("#")]
+    """The points an answer leaves as not addressed, one per line; a line holding only what was searched for (the
+    schema's searched form) belongs to the point above it."""
+    lead = chk.searched_form.split("<", 1)[0].strip()
+    out: list[str] = []
+    for ln in (body or "").split("\n"):
+        x = BULLET.sub("", ln).strip()
+        if not x or x == chk.answer_none or ln.strip().startswith("#"):
+            continue
+        if lead and x.startswith(lead) and out:
+            out[-1] = f"{out[-1]} {x}"
+        else:
+            out.append(x)
+    return out
 
 
 def searched_failures(body: str | None, chk) -> list[str]:
@@ -370,6 +381,9 @@ def with_searched(answer: str, chk, found: list[dict]) -> str:
         own = point_text(BULLET.sub("", lines[i]), chk)
         if own and own != chk.answer_none and (best := searched_for(own, found, chk)):
             lines[i] = f"{(BULLET.match(lines[i]) or [''])[0]}{own} {best['searched']}"
+            j = next((k for k in range(i + 1, len(lines)) if lines[k].strip()), None)  # its searched line, written apart
+            if j is not None and not point_text(BULLET.sub("", lines[j]), chk) and BULLET.sub("", lines[j]).strip():
+                lines[j] = ""
     return "\n".join(lines)
 
 
@@ -406,7 +420,7 @@ async def search_not_addressed(wiki: dict, chk, points: list[str], have: set[str
     """Each point an answer says is not addressed, searched for in the text of every section and subtopic page: what
     was searched for, the pages found, and the pages to read that were not read yet (under the Sources setting)."""
     s = get_settings()
-    points = [point_text(p, chk) for p in points]
+    points = [x for x in (point_text(p, chk) for p in points) if x]  # a point with no words of its own is no search
     out = await llm.generate_json(prompts.MAINTAINER_SYSTEM, terms_prompt(points), NOT_ADDRESSED_TERMS)
     asked = {x["n"]: [t.strip() for t in x["terms"] if t.strip()] for x in out["points"]}
     listed = {p["slug"]: p for p in await store.list_pages(wiki["id"])}
@@ -415,7 +429,7 @@ async def search_not_addressed(wiki: dict, chk, points: list[str], have: set[str
     definitions = terms_page_title(everything, chk)
     found, more = [], []
     for n, p in enumerate(points, 1):
-        terms = list(dict.fromkeys(asked.get(n) or [p]))  # no terms given back: the point itself
+        terms = list(dict.fromkeys(t for t in (asked.get(n) or [p]) if t))  # no terms given back: the point itself
         rank: dict[str, int] = {}
         for t in terms:  # each term searched on its own; a page ranks by its best place in any of them
             for i, h in enumerate(await search.shortlist(wiki["id"], t, s.shortlist_size)):
