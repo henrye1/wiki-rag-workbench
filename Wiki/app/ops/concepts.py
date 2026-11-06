@@ -73,7 +73,7 @@ def build(chk, pages: dict[str, dict], sources: dict[str, dict], sections: list[
     give, and a delete for each concept page no longer given. pages: slug -> type, title, content_md (every page);
     sources: _source_paths (each paragraph's heading path, printed heading and kind); section_of: page slug -> its
     section ({num, name}) or None; framework: the prefix the wiki's section slugs carry (e.g. ifrs-9)."""
-    if not chk or not (chk.concept_terms or chk.concept_heading_pages or chk.entity_pages) or not chk.concept_line:
+    if not (chk.concept_terms or chk.concept_heading_pages or chk.entity_pages) or not chk.concept_line:
         return []
     holders = {sl: p for sl, p in pages.items() if p["type"] in ("topic", "subtopic")}
     order = {sec["num"]: k for k, sec in enumerate(sections)}
@@ -201,8 +201,8 @@ def guidance_examples(chk, pages: dict[str, dict], sources: dict[str, dict]) -> 
     """The block the examples section's index adds for the issuer's examples printed inside guidance, which are filed
     with their requirement (the schema's examples brief): one line per paragraph, naming its examples and where it is
     written up, its clauses listed, not cited. Returns (its heading, the block); empty when there are none."""
-    label_re = checks.example_label_re(chk) if chk else None
-    names = [v for k, v in chk.kinds.items() if v in chk.guidance_kinds] if chk else []
+    label_re = checks.example_label_re(chk)
+    names = [v for k, v in chk.kinds.items() if v in chk.guidance_kinds]
     if not (label_re and names):
         return "", ""
     head = f"## Examples inside {names[0]}"

@@ -369,21 +369,9 @@ async def render_index(wiki: dict) -> str:
 
 
 async def compact_index(wiki_id: UUID, exclude_types: tuple[str, ...] = ()) -> str:
-    """Compact catalog for LLM prompts: slug | type | title | summary, one line per page, every page (never cut: a step
-    that chooses from a list too long for one call is given it in parts, index_parts)."""
+    """Compact catalog for LLM prompts: slug | type | title | summary, one line per page, every page (never cut)."""
     pages = [p for p in await list_pages(wiki_id) if p["type"] not in exclude_types]
     return "\n".join(f"{p['slug']} | {p['type']} | {p['title']} | {p['summary']}" for p in pages) or "(wiki is empty)"
-
-
-def index_parts(index: str, max_chars: int) -> list[str]:
-    """A page list in parts of at most max_chars (whole lines; a longer line is a part of its own): every page in one."""
-    parts, cur = [], []
-    for line in index.split("\n"):
-        if cur and sum(len(x) + 1 for x in cur) + len(line) > max_chars:
-            parts.append("\n".join(cur))
-            cur = []
-        cur.append(line)
-    return parts + (["\n".join(cur)] if cur else [])
 
 
 async def render_log(wiki: dict, limit: int = 500) -> str:

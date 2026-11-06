@@ -18,13 +18,11 @@ TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{3,}")
 
 def ready(chk) -> bool:
     """Whether the schema lays answers out (Answer layout: its four parts)."""
-    return bool(chk and len(chk.answer_headings) == 4)
+    return bool(len(chk.answer_headings) == 4)
 
 
 def checks_off(chk) -> list[str]:
     """The answer lists the schema does not give, or gives in wording the engine cannot read: what uses them is off."""
-    if not chk:
-        return []
     answer_lists = set(checks.ANSWER_LISTS.values())
     return list(chk.answer_missing) + [x for x in chk.unreadable if x in answer_lists]
 

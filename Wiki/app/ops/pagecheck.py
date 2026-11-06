@@ -55,10 +55,9 @@ def section_check(*, chk, covers, srcs: dict[str, dict], held: dict[str, set[str
         for sl in sorted((set(cited) | set(held)) & set(srcs)):
             mine = passages(srcs[sl]["by_label"], held.get(sl, set()))
             texts += mine + passages(srcs[sl]["by_label"], cited.get(sl, set()))
-            if chk:
-                out += checks.section_failures(x, mine, srcs[sl]["kinds"], sl, chk, covers, cite_ctx["labels"].get(sl, set()),
-                                               agenda=srcs[sl].setdefault("agenda", checks.agenda_labels(srcs[sl]["by_label"], chk)))
-        if chk and not absence_allowed:
+            out += checks.section_failures(x, mine, srcs[sl]["kinds"], sl, chk, covers, cite_ctx["labels"].get(sl, set()),
+                                           agenda=srcs[sl].setdefault("agenda", checks.agenda_labels(srcs[sl]["by_label"], chk)))
+        if not absence_allowed:
             out += checks.absence_failures(x, chk, "\n\n".join(texts))
         return out + checks.repeat_failures(x) + checks.heading_failures(x) + fixpass.cite_failures(x, cite_ctx, chk)
     return check
@@ -100,7 +99,7 @@ def as_saved(ops: list, existing: dict[str, dict], held: dict[str, dict[str, set
         if o.op == "delete" or o.type not in ("topic", "subtopic"):
             continue
         o.holds = as_holds(held.get(o.slug, {}))
-        if any(x.startswith(o.slug + "-") for x in subtopics) or (chk and o.slug in chk.no_claim_pages):
+        if any(x.startswith(o.slug + "-") for x in subtopics) or (o.slug in chk.no_claim_pages):
             continue  # an index, a page that holds no claims: checked for what they must hold where they are built
         check = section_check(chk=chk, covers=covers, srcs=srcs, held=held.get(o.slug, {}), cite_ctx=cite_ctx,
                               absence_allowed=checks.absence_allowed_on(chk, o.type, o.title))

@@ -55,8 +55,8 @@ class SchemaLists(unittest.TestCase):
         self.assertEqual((CHK.missing, CHK.answer_missing, CHK.unreadable, CHK.unknown), ([], [], [], []))
         self.assertTrue(answering.ready(CHK))
 
-    def test_an_older_schema_is_answered_as_before_and_holds_no_upload_for_the_answer_lists(self):
-        old = checks.load((SCHEMAS / "ifrs9-schema-3.16.md").read_text())
+    def test_a_schema_without_answer_lists_is_answered_unchecked_and_holds_no_upload_for_them(self):
+        old = checks.load((SCHEMAS / "client-schema-1.17.md").read_text())  # the client wiki's: no answer lists
         self.assertFalse(answering.ready(old))
         self.assertIn("answer layout", answering.checks_off(old))
         self.assertNotIn("answer layout", old.missing)  # only what an upload uses holds it
@@ -348,7 +348,7 @@ class Lint(unittest.TestCase):
     def test_a_page_holding_only_the_empty_text_is_not_thin(self):
         self.assertTrue(lint._only_empty_text(f"## Section\n\n{CHK.empty_text}\n", CHK))
         self.assertFalse(lint._only_empty_text("## Section\n\nA short page.", CHK))
-        self.assertFalse(lint._only_empty_text(f"{CHK.empty_text}", None))
+        self.assertFalse(lint._only_empty_text(f"{CHK.empty_text}", checks.Checks()))  # a schema giving no empty text
 
     def test_the_maintain_checks_lint_runs_and_those_it_cannot(self):
         self.assertEqual(sorted(CHK.lint_checks.values()), ["citations", "coverage", "headings", "openers"])
@@ -356,15 +356,6 @@ class Lint(unittest.TestCase):
 
     def test_saved_answers_are_not_material(self):
         self.assertIn("synthesis", lint.MATERIAL)
-
-
-class PageList(unittest.TestCase):
-    def test_every_page_is_in_one_part(self):
-        index = "\n".join(f"page-{i} | topic | Page {i} | summary {i}" for i in range(500))
-        parts = store.index_parts(index, 2000)
-        self.assertGreater(len(parts), 1)
-        self.assertEqual("\n".join(parts), index)
-        self.assertTrue(all(len(p) <= 2000 for p in parts))
 
 
 class Verdicts(unittest.TestCase):

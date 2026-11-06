@@ -12,10 +12,7 @@ from ..wiki import checks, citecheck, search, store
 from ..wiki.store import Op, slugify
 from . import fixpass, pagecheck
 
-EXEMPT_ORPHAN = ("overview",)
-
-
-async def structural(wiki_id: UUID, chk: checks.Checks | None = None) -> dict:
+async def structural(wiki_id: UUID, chk: checks.Checks) -> dict:
     """The SQL checks. chk: the schema's Checks; a page holding only its Empty section text is not a thin page."""
     async with get_pool().connection() as conn:
         async def q(sql):
@@ -68,7 +65,7 @@ async def structural(wiki_id: UUID, chk: checks.Checks | None = None) -> dict:
 
 def _only_empty_text(md: str, chk: checks.Checks | None) -> bool:
     """Whether a page's text, headings aside, is only the schema's Empty section text."""
-    if not (chk and chk.empty_text):
+    if not (chk.empty_text):
         return False
     body = " ".join(ln for ln in (md or "").split("\n") if ln.strip() and not ln.lstrip().startswith("#"))
     return " ".join(body.split()) == " ".join(chk.empty_text.split())
@@ -205,7 +202,7 @@ async def maintain(wiki: dict) -> dict:
     cannot run reported as not run, with the reason (never passed). No AI call; nothing is changed."""
     from .ingest import _covers, _sections, _split_also, _uncited, use_schema_headings
     chk = checks.load(wiki["schema_md"])
-    if not chk or (not chk.lint_checks and not chk.lint_not_run):
+    if not chk.lint_checks and not chk.lint_not_run:
         return {"not_run": "the schema has no Lint checks list in its Checks, so lint runs none of its Maintain checks"}
     use_schema_headings(chk)
     pages = [p for p in await store.list_pages(wiki["id"], with_content=True) if p["type"] not in MATERIAL]

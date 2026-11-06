@@ -1,6 +1,5 @@
 import re
 
-from .models import Chunk
 
 _WS = re.compile(r"\s+")
 _SENT = re.compile(r"(?<=[.;:])\s+")
@@ -26,22 +25,3 @@ def split_long(text: str, max_words: int) -> list[str]:
     if buf:
         parts.append(" ".join(buf))
     return parts
-
-
-def chunk_plain(pages: list[str], max_words: int = 400, overlap: int = 50) -> list[Chunk]:
-    """Generic chunker for non-IFRS docs: paragraph-packed windows per page."""
-    chunks: list[Chunk] = []
-    for pno, page in enumerate(pages, start=1):
-        paras = [clean(p) for p in re.split(r"\n\s*\n", page) if p.strip()]
-        buf: list[str] = []
-        for p in paras:
-            for piece in split_long(p, max_words):
-                if buf and len(" ".join(buf + [piece]).split()) > max_words:
-                    text = " ".join(buf)
-                    chunks.append(Chunk(None, "general", pno, None, text))
-                    tail = text.split()[-overlap:]
-                    buf = [" ".join(tail)]
-                buf.append(piece)
-        if buf:
-            chunks.append(Chunk(None, "general", pno, None, " ".join(buf)))
-    return chunks

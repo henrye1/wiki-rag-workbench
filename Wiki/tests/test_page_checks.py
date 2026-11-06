@@ -11,7 +11,7 @@ from app.ops.ingest import _covers
 from app.wiki import checks
 from app.wiki.store import Op
 
-SCHEMA = pathlib.Path(__file__).resolve().parent.parent / "schemas" / "ifrs9-schema-3.16.md"
+SCHEMA = pathlib.Path(__file__).resolve().parent.parent / "schemas" / "ifrs9-schema-3.17.md"
 CHK = checks.load(SCHEMA.read_text())
 # a paragraph kind whose opener has no placeholder, and that opener
 KIND, OPENER = next((k, CHK.openers[v][0]) for k, v in CHK.kinds.items() if v in CHK.openers and "<" not in CHK.openers[v][0])

@@ -84,7 +84,7 @@ async def check_statement(wiki: dict, statement: str, sources: str = "all") -> d
     """The verdict on a client statement, checked and recorded as an open finding. Changes no page."""
     from . import query
     chk = checks.load(wiki["schema_md"])
-    if not (chk and chk.verdicts):
+    if not (chk.verdicts):
         raise NoVerdicts("This wiki's schema has no Client-statement verdicts list in its Checks.")
     pages, _, rounds = await query._read(wiki, statement, sources, use_saved=False)
     srcs = await pagecheck.sources(wiki["id"])

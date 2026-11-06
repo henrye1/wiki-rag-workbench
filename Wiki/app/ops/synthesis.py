@@ -72,7 +72,7 @@ async def draft(wiki: dict, chat_id: str, chat_title: str, answers: list[dict]) 
         prompts.SYNTHESIS_SCHEMA,
     )
     chk = checks.load(wiki["schema_md"])
-    content = f"{record(answers, chk.standard_only if chk else '')}\n\n{out['content_md'].strip()}"
+    content = f"{record(answers, chk.standard_only)}\n\n{out['content_md'].strip()}"
     names = [p["slug"] for p in await store.list_pages(wiki["id"]) if p["type"] != "synthesis"]
     page = {"slug": slug_for(chat_id, answers, names, wiki["name"]), "title": out["title"].strip(), "summary": out["summary"].strip(),
             "tags": out.get("tags") or [], "content_md": content}

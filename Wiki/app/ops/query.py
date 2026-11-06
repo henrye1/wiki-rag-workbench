@@ -1,11 +1,8 @@
 """Query: choose pages -> read them -> cited answer; optionally file the answer back as a synthesis page.
 
-How pages are chosen is the wiki's answer_method: search_pick (a search's top pages plus the model's picks from the
-index, read at once), browse (the model reads the page list, chooses pages, reads them and follows their links in
-rounds until it has enough; only the pages the answer cites are listed) or search_browse (browse, with a shortlist
-from a search of every page's text beside the page list: its scores and matching passages guide the choice, and
-nothing on it has to be read) or search_browse_2 (search_browse, judging "enough" only after reading the pages chosen,
-with each round's choices and reasons kept in the log).
+How pages are chosen (the one way every wiki answers): a search of every page's text gives a shortlist (scores and
+matching passages) beside the page list; the model chooses pages from both, reads them and follows their links in
+rounds until it has enough. Only the pages the answer cites are listed with it.
 
 Synthesis pages are never chosen as one of the pages for a question. Saved answers (synthesis pages filed with the
 Save button) relevant to the question are read in addition, as earlier answers to check against those pages; one
@@ -31,47 +28,23 @@ from .ingest import _sections
 log = logging.getLogger(__name__)
 
 
-async def _select_pages(wiki: dict, question: str) -> list[dict]:
-    """The pages for a question: search top 5 + the AI's picks from the index. Synthesis pages are never among them."""
-    s = get_settings()
-    wiki_id = wiki["id"]
-    synth = {p["slug"] for p in await store.list_pages(wiki_id) if p["type"] == "synthesis"}
-    hits = await search.search_pages(wiki_id, question, s.query_top_k)
-    if synth & {h["slug"] for h in hits[:5]}:  # look further so the top 5 are five other pages
-        hits = await search.search_pages(wiki_id, question, s.query_top_k + len(synth))
-    hits = [h for h in hits if h["slug"] not in synth]
-    # subtopic pages are not navigation targets: they are reached from their section page's index (and by search)
-    index = await store.compact_index(wiki_id, exclude_types=("synthesis", "subtopic"))
-    picked = [x for part in store.index_parts(index, s.page_list_chars) for x in (await llm.generate_json(
-        prompts.MAINTAINER_SYSTEM, prompts.select_prompt(question, part, s.query_max_pages), prompts.SELECT_SCHEMA))["slugs"]]
-    order: list[str] = []
-    for slug in [h["slug"] for h in hits[:5]] + [slugify(x) for x in picked]:
-        if slug not in order and slug not in synth:
-            order.append(slug)
-    order = await _with_subtopics(wiki_id, question, order[: s.query_max_pages + 5])
-    pages = {p["slug"]: p for p in await store.get_pages(wiki_id, order[: s.query_max_pages + 5])}
-    return [pages[x] for x in order if x in pages]
-
-
 def _shortlist_md(hits: list[dict]) -> str:
     one = lambda x: " ".join(x.split())
     return "\n".join(f"{h['slug']} | {h['score']:.4f} | {h['label_rank'] or '-'} | {h['keyword_rank'] or '-'} | "
                      f"{h['meaning_rank'] or '-'} | {h['title']} | {one(h['excerpt'] or '')}" for h in hits)
 
 
-async def _browse(wiki: dict, question: str, sources: str, shortlist: list[dict] | None = None,
-                  look_first: bool = False) -> tuple[list[dict], list[dict]]:
+async def _browse(wiki: dict, question: str, sources: str, shortlist: list[dict]) -> tuple[list[dict], list[dict]]:
     """The pages for a question, chosen the way a reader uses a wiki: from the page list (every page's title and
-    one-line summary, subtopic pages included) and the search shortlist where given, then by following links on the
-    pages read, until the model has enough. With look_first, "enough" counts only from a round that reads nothing new:
-    pages chosen with it are read and shown to the model, which judges again. The limits are safety nets. Returns the
-    pages read and, per round, what was chosen and why."""
+    one-line summary, subtopic pages included) and the search shortlist, then by following links on the pages read,
+    until the model has enough. The limits are safety nets. Returns the pages read and, per round, what was chosen
+    and why."""
     s = get_settings()
     listed = [p for p in await store.list_pages(wiki["id"]) if p["type"] != "synthesis"]
     listed.sort(key=lambda p: (p["type"] != "overview", p["slug"]))  # a subtopic page follows its section page
     page_list = "\n".join(f"{p['slug']} | {p['type']} | {p['title']} | {p['summary']}" for p in listed)
     known = {p["slug"] for p in listed}
-    found = _shortlist_md(shortlist or [])
+    found = _shortlist_md(shortlist)
     read: list[dict] = []
     rounds: list[dict] = []
     for rnd in range(1, s.browse_max_rounds + 1):
@@ -94,31 +67,9 @@ async def _browse(wiki: dict, question: str, sources: str, shortlist: list[dict]
                 words += len(got[x]["content_md"].split())
         rounds.append({"round": rnd, "chose": out["read"], "read": new, "enough": out["enough"], "why": out["why"],
                        "words_read": words})
-        if (out["enough"] and not (look_first and new)) or not new or len(read) >= s.browse_max_pages:
+        if out["enough"] or not new or len(read) >= s.browse_max_pages:
             break
     return read, rounds
-
-
-async def _with_subtopics(wiki_id, question: str, order: list[str]) -> list[str]:
-    """Where a chosen page is a split section's index, read it and then only the subtopic pages that bear on the
-    question (picked from that section's subtopic pages), placed right after the index."""
-    subs = [p for p in await store.list_pages(wiki_id) if p["type"] == "subtopic"]
-    out: list[str] = []
-    for slug in order:
-        if slug not in out:
-            out.append(slug)
-        mine = [p for p in subs if p["slug"].startswith(slug + "-")]
-        if not mine or slug.startswith(tuple(p["slug"] for p in subs)):
-            continue
-        listing = "\n".join(f"{p['slug']} | subtopic | {p['title']} | {p['summary']}" for p in mine)
-        try:
-            got = await llm.generate_json(prompts.MAINTAINER_SYSTEM, prompts.select_prompt(question, listing, 3), prompts.SELECT_SCHEMA)
-        except Exception as e:
-            log.warning("query: choosing subtopic pages of %s failed: %s", slug, e)
-            continue
-        valid = {p["slug"] for p in mine}
-        out += [x for x in dict.fromkeys(slugify(x) for x in got["slugs"]) if x in valid and x not in out]
-    return out
 
 
 async def _select_saved(wiki: dict, question: str) -> list[dict]:
@@ -147,7 +98,7 @@ async def _own_text(wiki: dict):
     """keep(slug, label): whether a citation cites the Standard's own text (a paragraph of no kind the schema's
     Paragraph kinds lists), as the schema's Standard only list sets out."""
     chk = checks.load(wiki["schema_md"])
-    if not (chk and chk.standard_only):
+    if not (chk.standard_only):
         raise NoStandardOnly("This wiki's schema has no Standard only list in its Checks, so answers cannot be limited to "
                              "the Standard's own text.")
     srcs = await pagecheck.sources(wiki["id"])
@@ -200,49 +151,35 @@ def _cited(answer: str, pages: list[dict]) -> list[dict]:
     return [{"slug": p["slug"], "title": p["title"], "cited": p["slug"] in linked, "saved": bool(p.get("saved"))} for p in pages]
 
 
-def browses(wiki: dict) -> bool:
-    """Pages are chosen in rounds by the model (browse, search_browse, search_browse_2), not read at once (search_pick)."""
-    return wiki.get("answer_method") in ("browse", "search_browse", "search_browse_2")
-
-
 async def _read(wiki: dict, question: str, sources: str, use_saved: bool) -> tuple[list[dict], list[dict], list[dict]]:
     """The pages for the question and, if use_saved, the saved answers read with them (both under the Sources
-    setting), and the rounds of choosing (browse and search_browse; under search_browse and search_browse_2 the first
-    entry is the shortlist)."""
-    if wiki.get("answer_method") in ("search_browse", "search_browse_2"):
-        hits = await search.shortlist(wiki["id"], question, get_settings().shortlist_size)
-        pages, rounds = await _browse(wiki, question, sources, hits, look_first=wiki["answer_method"] == "search_browse_2")
-        rounds = [{"shortlist": [{k: h[k] for k in ("slug", "score", "label_rank", "keyword_rank", "meaning_rank")} for h in hits]},
-                  *rounds]
-    elif browses(wiki):
-        pages, rounds = await _browse(wiki, question, sources)
-    else:
-        pages, rounds = await _restrict(wiki, await _select_pages(wiki, question), sources), []
+    setting), and the rounds of choosing (the first entry is the search shortlist)."""
+    hits = await search.shortlist(wiki["id"], question, get_settings().shortlist_size)
+    pages, rounds = await _browse(wiki, question, sources, hits)
+    rounds = [{"shortlist": [{k: h[k] for k in ("slug", "score", "label_rank", "keyword_rank", "meaning_rank")} for h in hits]},
+              *rounds]
     extra = await _restrict(wiki, await _select_saved(wiki, question), sources) if use_saved and pages else []
     return pages, extra, rounds
 
 
 def listed(wiki: dict, answer: str, pages: list[dict]) -> list[dict]:
-    """The pages shown with an answer: every page read, marked cited or not; under browse and search_browse, only the
-    cited ones (and the saved answers read with them, which are never cited but are recorded as read). There a page
-    counts as cited when the answer links it or cites a source paragraph the page cites: answers cite clauses, not pages."""
+    """The pages shown with an answer: the cited ones (and the saved answers read with them, which are never cited but
+    are recorded as read). A page counts as cited when the answer links it or cites a source paragraph the page cites:
+    answers cite clauses, not pages."""
     out = _cited(answer, pages)
-    if not browses(wiki):
-        return out
     used = checks.cites(answer)
     for p, page in zip(out, pages):
         p["cited"] = p["cited"] or (not p["saved"] and bool(used & checks.cites(page["content_md"])))
     return [p for p in out if p["cited"] or p["saved"]]
 
 
-def _rounds_md(rounds: list[dict], reasons: bool = False) -> str:
-    """The shortlist and each round's pages read; with reasons, also what the model chose (read or not) and why."""
+def _rounds_md(rounds: list[dict]) -> str:
+    """The shortlist and each round's pages read."""
     found = "".join("\nShortlist: " + (", ".join(f"[[{h['slug']}]]" for h in r["shortlist"]) or "nothing found")
                     for r in rounds if "shortlist" in r)
     one = lambda x: " ".join(str(x).split())
     return found + "".join(f"\nRound {r['round']}: " + (", ".join(f"[[{x}]]" for x in r["read"]) or "nothing new")
                            + (" (enough)" if r.get("enough") else "")
-                           + (f"\n  Chose: {', '.join(map(one, r['chose'])) or 'none'}. Why: {one(r['why'])}" if reasons else "")
                            for r in rounds if "read" in r)
 
 
@@ -255,7 +192,7 @@ def _log_md(wiki: dict, sources: str, pages: list[dict], extra: list[dict], roun
                + (f" (off: {', '.join(report['checks_off'])})" if report["checks_off"] else ""))
     return (f"Sources: {sources}. Pages read: " + ", ".join(f"[[{p['slug']}]]" for p in pages)
             + (". Saved answers read: " + ", ".join(f"[[{p['slug']}]]" for p in extra) if extra else "")
-            + _rounds_md(rounds, reasons=wiki.get("answer_method") == "search_browse_2") + checked)
+            + _rounds_md(rounds) + checked)
 
 
 def _prompt(wiki: dict, question: str, pages: list[dict], extra: list[dict]) -> str:
@@ -376,7 +313,7 @@ async def answer(wiki: dict, question: str, save: bool = False, mode: str = "aut
     pages, extra, rounds = await _read(wiki, question, sources, use_saved)
     text, pages, report = await _compose(wiki, question, pages, extra, sources)
     result = {"answer": text, "pages": listed(wiki, text, pages + extra), "read": _read_record(pages + extra),
-              "usage": list(usage), **({"rounds": rounds} if browses(wiki) else {}),
+              "usage": list(usage), "rounds": rounds,
               **({"answer_check": report} if report is not None else {})}
     saved = await save_answer(wiki, question, text, mode, sources) if save and pages else None
     if saved:
@@ -423,7 +360,7 @@ async def save_answer(wiki: dict, question: str, answer_md: str, mode: str, sour
         raise ValueError(f"A {cur['type']} page is already called {slug}")
     chk = checks.load(wiki["schema_md"])
     record = synthesis.record([{"searched": question, "date": dt.date.today().isoformat(), "sources": sources}],
-                              chk.standard_only if chk else "")
+                              chk.standard_only)
     op = Op(op="update" if cur else "create", slug=slug, title=out["title"], type="synthesis", summary=out["summary"],
             content_md=f"{record}\n\n{out['content_md'].strip()}", tags=list(dict.fromkeys([saved.SAVED_TAG, *out["tags"]])),
             base_version=cur["version"] if cur else None, change_note=f"Filed from query: {question[:150]}")
