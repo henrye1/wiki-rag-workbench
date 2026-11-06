@@ -256,6 +256,17 @@ class SearchTerms(unittest.TestCase):
         self.assertEqual(answering.not_addressed_points(gaps, CHK)[1].split(found[1]["searched"])[0].strip(), "Tax is not covered.")
 
 
+    def test_a_point_the_search_has_not_looked_for_is_found_and_left_for_it(self):
+        found = [{"point": "The fee is not addressed.", "terms": ["fee"],
+                  "searched": answering.searched_line(CHK, ["fee"], "Definitions")}]
+        own = answering.searched_line(CHK, ["written by the model"], "Definitions")
+        gaps = f"- The fee for it is not addressed. {own}\n- How rent is shared. {own}"
+        draft = answer(f"Yes [[{A}|1.1]].", gaps=gaps)
+        self.assertEqual(answering.unsearched(draft, CHK, found), [f"How rent is shared. {own}"])
+        out = answering.split_parts(answering.with_searched(draft, CHK, found), CHK)[1][2]
+        self.assertIn(f'The fee for it is not addressed. {found[0]["searched"]}', out)
+        self.assertIn(f"How rent is shared. {own}", out)  # not searched yet: left for the search to look for
+
 class StandardOnly(unittest.TestCase):
     def test_by_paragraph_kind_not_by_file(self):
         md = (f"## Heading\n\nAn entity {OBLIGE[0]} recognise the item [[{A}|1.1]]. {OPEN[AG]} that it reflects the "

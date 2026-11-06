@@ -337,28 +337,39 @@ def point_text(point: str, chk) -> str:
 WORD = re.compile(r"\w+")
 
 
+def _words(x: str) -> set[str]:
+    return {w.casefold() for w in WORD.findall(x)}
+
+
+def searched_for(point: str, found: list[dict], chk) -> dict | None:
+    """The searched point a point left as not addressed is: the one sharing most of its words, where it shares at least
+    half of them (the point as the answer words it now, its searched line left out)."""
+    own = _words(point_text(point, chk))
+    best = max(found, key=lambda f: len(own & _words(f["point"])), default=None)
+    return best if best and own and 2 * len(own & _words(best["point"])) >= len(own) else None
+
+
+def unsearched(answer: str, chk, found: list[dict]) -> list[str]:
+    """The points an answer leaves as not addressed that the search has not looked for yet."""
+    return [p for p in not_addressed_points(split_parts(answer, chk)[1][2], chk) if not searched_for(p, found, chk)]
+
+
 def with_searched(answer: str, chk, found: list[dict]) -> str:
     """Each point left as not addressed ends with the line saying what was actually searched for: that of the searched
-    point it shares most words with (none shared: left as it is, for the checks)."""
-    lead = chk.searched_form.split("<", 1)[0].strip()
+    point it is (searched_for). A point not searched yet is left as it is."""
     head = chk.answer_headings[2]
-    if not found or not lead:
+    if not found or not chk.searched_form.split("<", 1)[0].strip():
         return answer
     lines = answer.split("\n")
     at = next((i for i, ln in enumerate(lines) if ln.strip() == head), None)
     if at is None:
         return answer
-    words = lambda x: {w.casefold() for w in WORD.findall(x)}
     for i in range(at + 1, len(lines)):
         if lines[i].strip() in chk.answer_headings:
             break
         own = point_text(BULLET.sub("", lines[i]), chk)
-        if not own or own == chk.answer_none:
-            continue
-        best = max(found, key=lambda f: len(words(own) & words(f["point"])))
-        if words(own) & words(best["point"]):
-            mark = (BULLET.match(lines[i]) or [""])[0]
-            lines[i] = f"{mark}{own} {best['searched']}"
+        if own and own != chk.answer_none and (best := searched_for(own, found, chk)):
+            lines[i] = f"{(BULLET.match(lines[i]) or [''])[0]}{own} {best['searched']}"
     return "\n".join(lines)
 
 

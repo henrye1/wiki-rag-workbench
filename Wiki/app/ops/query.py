@@ -298,7 +298,8 @@ def _nothing(wiki: dict, sources: str) -> str:
 async def _checked(wiki: dict, chk, question: str, pages: list[dict], extra: list[dict], sources: str) -> tuple[str, list[dict], dict]:
     """An answer as the schema's Workflow: Answer and check sets out: written under the schema's instruction; each
     point it says is not addressed searched for in every section and subtopic page, and the answer written again with
-    what was found; then checked, and sent back once with its failures. Its clause references are built, after each
+    what was found; then checked, and sent back once with its failures; a point the rewrite leaves as not addressed that
+    was not searched for yet is searched for then, before the answer is final. Its clause references are built, after each
     draft, from the citations that end its sentences. Returns the answer, the pages read (those the
     search found included) and the report of its checks."""
     system, schema = answering.instruction(chk, wiki["schema_md"]), wiki["schema_md"]
@@ -310,17 +311,39 @@ async def _checked(wiki: dict, chk, question: str, pages: list[dict], extra: lis
     # citations that end its sentences
     refs = lambda t: answering.with_references(answering.with_searched(t, chk, searched), chk)
     text = refs(await llm.generate(system, _prompt(wiki, question, pages, extra)))
-    if points := answering.not_addressed_points(answering.split_parts(text, chk)[1][2], chk):
+
+    async def search_round(text: str, fails: list[str] | None) -> tuple[str, list[str] | None]:
+        """The points left as not addressed that are not searched yet, searched for; the answer written again with what
+        was found (after a fix round, kept unless it fails more). Each point then ends with what was searched for."""
+        nonlocal pages
+        if not (points := answering.unsearched(text, chk, searched)):
+            return text, fails
         try:
             found, more = await answering.search_not_addressed(wiki, chk, points, {p["slug"] for p in pages},
                                                                lambda ps: _restrict(wiki, ps, sources))
-            pages, searched[:] = pages + more, found
-            text = refs(await llm.generate(system, prompts.with_schema(schema, answering.search_prompt(
-                question, _pages_md(pages), text, found, chk))))
-            report["not_addressed_search"] = [{k: f[k] for k in ("point", "terms", "pages", "terms_missing") if k in f} for f in found]
         except Exception as e:
             log.warning("query: searching for the points not addressed failed: %s", e)
             report["not_addressed_search_error"] = f"{type(e).__name__}: {e}"
+            return text, fails
+        pages = pages + more
+        searched.extend(found)
+        report.setdefault("not_addressed_search", []).extend(
+            {k: f[k] for k in ("point", "terms", "pages", "terms_missing") if k in f} for f in found)
+        text = refs(text)  # what was searched for, on the points as they stand
+        try:
+            again = refs(await llm.generate(system, prompts.with_schema(schema, answering.search_prompt(
+                question, _pages_md(pages), text, found, chk))))
+        except Exception as e:
+            log.warning("query: writing the answer again with what the search found failed: %s", e)
+            report["not_addressed_rewrite_error"] = f"{type(e).__name__}: {e}"
+            return text, None if fails is None else answering.failures(text, chk, srcs, cite_ctx)
+        if fails is None:
+            return again, None
+        left = answering.failures(again, chk, srcs, cite_ctx)
+        now = answering.failures(text, chk, srcs, cite_ctx)
+        return (again, left) if len(left) <= len(now) else (text, now)
+
+    text, _ = await search_round(text, None)
     fails = answering.failures(text, chk, srcs, cite_ctx)
     report["found"] = fails
     if fails:
@@ -332,6 +355,8 @@ async def _checked(wiki: dict, chk, question: str, pages: list[dict], extra: lis
         except Exception as e:
             log.warning("query: the answer's fix pass failed: %s", e)
             report["fix_error"] = f"{type(e).__name__}: {e}"
+    # a point the fix round left as not addressed that the search has not looked for: searched before the answer is final
+    text, fails = await search_round(text, fails)
     report["left"] = fails
     return text, pages, report
 
