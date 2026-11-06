@@ -149,7 +149,7 @@ async def source_contents(wiki_id, source_slug: str, c: checks.Checks | None = N
 
 # ---------- the map as the answer step reads it (only where the schema's Source map line says yes) ----------
 def _cite(slug: str, x: dict) -> str:
-    return f"[[{slug}|{x['cite']}]] {x['name']}"
+    return f"[[{slug}|{x['cite']}]]" + (f" {x['name']}" if x["name"] == x["cite"] else "")  # else the name is copied as a label
 
 
 def page_map_md(sources: list[dict]) -> str:

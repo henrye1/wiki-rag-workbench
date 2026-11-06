@@ -73,10 +73,10 @@ class AsText(unittest.TestCase):
     def test_page_and_contents(self):
         page = sourcemap.page_map_md([{"slug": "source-x", "title": "Paper X", "not_in_source": [],
                                        "sections": [{"name": "Part One", "cite": "1", "sentences": 2}]}])
-        self.assertIn("- [[source-x|Paper X]]\n  - [[source-x|1]] Part One (2)", page)
+        self.assertIn("- [[source-x|Paper X]]\n  - [[source-x|1]] (2)", page)  # a name that is not the label: label only
         con = sourcemap.contents_md({"slug": "source-x", "title": "Paper X", "unused": [{"name": "Front", "cite": "Front"}],
                                      "sections": [{"name": "Part One", "cite": "1", "pages": [{"slug": "a", "title": "A", "sentences": 3}]}]})
-        self.assertIn("- [[source-x|1]] Part One: [[a|A]] (3)", con)
+        self.assertIn("- [[source-x|1]]: [[a|A]] (3)", con)
         self.assertIn("Sections no page draws on:\n- [[source-x|Front]] Front", con)
         self.assertEqual(sourcemap.cite_of({"1": "Part One", "2": "Part One", "F": "Front"}), {"Part One": "1", "Front": "F"})
 
