@@ -7,8 +7,9 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from .. import llm, prompts, retrieval
+from ..bulk import QUESTION_RE
 from ..config import get_settings
-from ..ingest.models import ALL_TYPES, STANDARD_TYPES
+from ..ingest.models import NON_BINDING_TYPES, STANDARD_TYPES
 from .collections import collection_dep
 
 router = APIRouter(tags=["query"])
@@ -33,10 +34,10 @@ async def search_paragraphs(body: ParagraphSearchIn):
         rows = await (await conn.execute(
             """select d.filename, k.para_ref, k.source_type, k.embedding <=> %s as distance
                from chunks k join documents d on d.id = k.document_id
-               where k.para_ref is not null and k.source_type not in ('note', 'intro', 'back_matter', 'appendix_c')
+               where k.para_ref is not null and k.source_type <> all(%s::text[])
                  and (%s::text[] is null or d.filename = any(%s::text[]))
                order by k.embedding <=> %s limit %s""",
-            (emb, body.filenames, body.filenames, emb, body.k * 4))).fetchall()
+            (emb, list(NON_BINDING_TYPES), body.filenames, body.filenames, emb, body.k * 4))).fetchall()
     out, seen = [], set()
     for r in rows:
         key = (r["filename"], r["para_ref"])
@@ -51,18 +52,13 @@ async def search_paragraphs(body: ParagraphSearchIn):
 
 class QueryIn(BaseModel):
     question: str = Field(min_length=3)
-    top_k: int | None = Field(None, ge=1, le=50)
-    source_types: list[str] | None = Field(None, description=f"Restrict to these types: {', '.join(ALL_TYPES)}")
     include_editorial: bool = Field(False, description="Include notes/intro/Appendix C (excluded by default)")
     sources: Literal["standard", "all"] = Field(
         "all", description="standard = only the Standard itself (Part A); all = also documents published with it (Parts B and C)")
     retrieval: Literal["whole", "per_question"] = Field(
-        "whole", description="whole = one search for the whole question (top_k passages); per_question = when the "
+        "whole", description="whole = one search for the whole question (top_k passages, a setting); per_question = when the "
         "question lists numbered questions (Q1. ..., Q2. ...), one search for its first line and one per question, as the "
         "bulk run searches (bulk_k_per_query each, up to bulk_max_chunks), answered with the same prompt")
-
-
-QUESTION_RE = re.compile(r"^Q\d+\..*$", re.M)  # as the bulk run reads a topic's questions
 
 
 def _queries(question: str) -> list[str]:
@@ -74,13 +70,19 @@ def _queries(question: str) -> list[str]:
 
 async def _retrieve(q: QueryIn, col: dict) -> list[dict]:
     s = get_settings()
-    types = q.source_types
-    if q.sources == "standard":  # Part A only, whatever else the collection holds
-        types = [t for t in (types or STANDARD_TYPES) if t in STANDARD_TYPES]
+    types = list(STANDARD_TYPES) if q.sources == "standard" else None  # Part A only, whatever else the collection holds
     if q.retrieval == "per_question":
         return await retrieval.search_each(_queries(q.question), s.bulk_k_per_query, s.bulk_max_chunks, types,
                                            q.include_editorial, collection_id=col["id"])
-    return await retrieval.search(q.question, q.top_k or s.top_k, types, q.include_editorial, collection_id=col["id"])
+    return await retrieval.search(q.question, s.top_k, types, q.include_editorial, collection_id=col["id"])
+
+
+def _prompt(q: QueryIn, rows: list[dict]) -> str:
+    """What the model is given, the same for the answer and its stream."""
+    return prompts.query_prompt(q.question, retrieval.format_context(rows))
+
+
+NOTHING = "No relevant passages found."
 
 
 def _cited(answer: str, rows: list[dict]) -> list[dict]:
@@ -98,8 +100,8 @@ async def query(q: QueryIn, col: dict = Depends(collection_dep)):
     read = [{"chunk_id": retrieval.chunk_id(r), "para_ref": r["para_ref"], "source_type": r["source_type"], "page": r["page"],
              "document_id": str(r["document_id"]), "content": r["content"]} for r in rows]
     if not rows:
-        return {"answer": "No relevant passages found.", "citations": [], "read": [], "usage": usage}
-    answer = await llm.generate(prompts.QUERY_SYSTEM, prompts.query_prompt(q.question, retrieval.format_context(rows)))
+        return {"answer": NOTHING, "citations": [], "read": [], "usage": usage}
+    answer = await llm.generate(prompts.QUERY_SYSTEM, _prompt(q, rows))
     return {"answer": answer, "citations": _cited(answer, rows), "read": read, "usage": usage}
 
 
@@ -109,12 +111,12 @@ async def query_stream(q: QueryIn, col: dict = Depends(collection_dep)):
 
     async def events():
         if not rows:
-            yield {"event": "token", "data": json.dumps("No relevant passages found.")}
+            yield {"event": "token", "data": json.dumps(NOTHING)}
             yield {"event": "citations", "data": "[]"}
             yield {"event": "done", "data": ""}
             return
         parts = []
-        async for t in llm.stream(prompts.QUERY_SYSTEM, prompts.query_prompt(q.question, retrieval.format_context(rows))):
+        async for t in llm.stream(prompts.QUERY_SYSTEM, _prompt(q, rows)):
             parts.append(t)
             yield {"event": "token", "data": json.dumps(t)}
         yield {"event": "citations", "data": json.dumps(_cited("".join(parts), rows))}

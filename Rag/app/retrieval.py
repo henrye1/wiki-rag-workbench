@@ -28,9 +28,10 @@ async def search(
     include_types: list[str] | None = None,
     include_editorial: bool = False,
     embedding: list[float] | None = None,
-    collection_id=None,
+    *,
+    collection_id,
 ) -> list[dict]:
-    """Hybrid search over one collection (all collections when collection_id is None)."""
+    """Hybrid search over one collection."""
     if embedding is None:
         embedding = await llm.embed_query(query)
     exclude = None if (include_editorial or include_types) else list(NON_BINDING_TYPES)
@@ -48,7 +49,8 @@ async def search_each(
     cap: int,
     include_types: list[str] | None = None,
     include_editorial: bool = False,
-    collection_id=None,
+    *,
+    collection_id,
 ) -> list[dict]:
     """One hybrid search per query (k hits each), merged round-robin so every query contributes its best hits before
     the cap of `cap` passages."""

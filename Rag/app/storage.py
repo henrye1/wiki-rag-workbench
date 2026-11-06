@@ -15,9 +15,7 @@ from .config import get_settings
 log = logging.getLogger(__name__)
 CONTENT_TYPES = {
     ".pdf": "application/pdf",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".md": "text/markdown; charset=utf-8",
-    ".markdown": "text/markdown; charset=utf-8",
     ".txt": "text/plain; charset=utf-8",
 }
 

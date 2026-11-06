@@ -47,18 +47,17 @@ async def list_documents():
 
 
 @router.get("/chunks")
-async def get_chunks(para_ref: str, document_id: UUID | None = None, collection: str | None = None, include_notes: bool = False):
+async def get_chunks(para_ref: str, collection: str | None = None):
     """Look up chunks by IFRS paragraph reference (e.g. 5.5.3, B5.5.17, 'Appendix A: credit loss') - used by citation viewers.
     Pass `collection` (a slug) to look only in that collection."""
     async with get_pool().connection() as conn:
         cur = await conn.execute(
             """select c.id, c.para_ref, c.part, c.source_type, c.page, c.heading, c.content, d.filename, d.id as document_id
                from chunks c join documents d on d.id = c.document_id join collections col on col.id = d.collection_id
-               where c.para_ref = %s and (%s::uuid is null or c.document_id = %s)
-                 and (%s::text is null or col.slug = %s)
-                 and (%s or c.source_type <> 'note')
-               order by d.created_at, c.source_type <> 'note' desc, c.part""",
-            (para_ref, document_id, document_id, collection, collection, include_notes),
+               where c.para_ref = %s and (%s::text is null or col.slug = %s)
+                 and c.source_type <> 'note'
+               order by d.created_at, c.part""",
+            (para_ref, collection, collection),
         )
         rows = await cur.fetchall()
     if not rows:

@@ -28,8 +28,12 @@ def split_long(text: str, max_words: int) -> list[str]:
     return parts
 
 
-def chunk_plain(pages: list[str], max_words: int = 400, overlap: int = 50) -> list[Chunk]:
-    """Generic chunker for non-IFRS docs: paragraph-packed windows per page."""
+OVERLAP_WORDS = 50  # why: a window repeats the end of the one before it, so a passage cut at a window edge stays findable
+
+
+def chunk_plain(pages: list[str], max_words: int) -> list[Chunk]:
+    """Generic chunker for documents without paragraph labels: paragraph-packed windows per page."""
+    overlap = OVERLAP_WORDS
     chunks: list[Chunk] = []
     for pno, page in enumerate(pages, start=1):
         paras = [clean(p) for p in re.split(r"\n\s*\n", page) if p.strip()]
