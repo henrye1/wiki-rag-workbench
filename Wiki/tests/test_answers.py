@@ -142,6 +142,10 @@ class Citations(Base):
         fails = self.fails(answer(f"The item [[{A}|1.1]] is recognised."))
         self.assertTrue(any("cites no clause" in f for f in fails))  # the link in passing does not cite it
 
+    def test_a_sentence_opening_with_a_quotation_ends_the_one_before_it(self):
+        main = f'"Cost" is "The amount paid" [[{A}|1.1]]. "Value" is "The amount received" [[{A}|1.2]].'
+        self.assertEqual(answering._source_cites(main), [(A, "1.1"), (A, "1.2")])
+
     def test_the_clause_references_are_built_from_the_citations_that_end_sentences(self):
         main = (f"An entity may measure the [[concept-item|item]] [[{A}|1.1]] at cost [[{A}|1.2]]. "
                 f"{OPEN[AG]} that the item reflects the expected amount [[{A}|B1.1]] [[{A}|1.2]].")

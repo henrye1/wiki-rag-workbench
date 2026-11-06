@@ -576,7 +576,8 @@ def routed_to_examples(c: Checks | None, reader_kind: str) -> bool:
     return bool(c and reader_kind and c.kinds.get(reader_kind) in c.routed_kinds)
 
 
-AFTER_LINK = re.compile(r"\]\]([.;:!?]?)\s+(?=([A-Z(]|\[\[))")
+# what may open the next sentence after a link: a capital, a bracket, a link, or a quotation opening with a capital
+AFTER_LINK = re.compile(r"\]\]([.;:!?]?)\s+(?=([A-Z(]|[\"\u201c](?=[A-Z])|\[\[))")
 LINK_GROUP_END = re.compile(r"(?:\s*\[\[[^\]]*\]\][,;]?)+$")
 
 
