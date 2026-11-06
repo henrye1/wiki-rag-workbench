@@ -61,7 +61,23 @@ def passages_cited(srcs: dict, slug: str, label: str) -> list[str]:
 
 
 def _source_cites(text: str) -> list[tuple[str, str]]:
-    return [(m.group(1), m.group(2).strip()) for m in store.LINK_RE.finditer(text) if m.group(1).startswith("source-") and m.group(2)]
+    """The clauses a text cites: the source links in the group of citations that ends each of its sentences (list
+    parts and table cells included). A link inside a sentence, to a page or to a paragraph in passing, is a pointer,
+    not a citation (the schema's Workflow: Answer and check)."""
+    return [(m.group(1), m.group(2).strip()) for m in checks.closing_links(text)
+            if m.group(1).startswith(fixpass.SOURCE_SLUG) and m.group(2)]
+
+
+def _end_links(unit: str) -> list:
+    """The links standing in a unit's citation position: the run of links it ends with, joined only by spaces, commas
+    or semicolons, with nothing after them but closing punctuation."""
+    links, out, tail = list(store.LINK_RE.finditer(unit)), [], unit
+    for m in reversed(links):
+        after = tail[m.end():] if not out else unit[m.end():out[0].start()]
+        if not re.fullmatch(r"[\s.;:,|*]*" if not out else r"[\s,;]*", after):
+            break
+        out.insert(0, m)
+    return out
 
 
 # ---------- the layout ----------
@@ -133,18 +149,22 @@ def _sentences(body: str, chk) -> list[str]:
 
 
 def citation_failures(body: str, chk) -> list[str]:
-    """A sentence that cites no clause; a link to a page, or to a whole document, in place of a clause."""
+    """A sentence that cites no clause in the group of citations that ends it; a link to a page, or to a whole
+    document, standing in that place. A link to a page inside a sentence is a pointer and stays as it is."""
     out = []
     for s in _sentences(body, chk):
-        links = list(store.LINK_RE.finditer(s))
-        if not any(m.group(1).startswith("source-") and m.group(2) for m in links):
-            out.append(f'The sentence "{s[:90]}" cites no clause; end it with the clause it rests on, '
-                       "[[source-<source-name>|<clause reference>]].")
-        for m in links:
-            if not m.group(1).startswith("source-"):
-                out.append(f"[[{m.group(1)}]] cites a page, not a clause; cite the clause the page cites.")
-            elif not m.group(2):
-                out.append(f"[[{m.group(1)}]] cites a whole document, not a clause.")
+        if _source_cites(s):
+            continue  # it ends with a clause; any link before it is a pointer
+        out.append(f'The sentence "{s[:90]}" cites no clause; end it with the clause it rests on, '
+                   "[[source-<source-name>|<clause reference>]].")
+        for u in checks.units(s)[-1:]:  # what stands at its end, in the citation's place
+            for m in _end_links(u):
+                if not m.group(1).startswith(fixpass.SOURCE_SLUG):
+                    out.append(f"[[{m.group(1)}]] stands where the sentence's citation goes: a page is not a clause; "
+                               "end the sentence with the clause it rests on, and keep the page link, if wanted, "
+                               "inside the sentence.")
+                elif not m.group(2):
+                    out.append(f"[[{m.group(1)}]] cites a whole document, not a clause.")
     return list(dict.fromkeys(out))
 
 
@@ -167,14 +187,20 @@ def placement_failures(main: str, apart: str, chk, srcs: dict) -> list[str]:
     return list(dict.fromkeys(out))
 
 
-def references_failures(main: str, refs: str, apart: str) -> list[str]:
-    """Every clause the answer relies on is listed under the clause references."""
-    listed = {f"{sl}|{BASE(lab)}" for sl, lab in _source_cites(refs or "")}
-    out = []
-    for sl, lab in _source_cites((main or "") + "\n" + (apart or "")):
-        if f"{sl}|{BASE(lab)}" not in listed:
-            out.append(f"The clause references do not list [[{sl}|{lab}]], which the answer cites.")
-    return list(dict.fromkeys(out))
+def with_references(answer: str, chk) -> str:
+    """The answer with its clause references built from the citations that end its sentences (the answer and its
+    non-authoritative material), in order of first use, each once; the layout's word for an empty part where there are
+    none. An answer without the references heading is left as it is, for the layout check to report."""
+    head = chk.answer_headings[1]
+    lines = answer.split("\n")
+    at = next((i for i, ln in enumerate(lines) if ln.strip() == head), None)
+    if at is None:
+        return answer
+    _, (main, _refs, _gaps, apart) = split_parts(answer, chk)
+    cited = list(dict.fromkeys(f"[[{sl}|{lab}]]" for sl, lab in _source_cites("\n\n".join(x for x in (main, apart) if x))))
+    nxt = next((j for j in range(at + 1, len(lines)) if lines[j].strip() in chk.answer_headings), len(lines))
+    body = "\n".join(cited) if cited else chk.answer_none
+    return "\n".join(lines[: at + 1] + [body, ""] + lines[nxt:])
 
 
 def _has(text: str, word: str) -> bool:
@@ -229,7 +255,6 @@ def failures(answer: str, chk, srcs: dict, cite_ctx: dict) -> list[str]:
                                                absence_allowed=True)(stated)]
     out += fixpass.cite_failures(refs or "", cite_ctx, chk) if refs else []
     out += placement_failures(main or "", apart or "", chk, srcs)
-    out += references_failures(main or "", refs or "", apart or "") if refs is not None else []
     out += force_failures(stated, chk, srcs) if chk.force_words else []
     out += searched_failures(gaps, chk)
     return list(dict.fromkeys(out))
@@ -254,9 +279,12 @@ def instruction(chk) -> str:
         "You answer questions using ONLY the wiki pages provided, as the schema's Workflow: Answer and check sets out. "
         "Do not use outside knowledge.",
         "- Every sentence that states something from a source ends with the clause it rests on, written "
-        "[[source-<source-name>|<clause reference>]] exactly as the pages cite it. Never cite a page or a whole document.",
+        "[[source-<source-name>|<clause reference>]] exactly as the pages cite it. A paragraph is cited only in the "
+        "group of citations that ends the sentence it supports. A link to a page inside a sentence (a term linked to "
+        "its page, as the pages write it) is a pointer: keep it as the link or as its plain term, and never replace it "
+        "with a paragraph citation. Never end a sentence with a page or a whole document in place of its clause.",
         f"- Lay the answer out under these headings, in this order, with no other heading at that level: {h[0]} (the "
-        f"answer); {h[1]} (every clause the answer relies on, one per line, each as its citation); {h[2]} (each point "
+        f"answer); {h[1]} (every clause that ends a sentence of the answer, one per line, each as its citation); {h[2]} (each point "
         f"the standard does not address); {h[3]} (only material from {', '.join(chk.non_authoritative)}, each item "
         f"opening with what it is). Under a heading with nothing to put there, write \"{chk.answer_none}\".",
         f"- Material from {', '.join(main_kinds)} stays under {h[0]}, each sentence opening with what it is." if main_kinds else "",

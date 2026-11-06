@@ -123,14 +123,34 @@ class Force(Base):
 
 
 class Citations(Base):
-    def test_a_sentence_without_a_clause_and_a_page_link_fail(self):
-        fails = self.fails(answer(f"The item is recognised. An entity may measure it at cost [[{A}|1.2]]. See [[some-page]] [[{A}|1.2]]."))
-        self.assertTrue(any("cites no clause" in f for f in fails))
-        self.assertTrue(any("cites a page" in f for f in fails))
+    """The schema's Workflow: Answer and check: a paragraph is cited only by the group of citations that ends the
+    sentence it supports; a link inside a sentence is a pointer, not a citation."""
 
-    def test_the_clause_references_list_every_clause_cited(self):
-        text = answer(f"An entity may measure it at cost [[{A}|1.2]].", refs=f"- [[{A}|1.1]]")
-        self.assertTrue(any("do not list" in f and "1.2" in f for f in self.fails(text)))
+    def test_a_sentence_without_a_clause_and_a_page_in_the_citations_place_fail(self):
+        fails = self.fails(answer(f"The item is recognised. An entity may measure it at cost [[{A}|1.2]]. See [[some-page]]."))
+        self.assertTrue(any("cites no clause" in f for f in fails))
+        self.assertTrue(any("[[some-page]]" in f and "a page is not a clause" in f for f in fails))
+
+    def test_a_page_link_inside_a_sentence_is_a_pointer_and_passes(self):
+        main = (f"An entity may measure the [[concept-item|item]] at cost [[{A}|1.2]]. It becomes "
+                f"[[concept-due|due]] [[{A}|1.2]]. Parts: (a) one; (b) [[concept-grade|grades]]; (c) two [[{A}|1.2]].")
+        self.assertEqual(self.fails(answer(main)), [])
+
+    def test_a_paragraph_link_in_passing_is_not_a_citation(self):
+        self.assertEqual(answering._source_cites(f"An entity may measure the item [[{A}|1.1]] at cost [[{A}|1.2]]."),
+                         [(A, "1.2")])
+        fails = self.fails(answer(f"The item [[{A}|1.1]] is recognised."))
+        self.assertTrue(any("cites no clause" in f for f in fails))  # the link in passing does not cite it
+
+    def test_the_clause_references_are_built_from_the_citations_that_end_sentences(self):
+        main = (f"An entity may measure the [[concept-item|item]] [[{A}|1.1]] at cost [[{A}|1.2]]. "
+                f"{OPEN[AG]} that the item reflects the expected amount [[{A}|B1.1]] [[{A}|1.2]].")
+        apart = f"{OPEN[IG]} that an entity applies this in a simple case [[{B}|IG1]]."
+        built = answering.with_references(answer(main, apart, refs=f"[[{A}|1.1]]\n[[{A}|9.9]]"), CHK)
+        refs = answering.split_parts(built, CHK)[1][1]
+        self.assertEqual(refs.split(), [f"[[{A}|1.2]]", f"[[{A}|B1.1]]", f"[[{B}|IG1]]"])
+        self.assertIn("[[concept-item|item]]", built)  # the page link stays as it is
+        self.assertEqual(answering.split_parts(answering.with_references(answer(f"Yes {NONE}"), CHK), CHK)[1][1].strip(), NONE)
 
 
 class NotAddressed(Base):

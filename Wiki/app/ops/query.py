@@ -298,20 +298,22 @@ def _nothing(wiki: dict, sources: str) -> str:
 async def _checked(wiki: dict, chk, question: str, pages: list[dict], extra: list[dict], sources: str) -> tuple[str, list[dict], dict]:
     """An answer as the schema's Workflow: Answer and check sets out: written under the schema's instruction; each
     point it says is not addressed searched for in every section and subtopic page, and the answer written again with
-    what was found; then checked, and sent back once with its failures. Returns the answer, the pages read (those the
+    what was found; then checked, and sent back once with its failures. Its clause references are built, after each
+    draft, from the citations that end its sentences. Returns the answer, the pages read (those the
     search found included) and the report of its checks."""
     system, schema = answering.instruction(chk), wiki["schema_md"]
     srcs = await pagecheck.sources(wiki["id"])
     cite_ctx = await fixpass.cite_context(wiki["id"], [x["name"] for x in _sections(schema)])
     report: dict = {"checks_off": answering.checks_off(chk)}
-    text = await llm.generate(system, _prompt(wiki, question, pages, extra))
+    refs = lambda t: answering.with_references(t, chk)  # built from the citations that end its sentences
+    text = refs(await llm.generate(system, _prompt(wiki, question, pages, extra)))
     if points := answering.not_addressed_points(answering.split_parts(text, chk)[1][2], chk):
         try:
             found, more = await answering.search_not_addressed(wiki, chk, points, {p["slug"] for p in pages},
                                                                lambda ps: _restrict(wiki, ps, sources))
             pages = pages + more
-            text = await llm.generate(system, prompts.with_schema(schema, answering.search_prompt(
-                question, _pages_md(pages), text, found, chk)))
+            text = refs(await llm.generate(system, prompts.with_schema(schema, answering.search_prompt(
+                question, _pages_md(pages), text, found, chk))))
             report["not_addressed_search"] = [{k: f[k] for k in ("point", "terms", "pages")} for f in found]
         except Exception as e:
             log.warning("query: searching for the points not addressed failed: %s", e)
@@ -320,7 +322,7 @@ async def _checked(wiki: dict, chk, question: str, pages: list[dict], extra: lis
     report["found"] = fails
     if fails:
         try:
-            again = await llm.generate(system, prompts.with_schema(schema, answering.fix_prompt(question, _pages_md(pages), text, fails)))
+            again = refs(await llm.generate(system, prompts.with_schema(schema, answering.fix_prompt(question, _pages_md(pages), text, fails))))
             left = answering.failures(again, chk, srcs, cite_ctx)
             if len(left) <= len(fails):  # the rewrite is kept unless it fails more
                 text, fails = again, left
