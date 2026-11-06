@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..db import get_pool
+from ..ops import sourcemap
 from ..ops.ingest import _sections, split_written
 from ..wiki import checks, saved, store
 from ..wiki.store import PAGE_TYPES, Op
@@ -44,6 +45,16 @@ async def get_page(slug: str, wiki: dict = Depends(wiki_dep)):
     keep, flags = await _saved_and_flags(wiki["id"])
     return {**page, "backlinks": await store.backlinks(wiki["id"], slug), "sources": await store.page_sources(page["id"]),
             "saved_answer": slug in keep, "needs_checking": flags.get(slug)}
+
+
+@router.get("/wikis/{w}/pages/{slug}/source-map")
+async def page_source_map(slug: str, wiki: dict = Depends(wiki_dep)):
+    """Read only. sources: per source this page cites, the source's sections it draws on (document order) with how many
+    of its sentences cite each. contents: on a source's own page, each section of that source with the pages it informs,
+    then the sections no page draws on; otherwise null."""
+    page = await _page_or_404(wiki, slug)
+    return {"sources": await sourcemap.page_map(wiki["id"], page["content_md"]),
+            "contents": await sourcemap.source_contents(wiki["id"], slug) if page["type"] == "source" else None}
 
 
 @router.delete("/wikis/{w}/pages/{slug}/needs-checking", status_code=204)

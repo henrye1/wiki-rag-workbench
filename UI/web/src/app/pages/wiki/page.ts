@@ -39,6 +39,26 @@ import { Markdown } from '../../shared/markdown';
           }
           @if (p.summary) { <p class="muted"><em>{{ p.summary }}</em></p> }
           <app-md [text]="p.content_md" [wiki]="w()" [existing]="existing()" wikiLinks="navigate" [cites]="false" />
+          @if (map()?.contents; as c) {
+            <div class="card contents">
+              <h3>Contents map</h3>
+              <p class="muted small">Each section of this document, in its own order, with the pages it informs (sentences citing it).</p>
+              @for (x of c.sections; track x.section) {
+                <div class="sec"><b>{{ x.section }}</b>
+                  <div>@for (g of x.pages; track g.slug) { <a [routerLink]="['..', g.slug]">{{ g.title }}</a> <span class="muted">({{ g.sentences }})</span>@if (!$last) { · } }</div>
+                </div>
+              }
+              <h4>Not used on any page ({{ c.unused.length }})</h4>
+              @for (u of c.unused; track u) { <div class="sec">{{ u }}</div> }
+              @empty { <div class="muted">None: every section informs at least one page.</div> }
+              @if (c.not_in_source.length) {
+                <h4>Cited, but not a location in this document ({{ c.not_in_source.length }})</h4>
+                @for (x of c.not_in_source; track x.label) {
+                  <div class="sec">{{ x.label }} — @for (g of x.pages; track g.slug) { <a [routerLink]="['..', g.slug]">{{ g.title }}</a>@if (!$last) { · } }</div>
+                }
+              }
+            </div>
+          }
         </article>
         <aside>
           <div class="card">
@@ -48,8 +68,23 @@ import { Markdown } from '../../shared/markdown';
           </div>
           <div class="card">
             <h3>Sources</h3>
-            @for (s of p.sources; track s.slug) { <div><a [routerLink]="['..', s.slug]">{{ s.title }}</a> <span class="pill">{{ s.kind }}</span></div> }
+            @for (s of docs(); track s.slug) {
+              <div class="doc">
+                @if (s.sections.length) {
+                  <button class="tog" (click)="toggle(s.slug)" [attr.aria-expanded]="open().has(s.slug)" [title]="open().has(s.slug) ? 'Hide sections' : 'Show the sections this page draws on'">{{ open().has(s.slug) ? '▾' : '▸' }}</button>
+                } @else { <span class="tog"></span> }
+                <a [routerLink]="['..', s.slug]">{{ s.title }}</a>
+                @if (s.kind) { <span class="pill">{{ s.kind }}</span> }
+              </div>
+              @if (open().has(s.slug)) {
+                <ul class="secs">
+                  @for (x of s.sections; track x.section) { <li>{{ x.section }} <span class="muted">({{ x.sentences }})</span></li> }
+                  @for (x of s.not_in_source; track x.label) { <li class="error">{{ x.label }} <span class="muted">(cited, not in this source)</span></li> }
+                </ul>
+              }
+            }
             @empty { <div class="muted empty">None recorded</div> }
+            @if (docs().length) { <div class="muted small">▸ the document's sections this page cites (sentences citing each).</div> }
           </div>
           <div class="card">
             <h3>History</h3>
@@ -84,6 +119,9 @@ import { Markdown } from '../../shared/markdown';
     aside { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
     .ver { display: flex; align-items: center; gap: 4px; } .ver.sel { background: var(--mat-sys-secondary-container); border-radius: 8px; }
     .small { font-size: 12px; } .hist { margin-top: 16px; }
+    .doc { display: flex; align-items: baseline; gap: 4px; } .tog { width: 18px; flex: none; border: 0; background: none; padding: 0; cursor: pointer; color: inherit; }
+    .secs { margin: 2px 0 8px 22px; padding-left: 12px; font-size: 13px; } .secs li { margin: 2px 0; }
+    .contents { margin-top: 24px; } .contents h4 { margin: 16px 0 4px; } .sec { margin: 6px 0; font-size: 14px; }
   `,
 })
 export class WikiPage {
@@ -96,6 +134,22 @@ export class WikiPage {
   readonly selected = signal<any>(null);
   readonly diff = signal('');
   readonly error = signal('');
+  readonly map = signal<any>(null); // the page's source map (read only): sections cited per document, and a document's contents map
+  readonly open = signal<Set<string>>(new Set());
+
+  /** The page's documents: those recorded for it, with the sections it cites; then any it cites that are not recorded. */
+  docs() {
+    const p = this.page(), m = this.map()?.sources ?? [];
+    const of = new Map(m.map((s: any) => [s.slug, s]));
+    const rec = (p?.sources ?? []).map((s: any) => ({ ...s, sections: [], not_in_source: [], ...(of.get(s.slug) ?? {}) }));
+    return [...rec, ...m.filter((s: any) => !rec.some((r: any) => r.slug === s.slug))];
+  }
+
+  toggle(slug: string) {
+    const s = new Set(this.open());
+    s.has(slug) ? s.delete(slug) : s.add(slug);
+    this.open.set(s);
+  }
 
   constructor() {
     effect(() => { void this.load(this.w(), this.slug()); });
@@ -111,6 +165,9 @@ export class WikiPage {
       this.page.set(p);
       this.existing.set(new Set(pages.map((x: any) => x.slug)));
       this.versions.set(versions);
+      this.map.set(null);
+      this.open.set(new Set());
+      this.api.get<any>(`/api/wiki/wikis/${enc(w)}/pages/${enc(slug)}/source-map`).then((m) => this.map.set(m), () => this.map.set(null));
     } catch (e: any) {
       this.page.set(null);
       this.error.set(e?.status === 404 ? `Page “${slug}” does not exist yet (lint with fix can create it).` : errMsg(e));
