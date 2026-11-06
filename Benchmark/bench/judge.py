@@ -4,8 +4,6 @@ Gradings can go through the Message Batches API (half price): grade_batch() subm
 result or the reason it failed, so the caller grades those normally (with the refusal fallback batches do not allow)."""
 import asyncio
 import json
-import os
-import tempfile
 import time
 
 from anthropic import AsyncAnthropic
@@ -24,46 +22,6 @@ def client() -> AsyncAnthropic:
     return _client
 
 
-class JudgeRefused(Exception):
-    pass
-
-
-async def _cli_call(system: str, user: str, schema: dict, model: str | None = None) -> dict:
-    """The same judge call through Claude Code on the subscription: the judge's own system prompt replaces Claude Code's,
-    with no tools, plugins, MCP servers, settings or project files; the reply must match the same JSON schema."""
-    s = get_settings()
-    if not s.claude_code_oauth_token:
-        raise RuntimeError("JUDGE_BACKEND=claude-code needs CLAUDE_CODE_OAUTH_TOKEN in Benchmark/.env (from `claude setup-token`)")
-    env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL")}
-    env["CLAUDE_CODE_OAUTH_TOKEN"] = s.claude_code_oauth_token
-    args = [s.claude_bin, "-p", "--output-format", "json", "--json-schema", json.dumps(schema),
-            "--model", model or s.judge_model, "--effort", s.judge_effort, "--system-prompt", system,
-            "--tools", "", "--strict-mcp-config", "--setting-sources", "", "--disable-slash-commands", "--no-session-persistence"]
-    with tempfile.TemporaryDirectory() as empty:  # no project files (CLAUDE.md etc.) to pick up
-        proc = await asyncio.create_subprocess_exec(*args, cwd=empty, env=env, stdin=asyncio.subprocess.PIPE,
-                                                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        try:
-            out, err = await asyncio.wait_for(proc.communicate(user.encode()), timeout=s.judge_timeout_s)
-        except asyncio.TimeoutError:
-            proc.kill()
-            raise RuntimeError(f"Claude Code judge timed out after {s.judge_timeout_s} s")
-    try:
-        res = json.loads(out.decode() or "{}")
-    except json.JSONDecodeError:
-        raise RuntimeError(f"Claude Code judge: unreadable reply (exit {proc.returncode}): {err.decode()[-300:]}")
-    if proc.returncode or res.get("is_error"):
-        raise RuntimeError(f"Claude Code judge failed (exit {proc.returncode}): {str(res.get('result') or err.decode())[-300:]}")
-    data = res.get("structured_output")
-    if data is None:
-        data = json.loads(res.get("result") or "")
-    # Claude Code may make its own small side calls on another model; count only the judge model's tokens
-    mu, want = res.get("modelUsage") or {}, model or s.judge_model
-    u = mu.get(want) or next(iter(mu.values()), {})
-    return {"data": data, "model": want if want in mu else ", ".join(mu) or want, "backend": "claude-code",
-            "usage": {"input_tokens": (u.get("inputTokens") or 0) + (u.get("cacheReadInputTokens") or 0)
-                      + (u.get("cacheCreationInputTokens") or 0), "output_tokens": u.get("outputTokens") or 0}}
-
-
 def _params(system: str, user: str, schema: dict, model: str | None = None) -> dict:
     s = get_settings()
     return {"model": model or s.judge_model, "max_tokens": 16000, "system": system, "messages": [{"role": "user", "content": user}],
@@ -72,17 +30,15 @@ def _params(system: str, user: str, schema: dict, model: str | None = None) -> d
 
 def _parse(resp, batch: bool = False) -> dict:
     if resp.stop_reason == "refusal":
-        raise JudgeRefused(str(getattr(resp, "stop_details", None)))
+        raise RuntimeError(f"Judge refused: {getattr(resp, 'stop_details', None)}")
     if resp.stop_reason == "max_tokens":
         raise RuntimeError("Judge output truncated (max_tokens)")
     text = next(b.text for b in resp.content if b.type == "text")
-    return {"data": json.loads(text), "model": resp.model, "batch": batch, "backend": "api",
+    return {"data": json.loads(text), "model": resp.model, "batch": batch,
             "usage": {"input_tokens": resp.usage.input_tokens, "output_tokens": resp.usage.output_tokens}}
 
 
 async def _json_call(system: str, user: str, schema: dict, model: str | None = None) -> dict:
-    if get_settings().judge_backend == "claude-code":
-        return await _cli_call(system, user, schema, model)
     resp = await client().beta.messages.create(
         **_params(system, user, schema, model),
         # Server-side refusal fallback (routes by refusal category); unlikely to trigger on accounting text

@@ -2,19 +2,12 @@
 x the price list). The run summary also lists the judge-based tests, as not measured until they are run.
 
 A test that cannot be worked out is stored as not measured, with the reason; never as 0 or an estimate.
-
-  python -m bench.metrics backfill <run-id>|all   # add these tests to saved runs (no question is asked again)
 """
 import json
 import pathlib
 import statistics
-import sys
 
-import psycopg
-from psycopg.rows import dict_row
-from psycopg.types.json import Jsonb
-
-from .config import get_settings
+from .systems import answers_of
 
 VERSION = "kept-1"
 PRICES = json.loads((pathlib.Path(__file__).parent / "prices.json").read_text())
@@ -34,7 +27,7 @@ def measured(value) -> dict:
 def cost_usd(usage: list[dict] | None) -> tuple[float | None, str]:
     """Generation tokens x price. The services' embedding calls report no token count, so their (very small) cost is left out."""
     if usage is None:
-        return None, "the AI calls behind this answer were not recorded (run made before tokens were recorded)"
+        return None, "the AI calls behind this answer were not recorded"
     total, missing = 0.0, []
     for u in usage:
         if u.get("step") == "embed":
@@ -61,8 +54,7 @@ def _answers(data: dict):
     """(topic, rep, system, answer dict) for every saved answer, graded or not."""
     for t in data.get("topics", {}).values():
         for rid, run in t.get("runs", {}).items():
-            src = run.get("systems") or run.get("answers") or {}
-            for sysname, ans in src.items():
+            for sysname, ans in answers_of(run).items():
                 yield t, rid, sysname, ans
 
 
@@ -105,30 +97,3 @@ async def compute(data: dict, mode: str | None, only_missing: bool = True) -> in
     data["metrics"] = summarise(data, mode)
     return n
 
-
-def backfill(run_ids: list[str]) -> None:
-    import asyncio
-    conn = psycopg.connect(get_settings().database_url, autocommit=True, row_factory=dict_row)
-    if run_ids == ["all"]:
-        run_ids = [r["id"] for r in conn.execute("select id from bench.runs where results is not null order by created_at")]
-    for rid in run_ids:
-        row = conn.execute("select results, mode from bench.runs where id = %s", (rid,)).fetchone()
-        if not row or not row["results"]:
-            print(f"{rid}: no results")
-            continue
-        data = row["results"]
-        n = asyncio.run(compute(data, row["mode"]))
-        from .run import aggregate  # the summary, with the gaps' confidence intervals, from what the run already holds
-        aggregate(data)
-        conn.execute("update bench.runs set results = %s where id = %s", (Jsonb(data), rid))
-        s = data["metrics"]["by_system"]
-        print(f"{rid}: {n} answers | " + " | ".join(
-            f"{k}: " + ", ".join(f"{sysname} {v[k].get('mean') if v[k].get('mean') is not None else 'not measured'}" for sysname, v in s.items())
-            for k in CHEAP))
-
-
-if __name__ == "__main__":
-    if sys.argv[1:2] == ["backfill"] and len(sys.argv) > 2:
-        backfill(sys.argv[2:])
-    else:
-        sys.exit(__doc__)

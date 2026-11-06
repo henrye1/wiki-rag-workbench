@@ -75,16 +75,6 @@ def _doc_name(title: str, meta: dict | None) -> str:
     return f"{name} Part {part.group(1)}" if part else name
 
 
-def documents(conn: psycopg.Connection) -> list[dict]:
-    """Every source document the wikis keep (one per slug): slug, name, tier."""
-    rows = conn.execute("""select distinct on (slug) slug, title, meta from wiki.sources order by slug, length(text) desc""").fetchall()
-    out = []
-    for r in rows:
-        r = r if isinstance(r, dict) else dict(zip(("slug", "title", "meta"), r))
-        out.append({"slug": r["slug"], "name": _doc_name(r["title"], r["meta"]), "tier": _tier(r["meta"]), "title": r["title"]})
-    return out
-
-
 class Library:
     def __init__(self, conn: psycopg.Connection, only: set[str] | None = None):
         """only: the source slugs to use (None = every source document)."""

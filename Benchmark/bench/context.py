@@ -11,8 +11,8 @@ read: the RAG's passages (stored with the answer) or the wiki's pages, rebuilt f
   contain it? Each passage (RAG) and each citation on a page (wiki) is marked Standard or not by its paragraph's tier
   (library.kind_tier): editorial text (notes, agenda decisions, the introduction) and documents published with the
   Standard are never Standard text.
-The judge sees one answer at a time and never the name of the system that wrote it. Answers from runs made before
-what was read was recorded are not measured.
+The judge sees one answer at a time and never the name of the system that wrote it. An answer whose reading was not
+recorded is not measured.
 
 Re-score a stored run's saved answers and what they read, with no new answers:  python -m bench.context <run-id> ...
 """
@@ -29,10 +29,9 @@ from psycopg.types.json import Jsonb
 from . import judge
 from .config import get_settings
 from .library import ACCOMPANYING_KINDS, kind_tier, paragraph_tier
-from .systems import RAGS
+from .systems import RAGS, answers_of
 
 VERSION = "context-3"  # 2: Standard-only context recall; 3: counted from Standard text only (each passage marked)
-PREVIOUS = ("faithfulness", "context_recall", "context_recall_standard")
 STD, NOT_STD = "Standard", "not Standard"
 MAX_CLAIMS = 40
 WEIGHT = {"present": 1.0, "partly": 0.5, "absent": 0.0}
@@ -75,7 +74,7 @@ def _rag_tier(source_type: str | None) -> str:
 def _context_rag(ans: dict) -> tuple[str | None, str]:
     read = ans.get("read")
     if read is None:
-        return None, "the run was made before what each answer read was recorded"
+        return None, "what the answer read was not recorded"
     if not read:
         return "", ""
     return "\n\n".join(f"[{r.get('para_ref') or '?'}] ({STD if _rag_tier(r.get('source_type')) == 'standard' else NOT_STD}) "
@@ -114,7 +113,7 @@ def _source_metas(wiki: str) -> dict[str, dict]:
 async def _context_wiki(http: httpx.AsyncClient, wiki: str, sources: str, ans: dict, metas: dict) -> tuple[str | None, str]:
     read = ans.get("read")
     if read is None:
-        return None, "the run was made before what each answer read was recorded"
+        return None, "what the answer read was not recorded"
     pages = [r for r in read if not r.get("saved")]
     if not pages:
         return "", ""
@@ -153,7 +152,7 @@ def score(result: dict | None, points: list[dict], note: str) -> tuple[dict, dic
     m["context_recall_standard"] = (measured(round(100 * sum(std) / len(std), 1)) if std
                                     else not_measured("none of this topic's key points is tagged Standard" if not any(k["kind"] == "standard" for k in kps)
                                                       else "the judge returned no verdicts"))
-    rec = {"version": VERSION, "model": (result or {}).get("model"), "backend": (result or {}).get("backend"),
+    rec = {"version": VERSION, "model": (result or {}).get("model"),
            "usage": (result or {}).get("usage"), "batch": (result or {}).get("batch", False), "note": note,
            "claims": claims, "key_points": kps}
     return rec, m
@@ -170,7 +169,7 @@ async def run_context(data: dict, sem: asyncio.Semaphore, use_batch: bool, save,
     todo = []
     for rec in data.get("topics", {}).values():
         for rid, run in rec.get("runs", {}).items():
-            for sysname, ans in (run.get("systems") or run.get("answers") or {}).items():
+            for sysname, ans in answers_of(run).items():
                 if (ans.get("context_checks") or {}).get("version") != VERSION:
                     todo.append((rec, rid, sysname, ans))
     if not todo:
@@ -194,16 +193,12 @@ async def run_context(data: dict, sem: asyncio.Semaphore, use_batch: bool, save,
         rec, ans, note, _ = prepared[key]
         r, m = score(result, rec.get("key_points") or [], note)
         async with lock:
-            old = ans.get("context_checks") or {}
-            if old.get("version") and old.get("version") != VERSION and "context_checks_previous" not in ans:
-                # an earlier version's record is kept with its scores, never overwritten
-                ans["context_checks_previous"] = {**old, "metrics": {k: (ans.get("metrics") or {}).get(k) for k in PREVIOUS}}
             ans["context_checks"] = r
             ans["metrics"] = {**(ans.get("metrics") or {}), **m}
             await save()
 
     left = list(prepared)
-    if use_batch and s.judge_backend == "api" and left:
+    if use_batch and left:
         reqs = {k: judge._params(SYSTEM, prepared[k][3], SCHEMA, s.context_model) for k in left}
         try:
             got = await judge.grade_batch(reqs, None, lambda _id: asyncio.sleep(0), log, "context checks")
@@ -232,7 +227,7 @@ async def run_context(data: dict, sem: asyncio.Semaphore, use_batch: bool, save,
 async def rescore(run_id: str, conn: psycopg.Connection):
     """Faithfulness and context recall again, at this VERSION, for a stored run: its saved answers and what each read
     (the RAG's stored passages; the wiki's pages at the versions recorded, from the wiki service). No answer is asked
-    again and no grade changes. The earlier version's record stays with each answer (context_checks_previous)."""
+    again and no grade changes; each answer's earlier record is replaced."""
     from . import metrics
     from .run import aggregate
     row = conn.execute("select results, log, mode, use_batch from bench.runs where id = %s", (run_id,)).fetchone()
@@ -253,8 +248,7 @@ async def rescore(run_id: str, conn: psycopg.Connection):
         await asyncio.to_thread(conn.execute, "update bench.runs set results = %s, log = %s, updated_at = now() where id = %s",
                                 (Jsonb(data), "\n".join(lines[-300:]), run_id))
     log(f"--- {dt.datetime.now().isoformat(timespec='seconds')} re-score: faithfulness and context recall at {VERSION} (was {before})")
-    use_batch = s.judge_backend != "claude-code" and row["use_batch"] is not False
-    n = await run_context(data, asyncio.Semaphore(s.concurrency), use_batch, save, log)
+    n = await run_context(data, asyncio.Semaphore(s.concurrency), row["use_batch"], save, log)
     await metrics.compute(data, "full")
     aggregate(data)
     cfg["context_checks"] = {**(cfg.get("context_checks") or {}), "model": s.context_model, "version": VERSION,

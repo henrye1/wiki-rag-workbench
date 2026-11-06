@@ -13,7 +13,6 @@
 The judge sees one answer at a time and never the name of the system that wrote it.
 
   python -m bench.checks facts <reference-sha256>          # make the exact-match fact lists still missing
-  python -m bench.checks backfill <run-id>|all             # run the checks on saved answers (no question is asked again)
 """
 import asyncio
 import re
@@ -26,6 +25,7 @@ from psycopg.types.json import Jsonb
 from . import judge
 from .config import get_settings
 from .library import Library
+from .systems import answers_of
 
 VERSION = "checks-3"  # 2: Standard-only exact match (facts tagged); 3: a sentence's citations are the group that
 #   ends it (a citation inside a sentence is a pointer), and a line holding only citations is not counted
@@ -324,7 +324,8 @@ def score(prep: dict, result: dict | None, facts_info: dict) -> tuple[dict, dict
     if not fs:
         m["exact_match_standard"] = m["exact_match"]
     elif not any(f.get("kind") for f in fs):
-        m["exact_match_standard"] = not_measured("the fact list has no tags (made before facts were tagged)")
+        # a new fact list is untagged until its suggested tags are accepted on the Rubric review screen
+        m["exact_match_standard"] = not_measured("the fact list has no tags yet")
     elif not std:
         m["exact_match_standard"] = not_measured("none of this topic's facts is tagged Standard")
     else:
@@ -342,7 +343,7 @@ def score(prep: dict, result: dict | None, facts_info: dict) -> tuple[dict, dict
               "supported": sum(c["status"] == "supported" for c in cs), "partly": sum(c["status"] == "partly" for c in cs),
               "not_supported": sum(c["status"] == "not_supported" for c in cs),
               "facts_contradicted": sum(f["status"] == "contradicted" for f in fs)}
-    rec = {"version": VERSION, "model": (result or {}).get("model"), "backend": (result or {}).get("backend"),
+    rec = {"version": VERSION, "model": (result or {}).get("model"),
            "usage": (result or {}).get("usage"), "batch": (result or {}).get("batch", False), "facts_used": facts_info,
            "questions": qs, "facts": fs, "citations": cs, "counts": counts}
     return rec, m
@@ -362,7 +363,7 @@ def _todo(data: dict, rubric_rows: dict[int, dict]):
     for rec in data.get("topics", {}).values():
         info = _facts_info(rubric_rows.get(rec["number"]))
         for rid, run in rec.get("runs", {}).items():
-            for sysname, ans in (run.get("systems") or run.get("answers") or {}).items():
+            for sysname, ans in answers_of(run).items():
                 done = ans.get("checks") or {}
                 if done.get("version") == VERSION and (done.get("facts_used") or {}).get("version") == info.get("version") \
                         and (done.get("facts_used") or {}).get("approved") == info.get("approved"):
@@ -396,7 +397,7 @@ async def run_checks(data: dict, conn: psycopg.Connection, ref_sha: str, sem: as
             await save()
 
     left = list(preps)
-    if use_batch and s.judge_backend == "api":
+    if use_batch:
         reqs = {k: judge._params(CHECK_SYSTEM, preps[k][2]["user"], CHECK_SCHEMA, s.checks_model) for k in left}
         try:
             got = await judge.grade_batch(reqs, None, lambda _id: asyncio.sleep(0), log, "answer checks")
@@ -423,41 +424,9 @@ async def run_checks(data: dict, conn: psycopg.Connection, ref_sha: str, sem: as
     return len(preps) - failed
 
 
-def backfill(run_ids: list[str]) -> None:
-    """Run the answer checks on saved runs (answers are not asked again), then refresh their summaries."""
-    from . import rubric
-    from .metrics import compute
-    from .run import aggregate
-    s = get_settings()
-    conn = psycopg.connect(s.database_url, autocommit=True, row_factory=dict_row)
-    if run_ids == ["all"]:
-        run_ids = [r["id"] for r in conn.execute("select id from bench.runs where results is not null order by created_at")]
-    for rid in run_ids:
-        row = conn.execute("select results, mode, reference from bench.runs where id = %s", (rid,)).fetchone()
-        if not row or not row["results"] or not row["reference"]:
-            print(f"{rid}: no results or no reference file")
-            continue
-        data, ref_sha = row["results"], rubric.sha256(row["reference"])
-        asyncio.run(facts_for_reference(conn, ref_sha))
-
-        async def save():
-            await asyncio.to_thread(conn.execute, "update bench.runs set results = %s where id = %s", (Jsonb(data), rid))
-        print(f"{rid}:", flush=True)
-        asyncio.run(run_checks(data, conn, ref_sha, asyncio.Semaphore(s.concurrency), False, save, lambda m: print(m, flush=True)))
-        asyncio.run(compute(data, row["mode"]))
-        aggregate(data)
-        conn.execute("update bench.runs set results = %s where id = %s", (Jsonb(data), rid))
-        by = data["metrics"]["by_system"]
-        print(f"{rid}: " + " | ".join(f"{k}: " + ", ".join(
-            f"{n} {v[k].get('mean') if v[k].get('mean') is not None else 'not measured'}" for n, v in by.items())
-            for k in ("completeness", "exact_match", "citation_accuracy")), flush=True)
-
-
 if __name__ == "__main__":
     if sys.argv[1:2] == ["facts"] and len(sys.argv) == 3:
         c = psycopg.connect(get_settings().database_url, autocommit=True, row_factory=dict_row)
         asyncio.run(facts_for_reference(c, sys.argv[2], lambda m: print(m, flush=True)))
-    elif sys.argv[1:2] == ["backfill"] and len(sys.argv) > 2:
-        backfill(sys.argv[2:])
     else:
         sys.exit(__doc__)

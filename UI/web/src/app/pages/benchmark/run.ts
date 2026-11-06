@@ -4,9 +4,9 @@ import { FormsModule } from '@angular/forms';
 import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../../core/api';
+import { LABEL } from './systems';
 
 type SortKey = 'number' | 'gap' | 'rag' | 'wiki' | 'rag_q';
-const LABEL: Record<string, string> = { rag: 'RAG (per topic)', rag_q: 'RAG (per question)', wiki: 'Wiki' };
 
 @Component({
   selector: 'app-bench-run',
@@ -24,7 +24,7 @@ const LABEL: Record<string, string> = { rag: 'RAG (per topic)', rag_q: 'RAG (per
             <span class="muted small">(the same for every system)</span>
             · RAG editorial text: <span class="pill">{{ c.rag_editorial === true ? 'On' : c.rag_editorial === false ? 'Off' : 'not recorded' }}</span></p>
         }
-        <p class="muted">Judge {{ d.config.judge_model }} ({{ d.config.judge_effort }}{{ d.config.judge_backend ? ', ' + d.config.judge_backend : '' }}) · {{ d.config.runs }} run(s) per topic ·
+        <p class="muted">Judge {{ d.config.judge_model }} ({{ d.config.judge_effort }}) · {{ d.config.runs }} run(s) per topic ·
           RAG: {{ ragDocs(d) }} · Wiki: {{ d.config.systems?.wiki?.wiki?.pages ?? '?' }} pages · commit {{ d.config.git_commit ?? '—' }}
           @if (d.config.context_checks?.version; as v) { · Context checks {{ v }}{{ d.config.context_checks.rescored ? ' (re-scored ' + d.config.context_checks.rescored.at.slice(0, 10) + ', was ' + d.config.context_checks.rescored.from + ')' : '' }} }</p>
         <p class="muted small">Rubric: {{ rubricLabel(d) }}</p>
@@ -149,8 +149,8 @@ export class BenchRun {
   readonly data = signal<any>(null);
   readonly error = signal('');
   readonly sort = signal<SortKey>('number');
-  /** The systems a run compared: runs made before RAG (per question) was added compared RAG (per topic) and the wiki. */
-  systems(d: any): string[] { return d?.config?.systems_compared ?? ['rag', 'wiki']; }
+  /** The systems a run compared, as it recorded them. */
+  systems(d: any): string[] { return d?.config?.systems_compared ?? []; }
   /** The RAG columns, each graded against the wiki in its own pair. */
   pairs(d: any): string[] { return this.systems(d).filter((s) => s !== 'wiki'); }
   label(sys: string) { return LABEL[sys] ?? sys; }
@@ -201,7 +201,6 @@ export class BenchRun {
   score(d: any, sys: string, k: string, pair = 'rag'): { ok: boolean; text: string; reason: string } {
     if (this.extras.includes(k)) return this.extra(d, sys, k, pair);
     const no = (reason: string) => ({ ok: false, text: 'Not run yet', reason });
-    const added = 'this run was made before this test was added';
     if (!d.summary) return no('the run has not finished');
     const other = pair !== 'rag' ? d.summary.pairs?.[pair] : null;
     if (k === 'wins') return { ok: true, text: String((other ? other.wins_by_run : d.summary.wins_by_run)?.[sys] ?? 0),
@@ -210,10 +209,10 @@ export class BenchRun {
       const v = sys === 'wiki' && other ? other.wiki?.[k] : d.summary.by_system?.[sys]?.[k];
       if (v?.mean != null) return { ok: true, text: k === 'similarity' ? `${v.mean}/10` : `${v.mean}%`, reason: `${v.n} topic(s)` };
       if (k === 'coverage_std_supp' && d.config?.sources === 'standard') return no('this run used Standard only (Part A), so Supporting points were not in play');
-      return no(v ? 'no graded answers' : added);
+      return no('no graded answers');
     }
     const m = d.metrics?.by_system?.[sys]?.[k];
-    if (!m) return no(added);
+    if (!m) return no('not measured in this run');
     if (m.status !== 'measured' || m.mean == null) return no(m.reason ?? 'not measured');
     return { ok: true, text: this.fmtMetric(k, m.mean), reason: `${m.n} answer(s)${m.not_measured_in ? '; some not measured' : ''}` };
   }
@@ -221,7 +220,7 @@ export class BenchRun {
   readonly judged = ['similarity', 'coverage', 'coverage_standard', 'coverage_std_supp'];
 
   /** Measures read from what the run stored besides its summary: standard-only similarity (the last step of every Full
-   *  run; added to older runs by `python -m bench.std_similarity`) and the contradictions found in each answer. */
+   *  run; `python -m bench.std_similarity` adds it to a finished run) and the contradictions found in each answer. */
   readonly extras = ['std_similarity', 'contradictions', 'no_contradiction'];
   /** Counts per answer: shown without a wiki-minus-RAG interval. */
   readonly counted = ['contradictions', 'no_contradiction'];
@@ -272,12 +271,10 @@ export class BenchRun {
   rubricLabel(d: any) {
     const used = Object.values<any>(d.topics ?? {}).map((t) => t.rubric).filter(Boolean);
     const built = [...new Set(used.map((r) => r.built_in).filter(Boolean))];
-    if (!built.length) return 'built in this run (before rubrics were saved)';
-    const versions = used.filter((r) => r.version);
+    if (!built.length) return 'not recorded yet';
     const approved = used.filter((r) => r.approved).length;
     return `saved rubric for ${d.reference_label ?? 'this reference memo'}, built in ${built.join(', ')}`
-      + (versions.length ? ` · versions ${[...new Set(versions.map((r) => r.version))].sort((a, b) => a - b).join(', ')} · ${approved} of ${used.length} topics approved`
-                         : ' · recorded before rubric review');
+      + ` · versions ${[...new Set(used.map((r) => r.version))].sort((a, b) => a - b).join(', ')} · ${approved} of ${used.length} topics approved`;
   }
 
   ragDocs(d: any) {

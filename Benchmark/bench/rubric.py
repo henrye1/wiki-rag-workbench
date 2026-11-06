@@ -1,8 +1,7 @@
 """Saved rubrics: key points built once per reference file (by its SHA-256) and reused by every run.
 
-  python -m bench.rubric list
   python -m bench.rubric rebuild <reference-sha256>   # build again on purpose (same judge prompt), replacing the saved one
-  python -m bench.rubric seed <run-id>                # save the key points an earlier run built as the rubric for its reference
+                                                      # (the UI's Rebuild button runs this)
 """
 import asyncio
 import hashlib
@@ -84,34 +83,10 @@ async def rebuild(conn: psycopg.Connection, ref_sha: str):
     print("Rubric rebuilt", flush=True)
 
 
-def seed(conn: psycopg.Connection, run_id: str):
-    row = conn.execute("select id, reference_name, reference, results from bench.runs where id = %s", (run_id,)).fetchone()
-    if not row or not row["reference"]:
-        sys.exit(f"Run {run_id} not found or has no reference file")
-    ref_sha, topics = sha256(row["reference"]), (row["results"] or {}).get("topics", {})
-    n = 0
-    for rec in topics.values():
-        if rec.get("key_points"):
-            save(conn, ref_sha, row["reference_name"], rec["number"], rec["title"], rec["key_points"],
-                 rec.get("key_points_usage"), (row["results"].get("config") or {}).get("judge_model"), run_id, replace=True)
-            n += 1
-    print(f"Saved {n} topics' key points from run {run_id} as the rubric for {row['reference_name']} ({ref_sha[:12]}…)")
-
-
 def main(argv: list[str]):
     conn = psycopg.connect(get_settings().database_url, autocommit=True, row_factory=dict_row)
-    if argv[:1] == ["list"]:
-        for r in conn.execute(
-            """select reference_sha256, max(reference_name) as name, count(*) as topics,
-                      sum(jsonb_array_length(key_points)) as points, min(created_at) as built, max(created_at) as updated
-               from bench.rubrics group by reference_sha256 order by max(created_at) desc"""
-        ).fetchall():
-            print(f"{r['reference_sha256'][:12]}…  {r['name']}  {r['topics']} topics, {r['points']} key points, "
-                  f"built {r['built']:%Y-%m-%d %H:%M}, updated {r['updated']:%Y-%m-%d %H:%M}")
-    elif argv[:1] == ["rebuild"] and len(argv) == 2:
+    if argv[:1] == ["rebuild"] and len(argv) == 2:
         asyncio.run(rebuild(conn, argv[1]))
-    elif argv[:1] == ["seed"] and len(argv) == 2:
-        seed(conn, argv[1])
     else:
         sys.exit(__doc__)
 

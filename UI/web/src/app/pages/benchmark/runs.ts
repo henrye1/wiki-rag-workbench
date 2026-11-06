@@ -13,6 +13,7 @@ import { Router, RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../../core/api';
 import { FileDrop } from '../../shared/file-drop';
 import { poller } from '../../shared/poll';
+import { SYSTEMS } from './systems';
 
 @Component({
   selector: 'app-bench-runs',
@@ -55,11 +56,7 @@ import { poller } from '../../shared/poll';
               <mat-button-toggle value="full">Full</mat-button-toggle>
             </mat-button-toggle-group>
           </div>
-          @if (judge()?.batch_available === false) {
-            <span class="muted" title="Set in Benchmark/.env (JUDGE_BACKEND). Grading runs through Claude Code on your Claude subscription: no API charge, but it counts toward the plan's usage limits, and Message Batches are not available.">Judge: {{ judge().label }}</span>
-          } @else {
-            <mat-checkbox [(ngModel)]="useBatch" title="Grade through the Message Batches API: half price, but grading can take up to a few hours. Anything the batch does not return is graded normally.">Batch grading (half price)</mat-checkbox>
-          }
+          <mat-checkbox [(ngModel)]="useBatch" title="Grade through the Message Batches API: half price, but grading can take up to a few hours. Anything the batch does not return is graded normally.">Batch grading (half price)</mat-checkbox>
           <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>Topics</mat-label>
             <input matInput [(ngModel)]="topics" placeholder="e.g. 2 or 1-5 (empty = all)" /></mat-form-field>
           <button mat-stroked-button (click)="pickTopics()"><mat-icon>checklist</mat-icon> Choose</button>
@@ -148,7 +145,7 @@ import { poller } from '../../shared/poll';
               <td class="small">{{ r.rag_collection || '—' }}<div class="muted">vs {{ r.wiki || '—' }}</div></td>
               <td class="small nowrap" [title]="setupTitle(r)">{{ r.mode === 'full' ? 'Full' : r.mode === 'quick' ? 'Quick' : '—' }} · {{ r.topics }}×{{ r.runs }}</td>
               @if (r.summary?.by_system; as b) {
-                @for (sys of ['rag', 'rag_q', 'wiki']; track sys) {
+                @for (sys of systems; track sys) {
                   <td>@if (b[sys]; as v) {
                     <b>{{ v.similarity.mean | number: '1.2-2' }}</b><span class="muted">&nbsp;/&nbsp;{{ v.coverage.mean | number: '1.0-0' }}%</span>
                     @let x = line(r, sys);
@@ -201,10 +198,10 @@ export class BenchRuns {
   }, 5000);
   collection = '';
   sources: 'standard' | 'all' = 'all';
-  useSaved = true;
+  useSaved = false;
   mode: 'quick' | 'full' = 'quick';
   useBatch = true;
-  readonly judge = signal<any>(null);
+  readonly systems = SYSTEMS;
   readonly allTopics = signal<any[]>([]);
   readonly chosen = signal<Set<number>>(new Set());
   readonly picking = signal(false);
@@ -229,10 +226,6 @@ export class BenchRuns {
   constructor() {
     void this.load(true);
     this.rubricPoll.start();
-    void this.api.get('/api/bench/judge').then((j) => {
-      this.judge.set(j);
-      if (!j.batch_available) this.useBatch = false;
-    }).catch(() => {});
     void this.api.wikis().then((w) => {
       this.wikis.set(w);
       if (!this.wiki && w.length) this.wiki = w[0].slug;
@@ -395,7 +388,7 @@ export class BenchRuns {
     return [`Sources: ${this.sourcesLabel(r.sources)}`, `Saved answers: ${r.use_saved === true ? 'on' : r.use_saved === false ? 'off' : '—'}`,
             `RAG editorial text: ${r.rag_editorial === true ? 'on' : r.rag_editorial === false ? 'off' : '—'}`,
             `Rubric: ${r.rubric?.label ?? '—'}${r.rubric?.topics ? ` (${r.rubric.approved}/${r.rubric.topics} approved)` : ''}`,
-            `Judge: ${r.judge?.label ?? '—'}`].join('\n');
+            `Judge: ${r.judge_model ?? '—'}`].join('\n');
   }
   sourcesLabel(s: string | null) { return s === 'standard' ? 'Standard only' : s === 'all' ? 'All' : '—'; }
 

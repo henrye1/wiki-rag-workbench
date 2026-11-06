@@ -2,6 +2,16 @@ import { DecimalPipe } from '@angular/common';
 import { Component, computed, effect, inject, input, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../../core/api';
+import { LABEL } from './systems';
+
+/** The columns compared: each RAG column, and the wiki as graded in each RAG column's pair (the judge compares two
+ *  answers at a time, so the wiki has a score per pair). Each reads a topic's aggregate as the run stored it. */
+const COLUMNS = [
+  { key: 'rag', label: LABEL['rag'], sim: (t: any) => t?.aggregate?.rag?.similarity?.mean },
+  { key: 'wiki', label: `${LABEL['wiki']} (vs ${LABEL['rag']})`, sim: (t: any) => t?.aggregate?.wiki?.similarity?.mean },
+  { key: 'rag_q', label: LABEL['rag_q'], sim: (t: any) => t?.aggregate?.rag_q?.similarity?.mean },
+  { key: 'wiki_q', label: `${LABEL['wiki']} (vs ${LABEL['rag_q']})`, sim: (t: any) => t?.aggregate?.pairs?.rag_q?.wiki?.similarity?.mean },
+];
 
 @Component({
   selector: 'app-bench-compare',
@@ -20,27 +30,31 @@ import { Api, enc, errMsg } from '../../core/api';
       @if (error()) { <p class="error">{{ error() }}</p> }
       @if (rows().length) {
         <div class="cards">
-          @for (s of totals(); track s.sys) {
-            <div class="card"><h3>{{ s.sys === 'rag' ? 'RAG (per topic)' : 'Wiki' }} similarity</h3>
+          @for (s of totals(); track s.key) {
+            <div class="card"><h3>{{ s.label }} similarity</h3>
               <div class="stat">{{ s.a ?? '—' }} → {{ s.b ?? '—' }}</div>
               <div [class.pos]="s.delta > 0" [class.neg]="s.delta < 0">{{ s.delta > 0 ? '+' : '' }}{{ s.delta | number: '1.2-2' }}</div></div>
           }
         </div>
         <p class="muted">Topics present in both runs. Δ = run B − run A (mean similarity /10).</p>
-        <table class="simple">
-          <thead><tr><th>#</th><th>Topic</th><th>RAG (per topic) A</th><th>RAG (per topic) B</th><th>Δ RAG (per topic)</th><th>Wiki A</th><th>Wiki B</th><th>Δ Wiki</th></tr></thead>
-          <tbody>
-            @for (r of rows(); track r.n) {
-              <tr>
-                <td>{{ r.n }}</td><td>{{ r.title }}</td>
-                <td>{{ r.ra | number: '1.1-1' }}</td><td>{{ r.rb | number: '1.1-1' }}</td>
-                <td [class.pos]="r.rd > 0" [class.neg]="r.rd < 0">{{ r.rd > 0 ? '+' : '' }}{{ r.rd | number: '1.1-1' }}</td>
-                <td>{{ r.wa | number: '1.1-1' }}</td><td>{{ r.wb | number: '1.1-1' }}</td>
-                <td [class.pos]="r.wd > 0" [class.neg]="r.wd < 0">{{ r.wd > 0 ? '+' : '' }}{{ r.wd | number: '1.1-1' }}</td>
-              </tr>
-            }
-          </tbody>
-        </table>
+        <div class="scroll-x">
+          <table class="simple">
+            <thead><tr><th>#</th><th>Topic</th>
+              @for (c of columns; track c.key) { <th>{{ c.label }} A</th><th>B</th><th>Δ</th> }
+            </tr></thead>
+            <tbody>
+              @for (r of rows(); track r.n) {
+                <tr>
+                  <td>{{ r.n }}</td><td>{{ r.title }}</td>
+                  @for (v of r.cells; track v.key) {
+                    <td>{{ v.a | number: '1.1-1' }}</td><td>{{ v.b | number: '1.1-1' }}</td>
+                    <td [class.pos]="(v.d ?? 0) > 0" [class.neg]="(v.d ?? 0) < 0">{{ v.d === null ? '—' : (v.d > 0 ? '+' : '') }}{{ v.d | number: '1.1-1' }}</td>
+                  }
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
       } @else if (loaded()) { <p class="muted">No topics in common.</p> }
     </div>
   `,
@@ -56,23 +70,27 @@ export class BenchCompare {
   readonly error = signal('');
   label(s: string | null) { return s === 'standard' ? 'Standard only' : s === 'all' ? 'All' : '—'; }
 
+  readonly columns = COLUMNS;
+
   readonly rows = computed(() => {
     const A = this.runA(), B = this.runB();
     if (!A || !B) return [];
-    const sim = (t: any, s: string) => t?.aggregate?.[s]?.similarity?.mean ?? null;
     return Object.keys(A.topics).filter((n) => B.topics[n]?.aggregate && A.topics[n]?.aggregate).sort((x, y) => +x - +y).map((n) => {
       const ta = A.topics[n], tb = B.topics[n];
-      const ra = sim(ta, 'rag'), rb = sim(tb, 'rag'), wa = sim(ta, 'wiki'), wb = sim(tb, 'wiki');
-      return { n, title: ta.title, ra, rb, rd: rb - ra, wa, wb, wd: wb - wa };
+      const cells = COLUMNS.map((c) => {
+        const a = c.sim(ta) ?? null, b = c.sim(tb) ?? null;
+        return { key: c.key, a, b, d: a !== null && b !== null ? b - a : null };
+      });
+      return { n, title: ta.title, cells };
     });
   });
+  /** Each column's mean over the topics both runs scored it on. */
   readonly totals = computed(() =>
-    (['rag', 'wiki'] as const).map((sys) => {
-      const rows = this.rows();
-      const k = sys === 'rag' ? ['ra', 'rb'] : ['wa', 'wb'];
-      const avg = (key: string) => (rows.length ? +(rows.reduce((s, r: any) => s + r[key], 0) / rows.length).toFixed(2) : null);
-      const a = avg(k[0]), b = avg(k[1]);
-      return { sys, a, b, delta: a !== null && b !== null ? b - a : 0 };
+    COLUMNS.map((c, i) => {
+      const both = this.rows().map((r) => r.cells[i]).filter((v) => v.a !== null && v.b !== null);
+      const avg = (k: 'a' | 'b') => (both.length ? +(both.reduce((s, v) => s + (v[k] as number), 0) / both.length).toFixed(2) : null);
+      const a = avg('a'), b = avg('b');
+      return { key: c.key, label: c.label, a, b, delta: a !== null && b !== null ? b - a : 0 };
     }),
   );
 
