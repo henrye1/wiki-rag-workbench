@@ -80,6 +80,14 @@ async def _sources(wiki_id, slugs: list[str] | None = None) -> dict[str, dict]:
     return {r["slug"]: {"title": r["title"], "sections": sections(r["text"], r["hp"])} for r in rows}
 
 
+def cite_of(of_label: dict[str, str]) -> dict[str, str]:
+    """Each section's citation label: the label of its first passage, a location the source has."""
+    out: dict[str, str] = {}
+    for lab, sec in of_label.items():
+        out.setdefault(sec, lab)
+    return out
+
+
 async def page_map(wiki_id, content_md: str, c: checks.Checks | None = None) -> list[dict]:
     """For each source the page cites: its sections the page draws on, in the source's order, with the number of the
     page's sentences citing each; and any cited location the source does not have."""
@@ -99,8 +107,10 @@ async def page_map(wiki_id, content_md: str, c: checks.Checks | None = None) -> 
                         missing[lab] = missing.get(lab, 0) + 1
             for sec in secs:
                 count[sec] = count.get(sec, 0) + 1
+        cite = cite_of(of_label)
         out.append({"slug": slug, "title": info["title"],
-                    "sections": [{"section": sec, "name": shown(sec, c), "sentences": count[sec]} for sec in order if sec in count],
+                    "sections": [{"section": sec, "name": shown(sec, c), "cite": cite[sec], "sentences": count[sec]}
+                                 for sec in order if sec in count],
                     "not_in_source": [{"label": k, "sentences": v} for k, v in missing.items()]})
     return out
 
@@ -128,8 +138,43 @@ async def source_contents(wiki_id, source_slug: str, c: checks.Checks | None = N
             for sec in secs:
                 by_sec.setdefault(sec, {})[p["slug"]] = by_sec.get(sec, {}).get(p["slug"], 0) + 1
     title = {p["slug"]: p["title"] for p in pages}
+    cite = cite_of(of_label)
     pages_of = lambda d: [{"slug": sl, "title": title[sl], "sentences": n} for sl, n in sorted(d.items(), key=lambda x: title[x[0]])]
     return {"slug": source_slug, "title": srcs[source_slug]["title"],
-            "sections": [{"section": sec, "name": shown(sec, c), "pages": pages_of(by_sec[sec])} for sec in order if sec in by_sec],
-            "unused": [{"section": sec, "name": shown(sec, c)} for sec in order if sec not in by_sec],
+            "sections": [{"section": sec, "name": shown(sec, c), "cite": cite[sec], "pages": pages_of(by_sec[sec])}
+                         for sec in order if sec in by_sec],
+            "unused": [{"section": sec, "name": shown(sec, c), "cite": cite[sec]} for sec in order if sec not in by_sec],
             "not_in_source": [{"label": k, "pages": [{"slug": sl, "title": title[sl]} for sl in sorted(v)]} for k, v in missing.items()]}
+
+
+# ---------- the map as the answer step reads it (only where the schema's Source map line says yes) ----------
+def _cite(slug: str, x: dict) -> str:
+    return f"[[{slug}|{x['cite']}]] {x['name']}"
+
+
+def page_map_md(sources: list[dict]) -> str:
+    """A page's map as text: each source it cites, then the sections of it the page draws on, each as its citation."""
+    lines = ["Papers this page draws on, and the sections of each it draws on (sentences citing each):"]
+    for s in sources:
+        lines.append(f"- [[{s['slug']}|{s['title']}]]")
+        lines += [f"  - {_cite(s['slug'], x)} ({x['sentences']})" for x in s["sections"]]
+        lines += [f"  - cited, but not a location of this paper: {x['label']} ({x['sentences']})" for x in s["not_in_source"]]
+    return "\n".join(lines) if sources else "This page cites no paper."
+
+
+def contents_md(c: dict) -> str:
+    """A source's contents map as text: each section with the pages it informs, then the sections no page draws on."""
+    slug = c["slug"]
+    lines = [f"Each section of {c['title']}, in its order, and the pages it informs (sentences citing it):"]
+    lines += [f"- {_cite(slug, x)}: " + ", ".join(f"[[{g['slug']}|{g['title']}]] ({g['sentences']})" for g in x["pages"])
+              for x in c["sections"]]
+    lines.append("Sections no page draws on:")
+    lines += [f"- {_cite(slug, x)}" for x in c["unused"]] or ["- None."]
+    return "\n".join(lines)
+
+
+async def for_answer(wiki_id, page: dict, c: checks.Checks | None) -> str:
+    """The map given with a page read for an answer: a source page's contents map; any other page's sources."""
+    if page.get("type") == "source" and (con := await source_contents(wiki_id, page["slug"], c)):
+        return contents_md(con)
+    return page_map_md(await page_map(wiki_id, page["content_md"], c))

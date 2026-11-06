@@ -183,6 +183,7 @@ These rules apply every time the maintainer writes or rewrites page text.
 - This wiki answers what the client's papers say. It never answers what a standard requires; that question goes to the standard's wiki.
 - Before saying the papers do not address something, search every section for the terms involved. Only then say it is not addressed, and say what was searched for.
 - An answer worth keeping is filed as a synthesis page.
+- A question about which pages a part of a paper informs, or what informed a page, is answered from the source maps given with the pages read (Checks: Source map with each page read), and only from them; counts are the map's, never estimated. For a part of a paper: each page it informs as a heading, then one bullet per section of the paper that informs that page, each bullet ending with the section's citation; then end with 'Not used on any page' and one bullet per section of that part that no page draws on. For a page: the page as a heading, then each paper it draws on as a heading below it, then one bullet per section of that paper, each bullet ending with the section's citation. These bullets are the one place a line about what a paper informs carries a citation: the section's own location.
 
 ## Workflow: Maintain
 - After every ingest, run these checks. All must pass:
@@ -222,3 +223,4 @@ The engine reads these lists to route passages, to split sections into subtopic 
 - Skipped headings: References · Bibliography · Table of contents. A passage under one of these headings is skipped like a stub: not written up and not checked.
 - Stub forms: [Deleted] · Intentionally left blank · This page is intentionally left blank. A passage matching a stub form is not written up and not checked.
 - Citation forms for unlabelled text: heading path as printed, joined by " > "; "Cover" for text before the first heading; "Document control" for a document control or revision history table; a footnote is cited by the location of the passage that carries its marker
+- Source map with each page read: yes. When answering, each page read is given with its source map, built from the pages' own closing citations: a source page with each section of its paper, in the paper's order, and the pages that section informs (with the number of their sentences citing it), then the sections no page draws on; any other page with each paper it cites and the sections of that paper it draws on.

@@ -110,6 +110,7 @@ class Checks:
     no_content_words: int | None = None  # an editorial note or page-labelled text this short holds no content
     page_turn: list[str] = field(default_factory=list)  # text printed where a box runs over a page: removed
     note_markers: list[str] = field(default_factory=list)  # each starts a note of its own
+    source_map: bool = False  # each page read for an answer is given with its source map
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
     unreadable: list[str] = field(default_factory=list)  # lists the schema gives in wording the engine cannot read
     unknown: list[str] = field(default_factory=list)  # lines of the Checks section that name no list the engine knows
@@ -141,6 +142,9 @@ ANSWER_LISTS = {  # read like LISTS, but used only when answering and by lint: a
     "answer_headings": "answer layout", "force_words": "answer force words", "standard_only": "standard only",
     "kind_ranking": "kind ranking", "verdicts": "client-statement verdicts", "lint_checks": "lint checks",
     "brief_kinds": "brief kinds",
+}
+OPTIONAL_LISTS = {  # read like LISTS, but a missing one is simply off: nothing is reported, no upload is held
+    "source_map": "source map with each page read",
 }
 PLACEHOLDER = re.compile(r"<[^<>]+>")
 AGENDA = LISTS["agenda_markers"].rsplit(" ", 1)[0]  # the Openers entry an agenda decision takes: its list's name, less "marker"
@@ -179,7 +183,7 @@ def load(schema_md: str) -> Checks | None:
     c = Checks()
     if m := re.search(r"<framework>-entity-<[^>]+>", schema_md or ""):
         c.entity_slug = m.group(0)
-    known = set(LISTS.values()) | set(ANSWER_LISTS.values())
+    known = set(LISTS.values()) | set(ANSWER_LISTS.values()) | set(OPTIONAL_LISTS.values())
     c.unknown = [k for k in items if not any(k.startswith(x) for x in known)]
     for attr, label in {**LISTS, **ANSWER_LISTS}.items():
         value = get(label)
@@ -349,6 +353,8 @@ def load(schema_md: str) -> Checks | None:
         got = (c.lint_checks or c.lint_not_run) if attr == "lint_checks" else getattr(c, attr)
         if got in (before, None, "", [], {}, False):
             c.unreadable.append(label)
+    if (value := get(OPTIONAL_LISTS["source_map"])) is not None:  # "yes. <what it does>": the word before the full stop
+        c.source_map = value.split(".", 1)[0].strip().casefold() == "yes"
     return c
 
 
