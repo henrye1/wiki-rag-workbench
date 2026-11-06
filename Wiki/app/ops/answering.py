@@ -50,6 +50,14 @@ def own_text_name(chk) -> str:
     return next((x for rank in chk.kind_ranking for x in rank if x not in names), "")
 
 
+OWN_TEXT = "the source's own text"  # why: a neutral name where the schema's Kind ranking does not name it
+
+
+def own_text_label(chk) -> str:
+    """The name messages give the text of no listed paragraph kind: the schema's (own_text_name), else a neutral one."""
+    return own_text_name(chk) or OWN_TEXT
+
+
 def passages_cited(srcs: dict, slug: str, label: str) -> list[str]:
     """The source passages a citation cites (both ends of a range)."""
     by = (srcs.get(slug) or {}).get("by_label", {})
@@ -170,7 +178,7 @@ def placement_failures(main: str, apart: str, chk, srcs: dict) -> list[str]:
     """Non-authoritative material (the layout's kinds) in the answer itself, and authoritative material under the
     non-authoritative heading: application guidance is authoritative and stays in the answer."""
     out = []
-    own = own_text_name(chk) or "the Standard's own text"
+    own = own_text_label(chk)
     for s in _sentences(main, chk):
         for sl, lab in _source_cites(s):
             if (k := kind_of(srcs, chk, sl, lab)) and k in chk.non_authoritative:

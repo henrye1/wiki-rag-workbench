@@ -180,14 +180,18 @@ def build(chk, pages: dict[str, dict], sources: dict[str, dict], sections: list[
         for (o, name), ls in by_sec.items():
             body += [f"## {name}" if name else "## Other pages", "\n".join(ls)]
         names = [name for (_, name) in by_sec if name]
-        summary = chk.concept_summary_lead
+        kind = "entity" if key[0] == "entity" else "concept"
+        # an entity page's summary follows the concept rule only where the schema's Entity summary line says so; the
+        # schema gives no other rule for it, so otherwise it has none
+        as_concept = kind == "concept" or chk.entity_summary
+        names = names if as_concept else []
+        summary = chk.concept_summary_lead if as_concept else ""
         for n in names:
             add = (chk.concept_summary_sep if summary != chk.concept_summary_lead else "") + n
             if chk.concept_summary_max and len(summary + add) > chk.concept_summary_max:
                 break
             summary += add
         cur = existing.get(slug)
-        kind = "entity" if key[0] == "entity" else "concept"
         ops.append(store.Op(op="update" if cur else "create", slug=slug, type=kind, title=title, summary=summary,
                             content_md="\n\n".join(body), base_version=cur["version"] if cur else None,
                             change_note=f"{kind.capitalize()} page rebuilt from the pages"))

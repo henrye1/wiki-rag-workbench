@@ -116,6 +116,19 @@ class RealWiki(unittest.IsolatedAsyncioTestCase):
         index = await store.compact_index(self.wiki["id"])
         self.assertEqual(len(index.split("\n")), len(self.pages))
 
+    async def test_entity_summaries_follow_the_schemas_entity_summary_line(self):
+        import copy
+        from app.ops.ingest import _sections, composed_ops
+        existing = {p["slug"]: p for p in self.pages}
+        built = lambda c: composed_ops(self.wiki["id"], c, _sections(SCHEMA), existing, [])
+        as_concept = {o.slug: o.summary for o in (await built(CHK))[0] if o.type == "entity"}
+        self.assertTrue(CHK.entity_summary and as_concept)
+        self.assertTrue(all(x.startswith(CHK.concept_summary_lead) for x in as_concept.values()))
+        off = copy.copy(CHK)
+        off.entity_summary = False  # a schema whose Entity summary line does not say "as Concept summary"
+        self.assertEqual({o.slug: o.summary for o in (await built(off))[0] if o.type == "entity"},
+                         {sl: "" for sl in as_concept})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,8 +21,8 @@ class QueryIn(BaseModel):
     save: bool = Field(False, description="File the answer back into the wiki as a synthesis page")
     mode: Mode = "auto"
     sources: Literal["standard", "all"] = Field(
-        "all", description="standard = only statements citing the Standard's own text, by paragraph kind (the schema's "
-                           "Checks: Standard only); all = every statement")
+        "all", description="standard = only statements citing text of no paragraph kind the schema lists, by paragraph "
+                           "kind (the schema's Standard only list in its Checks); all = every statement")
     use_saved: bool = Field(True, description="Also read relevant saved answers (synthesis pages filed with Save), "
                                               "in addition to the pages chosen for the question")
 

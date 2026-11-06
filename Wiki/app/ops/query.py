@@ -99,8 +99,8 @@ async def _own_text(wiki: dict):
     Paragraph kinds lists), as the schema's Standard only list sets out."""
     chk = checks.load(wiki["schema_md"])
     if not (chk.standard_only):
-        raise NoStandardOnly("This wiki's schema has no Standard only list in its Checks, so answers cannot be limited to "
-                             "the Standard's own text.")
+        raise NoStandardOnly(f"This wiki's schema has no {checks.ANSWER_LISTS['standard_only']!r} list in its Checks, so "
+                             f"answers cannot be limited to {answering.own_text_label(chk)}.")
     srcs = await pagecheck.sources(wiki["id"])
     return lambda slug, label: answering.kind_of(srcs, chk, slug, label) == ""
 

@@ -10,7 +10,7 @@ from ..db import get_pool
 from ..jobs import JobContext
 from ..wiki import checks, store
 from ..wiki.store import slugify
-from . import fixpass, pagecheck
+from . import answering, fixpass, pagecheck
 
 async def structural(wiki_id: UUID, chk: checks.Checks) -> dict:
     """The SQL checks. chk: the schema's Checks; a page holding only its Empty section text is not a thin page."""
@@ -159,7 +159,7 @@ async def maintain(wiki: dict) -> dict:
         for sl, info in sorted(srcs.items()):
             own = [x for lab, ps in info["by_label"].items() if not chk.kinds.get(info["kinds"].get(lab, ""))
                    for x in ps if not checks.is_stub(x, chk)]
-            out += [f"{sl}: paragraph {lab} of the Standard's own text is cited as its own source on no page."
+            out += [f"{sl}: paragraph {lab} of {answering.own_text_label(chk)} is cited as its own source on no page."
                     for lab in dict.fromkeys(pagecheck.BASE(re.match(r"^\[([^\]]+)\]", x).group(1)) for x in _uncited(text, own, not chk.range_ends))]
         return out
 

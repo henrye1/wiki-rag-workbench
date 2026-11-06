@@ -193,6 +193,13 @@ class Instruction(unittest.TestCase):
                     self.assertNotIn(sentence.strip(), code)
 
 
+class OwnText(unittest.TestCase):
+    def test_messages_name_the_own_text_as_the_schema_does_or_neutrally(self):
+        self.assertEqual(answering.own_text_label(CHK), answering.own_text_name(CHK))
+        self.assertTrue(answering.own_text_name(CHK))  # 3.17's Kind ranking names it
+        self.assertEqual(answering.own_text_label(checks.Checks()), answering.OWN_TEXT)  # a schema that does not
+
+
 class Brief(Base):
     """The schema's Brief kinds, and the kinds kept under the non-authoritative heading."""
 
