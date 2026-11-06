@@ -24,8 +24,7 @@ class Settings(BaseSettings):
 
     section_words: int = 3000  # source split size for note extraction
     chunk_max_words: int = 500  # page chunk size for search / IFRS parser
-    max_pages_per_ingest: int = 17  # including the source page
-    page_source_words: int = 12000  # schema without fixed sections: source paragraphs given to each page writer
+    page_source_words: int = 12000  # a source with no paragraphs to route: the most relevant paragraphs given to a page writer
     page_part_words: int = 4000  # source words per writing call; longer pages are written in parts
     page_background_words: int = 2000  # other sections' paragraphs given to a section page as context only
     route_batch: int = 120  # paragraphs per call when assigning paragraphs to schema sections

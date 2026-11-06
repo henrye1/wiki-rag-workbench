@@ -8,7 +8,7 @@ import re
 import unittest
 
 from app import prompts
-from app.ops import fixpass, pagecheck
+from app.ops import fixpass
 from app.ops.ingest import (_covers, _deciding, _failing_pieces, _footnote_of, _index_md, _pieces_together, _quoted,
                             _with_openers)
 from app.sources import extract

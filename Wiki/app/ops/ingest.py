@@ -11,7 +11,7 @@ from uuid import UUID
 import numpy as np
 from psycopg.types.json import Jsonb
 
-from .. import llm, prompts, storage
+from .. import llm, prompts
 from . import concepts, fixpass, pagecheck
 from ..config import get_settings
 from ..db import get_pool
@@ -267,7 +267,7 @@ def _split_also(md: str) -> tuple[str, list[str]]:
     if not m:
         return md, []
     rest = md[m.end():]
-    end = re.search(r"^(?:#{1,2} |Not yet covered:)", rest, re.M)  # the section ends at the next heading or the gap note
+    end = re.search(r"^#{1,2} ", rest, re.M)  # the section ends at the next heading
     section, after = (rest[: end.start()], rest[end.start():]) if end else (rest, "")
     lines = [ln.strip() for ln in section.split("\n") if ln.strip()]
     body = (md[: m.start()].rstrip() + ("\n\n" + after.strip() if after.strip() else "")).strip()
@@ -275,13 +275,11 @@ def _split_also(md: str) -> tuple[str, list[str]]:
 
 
 def _with_also(body: str, lines: list[str]) -> str:
-    """The page text with its "Also recorded here" section, placed before a closing "Not yet covered" note."""
+    """The page text with its "Also recorded here" section at the end."""
     if not lines:
         return body
     section = f"{_also_heading.get()}\n\n" + "\n".join(lines)
-    m = re.search(r"\n*^Not yet covered:.*\Z", body, re.M | re.S)
-    head, tail = (body[: m.start()], body[m.start():].strip()) if m else (body, "")
-    return "\n\n".join(x for x in (head.strip(), section, tail) if x)
+    return "\n\n".join(x for x in (body.strip(), section) if x)
 
 
 def _also_key(line: str) -> str:
@@ -641,11 +639,9 @@ def _related_by(labels: list[set], refs: list[set], vecs) -> callable:
 
 
 def _add_blocks(md: str, text: str) -> str:
-    """A page with text added word for word at the end of its body: before its "Also recorded here" lines and its
-    "Not yet covered" note."""
+    """A page with text added word for word at the end of its body, before its "Also recorded here" lines."""
     body, also_lines = _split_also(md)
-    head, sep, tail = body.partition("\n\nNot yet covered")
-    return _with_also(f"{head}\n\n{text}{sep}{tail}", also_lines)
+    return _with_also(f"{body}\n\n{text}", also_lines)
 
 
 def _example_lines(content: str, titles: dict[str, str], src: dict, chk) -> list[str]:
@@ -877,7 +873,6 @@ async def split_written(wiki_id, chk, sections: list[dict], pages: dict[str, dic
             continue
         sec = section_slug[home]
         body, lines = _split_also(p["content_md"])
-        body = "\n".join(x for x in body.split("\n") if not x.startswith("Not yet covered"))
         blocks = _blocks(body)
         paths, items, last, places, at = [], [], [], [], (-1, -1)
         for b in blocks:  # the heading path of the paragraph the block cites; a block citing none goes with the one before
@@ -991,8 +986,7 @@ async def _move_old_write_ups(wiki_id, index_of: dict, sub_of: dict, existing: d
         cur = existing.get(sec_slug)
         if not cur or any(x.startswith(sec_slug + "-") and existing[x]["type"] == "subtopic" for x in existing):
             continue  # nothing held yet, or already an index
-        held, old_lines = _split_also(cur["content_md"])
-        body = "\n".join(l for l in held.split("\n") if not l.startswith("Not yet covered"))
+        body, old_lines = _split_also(cur["content_md"])
         blocks = [b for b in _blocks(body) if store.LINK_RE.search(b) and re.search(r"\[\[source-", b)]
         if not blocks and not old_lines:
             continue
@@ -1074,7 +1068,7 @@ async def _move_old_write_ups(wiki_id, index_of: dict, sub_of: dict, existing: d
         new_pages = []
         for sl, bs in to.items():
             text = "\n\n".join(bs)
-            if sl in written:  # added word for word, before the page's "Not yet covered" line
+            if sl in written:  # added word for word at the end of the page's own text
                 written[sl].content_md = _add_blocks(written[sl].content_md, text)
             else:
                 sec = sec_of[sec_slug]

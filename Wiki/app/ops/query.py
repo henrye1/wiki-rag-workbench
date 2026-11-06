@@ -177,7 +177,6 @@ def _rounds_md(rounds: list[dict]) -> str:
     """The shortlist and each round's pages read."""
     found = "".join("\nShortlist: " + (", ".join(f"[[{h['slug']}]]" for h in r["shortlist"]) or "nothing found")
                     for r in rounds if "shortlist" in r)
-    one = lambda x: " ".join(str(x).split())
     return found + "".join(f"\nRound {r['round']}: " + (", ".join(f"[[{x}]]" for x in r["read"]) or "nothing new")
                            + (" (enough)" if r.get("enough") else "")
                            for r in rounds if "read" in r)

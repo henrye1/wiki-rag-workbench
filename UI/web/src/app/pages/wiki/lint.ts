@@ -1,7 +1,5 @@
 import { Component, inject, input, signal } from '@angular/core';
-import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
-import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { RouterLink } from '@angular/router';
@@ -10,17 +8,13 @@ import { poller } from '../../shared/poll';
 
 @Component({
   selector: 'app-wiki-lint',
-  imports: [FormsModule, RouterLink, MatButtonModule, MatButtonToggleModule, MatIconModule, MatProgressBarModule],
+  imports: [RouterLink, MatButtonModule, MatIconModule, MatProgressBarModule],
   template: `
     <div class="card">
       <div class="row">
         <button mat-flat-button (click)="structural()" [disabled]="busy()"><mat-icon>rule</mat-icon> Structural check (instant)</button>
         <button mat-stroked-button (click)="job(false)" [disabled]="busy()"><mat-icon>psychology</mat-icon> + LLM health check</button>
         <button mat-stroked-button (click)="job(true)" [disabled]="busy()"><mat-icon>auto_fix_high</mat-icon> LLM check + fix</button>
-        <mat-button-toggle-group [(ngModel)]="mode" title="For a schema without fixed sections, the new pages lint writes; links are only ever proposed">
-          <mat-button-toggle value="review">New pages need review</mat-button-toggle>
-          <mat-button-toggle value="auto">Apply new pages</mat-button-toggle>
-        </mat-button-toggle-group>
       </div>
       @if (busy()) { <mat-progress-bar mode="indeterminate" /><p class="muted">{{ status() }}</p> }
       @if (error()) { <p class="error">{{ error() }}</p> }
@@ -120,7 +114,6 @@ export class WikiLint {
   readonly busy = signal(false);
   readonly status = signal('');
   readonly error = signal('');
-  mode: 'auto' | 'review' = 'review';
   private jobId = '';
   readonly keys = [
     { key: 'broken_links', label: 'broken links' }, { key: 'orphans', label: 'orphan pages' },
@@ -162,7 +155,7 @@ export class WikiLint {
     this.llm.set(null);
     this.fix.set(null);
     try {
-      const r = await this.api.post(`/api/wiki/wikis/${enc(this.w())}/lint`, { llm: true, fix, mode: this.mode });
+      const r = await this.api.post(`/api/wiki/wikis/${enc(this.w())}/lint`, { llm: true, fix });
       this.jobId = r.job_id;
       this.busy.set(true);
       this.poll.start();

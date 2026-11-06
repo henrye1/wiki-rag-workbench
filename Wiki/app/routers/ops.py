@@ -75,8 +75,7 @@ async def synthesis_save(body: SynthSaveIn, wiki: dict = Depends(wiki_dep)):
 
 class LintIn(BaseModel):
     llm: bool = Field(False, description="Also run the LLM health-check (contradictions, missing pages, ...)")
-    fix: bool = Field(False, description="Create pages for broken links/missing concepts and add missing cross-links")
-    mode: Mode = "review"
+    fix: bool = Field(False, description="Propose plain text for links to pages that do not exist (lint writes no page)")
 
 
 class ReadTextIn(BaseModel):
@@ -126,7 +125,7 @@ async def run_lint(body: LintIn, wiki: dict = Depends(wiki_dep)):
     if not body.llm and not body.fix:
         return {"structural": await lint.structural(wiki["id"], checks.load(wiki["schema_md"])),  # fast path, synchronous
                 "maintain": await lint.maintain(wiki)}
-    job_id = await jobs.submit(wiki["id"], "lint", body.model_dump(), lambda ctx: lint.run(ctx, wiki, body.llm, body.fix, body.mode))
+    job_id = await jobs.submit(wiki["id"], "lint", body.model_dump(), lambda ctx: lint.run(ctx, wiki, body.llm, body.fix))
     return {"job_id": str(job_id)}
 
 

@@ -7,7 +7,7 @@ import re
 import unittest
 
 from app.db import close_pool, get_pool, open_pool
-from app.ops import answering, fixpass, lint, pagecheck, watchdog
+from app.ops import answering, lint, pagecheck, watchdog
 from app.ops.query import standard_only
 from app.wiki import checks, store
 

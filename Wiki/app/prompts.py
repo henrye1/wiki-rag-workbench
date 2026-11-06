@@ -142,7 +142,7 @@ def write_page_prompt(
     gaps = (
         "Every paragraph in <source_paragraphs> is assigned to this page and to no other: write up each one, even where "
         "it seems to sit at the edge of this section; a paragraph left out is missing from the wiki. "
-        "Do not write a 'Not yet covered' list; it is added automatically.\n"
+        "Do not write a list of what the page leaves out.\n"
         if auto_gaps else ""
     )
     paragraphs = (
@@ -176,7 +176,7 @@ def write_page_prompt(
             + ("Start the page.\n" if n == 1 else
                "Continue the page: no introduction, and do not restate, summarise or re-head anything already in "
                f"<earlier_parts>.\n<earlier_parts>\n{earlier_parts}\n</earlier_parts>\n")
-            + ("" if auto_gaps else "Do not write a 'Not yet covered' list; it is added after all parts are written.\n")
+            + ("" if auto_gaps else "Do not write a list of what the page leaves out.\n")
         )
         if existing_md:  # the first part only: it integrates the current page, all of it, once
             current += (

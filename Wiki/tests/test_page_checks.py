@@ -3,7 +3,6 @@
 What a check looks for comes from the schema (the kinds, their openers, the condition phrases), read here from the
 schema file, so the tests hold whatever words a schema uses."""
 import pathlib
-import re
 import unittest
 
 from app.ops import fixpass, pagecheck

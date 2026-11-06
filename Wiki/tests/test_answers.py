@@ -7,7 +7,7 @@ import unittest
 
 from app.ops import answering, fixpass, lint, watchdog
 from app.ops.query import standard_only
-from app.wiki import checks, citecheck, store
+from app.wiki import checks, citecheck
 
 SCHEMAS = pathlib.Path(__file__).resolve().parent.parent / "schemas"
 SCHEMA = (SCHEMAS / "ifrs9-schema-3.17.md").read_text()
