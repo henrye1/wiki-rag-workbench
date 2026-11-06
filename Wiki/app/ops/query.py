@@ -301,20 +301,23 @@ async def _checked(wiki: dict, chk, question: str, pages: list[dict], extra: lis
     what was found; then checked, and sent back once with its failures. Its clause references are built, after each
     draft, from the citations that end its sentences. Returns the answer, the pages read (those the
     search found included) and the report of its checks."""
-    system, schema = answering.instruction(chk), wiki["schema_md"]
+    system, schema = answering.instruction(chk, wiki["schema_md"]), wiki["schema_md"]
     srcs = await pagecheck.sources(wiki["id"])
     cite_ctx = await fixpass.cite_context(wiki["id"], [x["name"] for x in _sections(schema)])
     report: dict = {"checks_off": answering.checks_off(chk)}
-    refs = lambda t: answering.with_references(t, chk)  # built from the citations that end its sentences
+    searched: list[dict] = []  # what the not-addressed search looked for, once it has run
+    # each draft: its points not addressed end with what was searched for; its clause references are built from the
+    # citations that end its sentences
+    refs = lambda t: answering.with_references(answering.with_searched(t, chk, searched), chk)
     text = refs(await llm.generate(system, _prompt(wiki, question, pages, extra)))
     if points := answering.not_addressed_points(answering.split_parts(text, chk)[1][2], chk):
         try:
             found, more = await answering.search_not_addressed(wiki, chk, points, {p["slug"] for p in pages},
                                                                lambda ps: _restrict(wiki, ps, sources))
-            pages = pages + more
+            pages, searched[:] = pages + more, found
             text = refs(await llm.generate(system, prompts.with_schema(schema, answering.search_prompt(
                 question, _pages_md(pages), text, found, chk))))
-            report["not_addressed_search"] = [{k: f[k] for k in ("point", "terms", "pages")} for f in found]
+            report["not_addressed_search"] = [{k: f[k] for k in ("point", "terms", "pages", "terms_missing") if k in f} for f in found]
         except Exception as e:
             log.warning("query: searching for the points not addressed failed: %s", e)
             report["not_addressed_search_error"] = f"{type(e).__name__}: {e}"

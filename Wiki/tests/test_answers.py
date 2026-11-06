@@ -10,22 +10,25 @@ from app.ops.query import standard_only
 from app.wiki import checks, citecheck, store
 
 SCHEMAS = pathlib.Path(__file__).resolve().parent.parent / "schemas"
-CHK = checks.load((SCHEMAS / "ifrs9-schema-3.17.md").read_text())
+SCHEMA = (SCHEMAS / "ifrs9-schema-3.17.md").read_text()
+CHK = checks.load(SCHEMA)
 H = CHK.answer_headings
 NONE = CHK.answer_none
 OBLIGE = CHK.force_words[CHK.force_strict]  # the strict force's words, e.g. "shall", "must"
 # reader kinds by the schema's name for them
 READER = {v: k for k, v in CHK.kinds.items()}
 AG, IG = "application guidance", "implementation guidance"
+BRIEF, LIMIT = next(iter(CHK.brief_kinds.items()))  # a kind the schema keeps brief, and its most sentences
 A, B = "source-a", "source-b"
 SRCS = {
     A: {"by_label": {"1.1": [f"[1.1] An entity {OBLIGE[0]} recognise the item."],
                      "1.2": ["[1.2] An entity may measure it at cost."],
                      "B1.1": ["[B1.1] The item reflects the expected amount."]},
         "kinds": {"1.1": "standard", "1.2": "standard", "B1.1": READER[AG]}},
-    B: {"by_label": {"IG1": ["[IG1] An entity applies this in a simple case."]}, "kinds": {"IG1": READER[IG]}},
+    B: {"by_label": {"IG1": ["[IG1] An entity applies this in a simple case."], "p1": ["The project began."]},
+        "kinds": {"IG1": READER[IG], "p1": READER[BRIEF]}},
 }
-CTX = {"labels": {A: {"1.1", "1.2", "B1.1"}, B: {"IG1"}}, "matchers": {}, "names": set()}
+CTX = {"labels": {A: {"1.1", "1.2", "B1.1"}, B: {"IG1", "p1"}}, "matchers": {}, "names": set()}
 OPEN = {k: v[0] for k, v in CHK.openers.items()}
 
 
@@ -178,6 +181,79 @@ class Instruction(unittest.TestCase):
         self.assertIn(f"Material from {AG}", text)  # application guidance stays in the answer
         self.assertIn(f"{AG}; then {IG}; then example", text)
         self.assertNotIn("Cite pages", text)
+
+    def test_the_instruction_takes_the_answer_rules_word_for_word_from_the_schema(self):
+        rules = checks.section_using(SCHEMA, checks.ANSWER_LISTS["answer_headings"])
+        self.assertTrue(rules.startswith("## "))
+        self.assertIn(rules, answering.instruction(CHK, SCHEMA))
+        code = pathlib.Path(answering.__file__).read_text()
+        for line in rules.splitlines()[1:]:  # no rule of the schema's is restated in the code, so the two cannot drift
+            for sentence in checks.sentences(line.lstrip("- ")):
+                if len(sentence.split()) > 6:
+                    self.assertNotIn(sentence.strip(), code)
+
+
+class Brief(Base):
+    """The schema's Brief kinds, and the kinds kept under the non-authoritative heading."""
+
+    def test_the_schema_gives_the_brief_kinds(self):
+        self.assertIn(BRIEF, CHK.non_authoritative)
+        self.assertGreater(LIMIT, 0)
+
+    def test_a_brief_kind_in_the_answer_itself_fails(self):
+        main = f"{OPEN.get(BRIEF, '')} that the project began [[{B}|p1]]."
+        self.assertTrue(any("p1" in f and "non-authoritative" in f for f in self.fails(answer(main))))
+
+    def test_more_sentences_than_the_schema_allows_fail(self):
+        say = lambda n: " ".join(f"{OPEN.get(BRIEF, '')} that step {i} happened [[{B}|p1]]." for i in range(n))
+        main = f"An entity may measure it at cost [[{A}|1.2]]."
+        self.assertFalse([f for f in self.fails(answer(main, say(LIMIT))) if "at most" in f])
+        self.assertTrue([f for f in self.fails(answer(main, say(LIMIT + 1))) if f"at most {LIMIT}" in f])
+
+
+class SearchTerms(unittest.TestCase):
+    """The not-addressed search looks for separate terms taken from each point, and the answer lists those terms."""
+
+    def test_each_term_is_searched_on_its_own_and_the_answer_lists_the_terms_searched(self):
+        import asyncio
+        from app.ops import answering as ans
+        tail = answering.searched_line(CHK, ["made-up"], "Definitions")
+        points = [f"1. The fee is not addressed. {tail}", "Tax is not covered."]
+        asked, searched = [], []
+
+        async def generate_json(system, prompt, schema):
+            asked.append(prompt)
+            return {"points": [{"n": 2, "terms": ["tax", "levy"]}, {"n": 1, "terms": ["fee", "charge"]}]}
+
+        async def shortlist(wiki_id, text, size):
+            searched.append(text)
+            return [{"slug": "sec-a"}]
+
+        async def list_pages(wiki_id, with_content=False):
+            return [{"slug": "sec-a", "type": "topic", "title": "A", "content_md": ""}]
+
+        async def get_pages(wiki_id, slugs):
+            return [{"slug": x} for x in slugs]
+
+        async def restrict(ps):
+            return ps
+
+        saved = (ans.llm.generate_json, ans.search.shortlist, ans.store.list_pages, ans.store.get_pages)
+        ans.llm.generate_json, ans.search.shortlist, ans.store.list_pages, ans.store.get_pages = (
+            generate_json, shortlist, list_pages, get_pages)
+        try:
+            found, more = asyncio.run(ans.search_not_addressed({"id": 1}, CHK, points, set(), restrict))
+        finally:
+            ans.llm.generate_json, ans.search.shortlist, ans.store.list_pages, ans.store.get_pages = saved
+        self.assertNotIn("made-up", asked[0])  # the draft's own searched line is not part of the point
+        self.assertEqual(searched, ["fee", "charge", "tax", "levy"])  # matched by number, each term alone
+        self.assertEqual([f["terms"] for f in found], [["fee", "charge"], ["tax", "levy"]])
+        draft = answer(f"Yes [[{A}|1.1]].", gaps=f"- 1. The fee is not addressed. {tail}\n- Tax is not covered.")
+        gaps = answering.split_parts(answering.with_searched(draft, CHK, found), CHK)[1][2]
+        self.assertIn('"fee", "charge"', gaps)
+        self.assertIn('"tax", "levy"', gaps)
+        self.assertNotIn("made-up", gaps)
+        self.assertEqual(answering.not_addressed_points(gaps, CHK)[1].split(found[1]["searched"])[0].strip(), "Tax is not covered.")
 
 
 class StandardOnly(unittest.TestCase):

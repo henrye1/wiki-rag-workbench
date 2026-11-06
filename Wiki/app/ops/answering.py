@@ -203,6 +203,16 @@ def with_references(answer: str, chk) -> str:
     return "\n".join(lines[: at + 1] + [body, ""] + lines[nxt:])
 
 
+def brief_failures(apart: str, chk, srcs: dict) -> list[str]:
+    """A kind given more sentences under the non-authoritative material than the schema's Brief kinds allow."""
+    counts: dict[str, int] = {}
+    for s in _sentences(apart, chk):
+        for k in {kind_of(srcs, chk, sl, lab) for sl, lab in _source_cites(s)} & set(chk.brief_kinds):
+            counts[k] = counts.get(k, 0) + 1
+    return [f'"{chk.answer_headings[3]}" gives {k} {n} sentences; the schema allows at most {chk.brief_kinds[k]}: keep '
+            "only what bears on the question." for k, n in counts.items() if n > chk.brief_kinds[k]]
+
+
 def _has(text: str, word: str) -> bool:
     return bool(re.search(rf"(?<![\w-]){re.escape(word)}(?![\w-])", text, re.I))
 
@@ -256,6 +266,7 @@ def failures(answer: str, chk, srcs: dict, cite_ctx: dict) -> list[str]:
     out += fixpass.cite_failures(refs or "", cite_ctx, chk) if refs else []
     out += placement_failures(main or "", apart or "", chk, srcs)
     out += force_failures(stated, chk, srcs) if chk.force_words else []
+    out += brief_failures(apart or "", chk, srcs) if chk.brief_kinds else []
     out += searched_failures(gaps, chk)
     return list(dict.fromkeys(out))
 
@@ -267,22 +278,24 @@ def pagecheck_covers(label: str, ref: str, chk) -> bool:
 
 # ---------- the instruction ----------
 
-def instruction(chk) -> str:
-    """The answer's system instruction: the schema's layout, openers, force words and ranking, in its own words."""
+def instruction(chk, schema_md: str = "") -> str:
+    """The answer's system instruction: the schema's own section on answering (the one that points to its Answer layout
+    list), word for word, so its rules are never restated here; then the layout, openers, force words and ranking,
+    read from its Checks lists."""
     h = chk.answer_headings
     names = sorted(set(chk.kinds.values()))
     main_kinds = [k for k in names if k not in chk.non_authoritative]
     openers = "; ".join(f"{k}: {' or '.join(repr(x) for x in v)}" for k, v in chk.openers.items())
     force = "; ".join(f"{g}: {', '.join(repr(w) for w in ws)}" for g, ws in chk.force_words.items())
     ranking = "; then ".join(", ".join(r) for r in chk.kind_ranking)
+    rules = checks.section_using(schema_md, checks.ANSWER_LISTS["answer_headings"])
+    brief = "; ".join(f"{k}: at most {n}" for k, n in chk.brief_kinds.items())
     return "\n".join(x for x in [
-        "You answer questions using ONLY the wiki pages provided, as the schema's Workflow: Answer and check sets out. "
-        "Do not use outside knowledge.",
-        "- Every sentence that states something from a source ends with the clause it rests on, written "
-        "[[source-<source-name>|<clause reference>]] exactly as the pages cite it. A paragraph is cited only in the "
-        "group of citations that ends the sentence it supports. A link to a page inside a sentence (a term linked to "
-        "its page, as the pages write it) is a pointer: keep it as the link or as its plain term, and never replace it "
-        "with a paragraph citation. Never end a sentence with a page or a whole document in place of its clause.",
+        "You answer questions using ONLY the wiki pages provided. Do not use outside knowledge. Follow the schema's "
+        "rules for answers, given here word for word:" if rules else
+        "You answer questions using ONLY the wiki pages provided. Do not use outside knowledge.",
+        f"<answer_rules>\n{rules}\n</answer_rules>" if rules else "",
+        "- Write each citation [[source-<source-name>|<clause reference>]] exactly as the pages cite it.",
         f"- Lay the answer out under these headings, in this order, with no other heading at that level: {h[0]} (the "
         f"answer); {h[1]} (every clause that ends a sentence of the answer, one per line, each as its citation); {h[2]} (each point "
         f"the standard does not address); {h[3]} (only material from {', '.join(chk.non_authoritative)}, each item "
@@ -294,6 +307,7 @@ def instruction(chk) -> str:
         f"{chk.force_strict or 'obligation'} only where a paragraph you cite uses one, and the one it uses." if force else "",
         f"- Where the pages give conflicting positions, state both, each with its clause, and rank them by kind, highest "
         f"first: {ranking}." if ranking else "",
+        f"- Under {h[3]}, the most sentences given to each of these kinds, in all: {brief}." if brief else "",
         f"- Before listing a point under {h[2]}, check every page given for it, Definitions included.",
     ] if x)
 
@@ -301,17 +315,51 @@ def instruction(chk) -> str:
 NOT_ADDRESSED_TERMS = {
     "type": "object",
     "properties": {"points": {"type": "array", "items": {"type": "object", "properties": {
-        "point": {"type": "string"}, "terms": {"type": "array", "items": {"type": "string"}}},
-        "required": ["point", "terms"]}}},
+        "n": {"type": "integer"}, "terms": {"type": "array", "items": {"type": "string"}}},
+        "required": ["n", "terms"]}}},
     "required": ["points"],
 }
 
 
 def terms_prompt(points: list[str]) -> str:
-    return ("An answer says the standard does not address each point below. For each point, give the terms to search "
-            "the wiki's pages for: its key words as the point puts them, and the words the standard would use for them, "
-            "including any defined term. Return each point as given.\n\n<points>\n"
-            + "\n".join(f"- {p}" for p in points) + "\n</points>")
+    return ("An answer says the standard does not address each point below. For each point, by its number, give the "
+            "terms to search the wiki's pages for, each a word or short phrase of its own (never the point's sentence): "
+            "its key words as the point puts them, and the words the standard would use for them, including any defined "
+            "term.\n\n<points>\n" + "\n".join(f"{i}. {p}" for i, p in enumerate(points, 1)) + "\n</points>")
+
+
+def point_text(point: str, chk) -> str:
+    """A point left as not addressed, without the line saying what was searched for (the schema's searched form)."""
+    lead = chk.searched_form.split("<", 1)[0].strip()
+    return point.split(lead, 1)[0].strip() if lead and lead in point else point.strip()
+
+
+WORD = re.compile(r"\w+")
+
+
+def with_searched(answer: str, chk, found: list[dict]) -> str:
+    """Each point left as not addressed ends with the line saying what was actually searched for: that of the searched
+    point it shares most words with (none shared: left as it is, for the checks)."""
+    lead = chk.searched_form.split("<", 1)[0].strip()
+    head = chk.answer_headings[2]
+    if not found or not lead:
+        return answer
+    lines = answer.split("\n")
+    at = next((i for i, ln in enumerate(lines) if ln.strip() == head), None)
+    if at is None:
+        return answer
+    words = lambda x: {w.casefold() for w in WORD.findall(x)}
+    for i in range(at + 1, len(lines)):
+        if lines[i].strip() in chk.answer_headings:
+            break
+        own = point_text(BULLET.sub("", lines[i]), chk)
+        if not own or own == chk.answer_none:
+            continue
+        best = max(found, key=lambda f: len(words(own) & words(f["point"])))
+        if words(own) & words(best["point"]):
+            mark = (BULLET.match(lines[i]) or [""])[0]
+            lines[i] = f"{mark}{own} {best['searched']}"
+    return "\n".join(lines)
 
 
 def search_prompt(question: str, pages_md: str, draft: str, found: list[dict], chk) -> str:
@@ -347,18 +395,24 @@ async def search_not_addressed(wiki: dict, chk, points: list[str], have: set[str
     """Each point an answer says is not addressed, searched for in the text of every section and subtopic page: what
     was searched for, the pages found, and the pages to read that were not read yet (under the Sources setting)."""
     s = get_settings()
+    points = [point_text(p, chk) for p in points]
     out = await llm.generate_json(prompts.MAINTAINER_SYSTEM, terms_prompt(points), NOT_ADDRESSED_TERMS)
-    asked = {" ".join(x["point"].split()): x["terms"] for x in out["points"]}
+    asked = {x["n"]: [t.strip() for t in x["terms"] if t.strip()] for x in out["points"]}
     listed = {p["slug"]: p for p in await store.list_pages(wiki["id"])}
     sections = {sl for sl, p in listed.items() if p["type"] in ("topic", "subtopic")}
     everything = await store.list_pages(wiki["id"], with_content=True)
     definitions = terms_page_title(everything, chk)
     found, more = [], []
-    for p in points:
-        terms = asked.get(" ".join(p.split())) or [p]
-        hits = [h for h in await search.shortlist(wiki["id"], " ".join(terms), s.shortlist_size) if h["slug"] in sections]
-        new = [h["slug"] for h in hits[:5] if h["slug"] not in have and h["slug"] not in {m["slug"] for m in more}]
+    for n, p in enumerate(points, 1):
+        terms = list(dict.fromkeys(asked.get(n) or [p]))  # no terms given back: the point itself
+        rank: dict[str, int] = {}
+        for t in terms:  # each term searched on its own; a page ranks by its best place in any of them
+            for i, h in enumerate(await search.shortlist(wiki["id"], t, s.shortlist_size)):
+                if h["slug"] in sections:
+                    rank[h["slug"]] = min(rank.get(h["slug"], i), i)
+        hits = sorted(rank, key=rank.get)[:5]
+        new = [sl for sl in hits if sl not in have and sl not in {m["slug"] for m in more}]
         more += await restrict(await store.get_pages(wiki["id"], new)) if new else []
-        found.append({"point": p, "terms": terms, "pages": [h["slug"] for h in hits[:5]],
-                      "searched": searched_line(chk, terms, definitions)})
+        found.append({"point": p, "terms": terms, "pages": hits, "searched": searched_line(chk, terms, definitions),
+                      **({} if asked.get(n) else {"terms_missing": True})})
     return found, more
