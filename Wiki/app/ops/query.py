@@ -22,7 +22,7 @@ from ..config import get_settings
 from ..db import get_pool
 from ..wiki import checks, citecheck, saved, search, store
 from ..wiki.store import Op, slugify
-from . import answering, fixpass, pagecheck
+from . import answering, fixpass, pagecheck, sourcemap
 from .ingest import _sections
 
 log = logging.getLogger(__name__)
@@ -62,13 +62,21 @@ async def _browse(wiki: dict, question: str, sources: str, shortlist: list[dict]
         new, words = [], sum(len(p["content_md"].split()) for p in read)
         for x in want:
             if x in got and (not read or words + len(got[x]["content_md"].split()) <= s.browse_max_words):
-                read.append(got[x])
+                read += await _with_maps(wiki, [got[x]])  # the next round sees what the answer will see
                 new.append(x)
                 words += len(got[x]["content_md"].split())
         rounds.append({"round": rnd, "chose": out["read"], "read": new, "enough": out["enough"], "why": out["why"],
                        "words_read": words})
         if out["enough"] or not new or len(read) >= s.browse_max_pages:
             break
+    chk = checks.load(wiki["schema_md"])
+    if chk and len(read) < chk.min_read:  # the schema's Pages read before answering: the shortlist's best, unread
+        have = {p["slug"] for p in read}
+        want = [h["slug"] for h in shortlist if h["slug"] in known and h["slug"] not in have][:chk.min_read - len(read)]
+        more = await _with_maps(wiki, await _restrict(wiki, await store.get_pages(wiki["id"], want), sources)) if want else []
+        read += more
+        rounds.append({"round": "minimum", "read": [p["slug"] for p in more], "why": f"the schema's Pages read before "
+                       f"answering: at least {chk.min_read}"})
     return read, rounds
 
 
@@ -142,8 +150,18 @@ async def _restrict(wiki: dict, pages: list[dict], sources: str) -> list[dict]:
 def _pages_md(pages: list[dict]) -> str:
     return "\n\n".join(
         f"<saved_answer slug=\"{p['slug']}\" title=\"{p['title']}\" saved=\"{p['updated_at']:%Y-%m-%d}\">\n{p['content_md']}\n</saved_answer>"
-        if p.get("saved") else f"<page slug=\"{p['slug']}\" title=\"{p['title']}\" type=\"{p['type']}\">\n{p['content_md']}\n</page>"
+        if p.get("saved") else f"<page slug=\"{p['slug']}\" title=\"{p['title']}\" type=\"{p['type']}\">\n{p['content_md']}\n"
+        + (f"<source_map>\n{p['source_map']}\n</source_map>\n" if p.get("source_map") else "") + "</page>"
         for p in pages)
+
+
+async def _with_maps(wiki: dict, pages: list[dict]) -> list[dict]:
+    """Each page read with its source map, where the schema's Source map line says yes; otherwise the pages as they are."""
+    chk = checks.load(wiki["schema_md"])
+    if not (chk and chk.source_map):
+        return pages
+    return [p if p.get("saved") or p.get("source_map") else {**p, "source_map": await sourcemap.for_answer(wiki["id"], p, chk)}
+            for p in pages]
 
 
 def _cited(answer: str, pages: list[dict]) -> list[dict]:
@@ -194,6 +212,15 @@ def _log_md(wiki: dict, sources: str, pages: list[dict], extra: list[dict], roun
             + _rounds_md(rounds) + checked)
 
 
+def _plain_system(wiki: dict) -> str:
+    """The answer instruction where the schema lays out no answer (no Answer layout): the plain one, then, where its
+    Source map line says yes, the schema's section that points to that line, word for word, as rules that win."""
+    chk = checks.load(wiki["schema_md"])
+    rules = checks.section_using(wiki["schema_md"], checks.OPTIONAL_LISTS["source_map"]) if chk and chk.source_map else ""
+    return prompts.QUERY_SYSTEM + (f"\nFollow the schema's rules for answers, given here word for word; where they differ "
+                                   f"from the lines above, they win:\n<answer_rules>\n{rules}\n</answer_rules>" if rules else "")
+
+
 def _prompt(wiki: dict, question: str, pages: list[dict], extra: list[dict]) -> str:
     ask = prompts.query_prompt(question, _pages_md(pages)) if not extra else prompts.query_saved_prompt(question, _pages_md(pages), _pages_md(extra))
     return prompts.with_schema(wiki["schema_md"], ask)
@@ -222,7 +249,8 @@ async def read_text(wiki: dict, read: list[dict], sources: str) -> list[dict]:
 def _read_record(pages: list[dict]) -> list[dict]:
     """What was given to the model: each page's version and a hash of its text after the Sources setting."""
     return [{"slug": p["slug"], "title": p["title"], "type": p["type"], "version": p.get("version"), "saved": bool(p.get("saved")),
-             "words": len(p["content_md"].split()), "sha256": hashlib.sha256(p["content_md"].encode()).hexdigest()} for p in pages]
+             "words": len(p["content_md"].split()), "sha256": hashlib.sha256(p["content_md"].encode()).hexdigest(),
+             **({"source_map": p["source_map"]} if p.get("source_map") else {})} for p in pages]  # the map given with it, if any
 
 
 def _nothing(wiki: dict, sources: str) -> str:
@@ -261,7 +289,7 @@ async def _checked(wiki: dict, chk, question: str, pages: list[dict], extra: lis
             log.warning("query: searching for the points not addressed failed: %s", e)
             report["not_addressed_search_error"] = f"{type(e).__name__}: {e}"
             return text, fails
-        pages = pages + more
+        pages = pages + await _with_maps(wiki, more)
         searched.extend(found)
         report.setdefault("not_addressed_search", []).extend(
             {k: f[k] for k in ("point", "terms", "pages", "terms_missing") if k in f} for f in found)
@@ -301,9 +329,10 @@ async def _compose(wiki: dict, question: str, pages: list[dict], extra: list[dic
     chk = checks.load(wiki["schema_md"])
     if not pages:
         return _nothing(wiki, sources), pages, None
+    pages = await _with_maps(wiki, pages)
     if answering.ready(chk):
         return await _checked(wiki, chk, question, pages, extra, sources)
-    return await llm.generate(prompts.QUERY_SYSTEM, _prompt(wiki, question, pages, extra)), pages, None
+    return await llm.generate(_plain_system(wiki), _prompt(wiki, question, pages, extra)), pages, None
 
 
 async def answer(wiki: dict, question: str, save: bool = False, mode: str = "auto", sources: str = "all",
@@ -336,7 +365,8 @@ async def stream_answer(wiki: dict, question: str, sources: str = "all",
         await store.add_log(wiki["id"], "query", question[:200], _log_md(wiki, sources, pages, extra, rounds, report))
         return pages + extra, _once(text), report
     await store.add_log(wiki["id"], "query", question[:200], _log_md(wiki, sources, pages, extra, rounds))
-    return pages + extra, llm.stream(prompts.QUERY_SYSTEM, _prompt(wiki, question, pages, extra)), None
+    pages = await _with_maps(wiki, pages)
+    return pages + extra, llm.stream(_plain_system(wiki), _prompt(wiki, question, pages, extra)), None
 
 
 async def save_answer(wiki: dict, question: str, answer_md: str, mode: str, sources: str = "all") -> dict:

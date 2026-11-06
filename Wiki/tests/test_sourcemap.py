@@ -46,6 +46,41 @@ class Shown(unittest.TestCase):
         self.assertEqual(sourcemap.shown("SR:p79", None), "SR:p79")  # no schema form: as it is
 
 
+class SchemaLine(unittest.TestCase):
+    BASE = "## Checks\n- Openers: note = \"The note states\"\n"
+
+    def test_on_off_and_missing(self):
+        on = checks.load(self.BASE + "- Source map with each page read: yes. What it does.\n")
+        off = checks.load(self.BASE + "- Source map with each page read: none\n")
+        missing = checks.load(self.BASE)
+        self.assertTrue(on.source_map)
+        self.assertFalse(off.source_map)
+        self.assertFalse(missing.source_map)
+        self.assertNotIn("source map with each page read", missing.missing + missing.answer_missing + missing.unknown)
+
+
+    def test_pages_read_minimum(self):
+        self.assertEqual(checks.load(self.BASE + "- Pages read before answering: at least 2. Why.\n").min_read, 2)
+        self.assertEqual(checks.load(self.BASE).min_read, 0)  # no line: page choosing as before
+
+    def test_section_pointing_to_the_line(self):
+        md = "## Workflow: Answer\n- Answered from the maps (Checks: Source map with each page read).\n\n## Other\n- x\n"
+        self.assertTrue(checks.section_using(md, "source map with each page read").startswith("## Workflow: Answer"))
+        self.assertEqual(checks.section_using(md, "answer layout"), "")
+
+
+class AsText(unittest.TestCase):
+    def test_page_and_contents(self):
+        page = sourcemap.page_map_md([{"slug": "source-x", "title": "Paper X", "not_in_source": [],
+                                       "sections": [{"name": "Part One", "cite": "1", "sentences": 2}]}])
+        self.assertIn("- [[source-x|Paper X]]\n  - [[source-x|1]] (2)", page)  # a name that is not the label: label only
+        con = sourcemap.contents_md({"slug": "source-x", "title": "Paper X", "unused": [{"name": "Front", "cite": "Front"}],
+                                     "sections": [{"name": "Part One", "cite": "1", "pages": [{"slug": "a", "title": "A", "sentences": 3}]}]})
+        self.assertIn("- [[source-x|1]]: [[a|A]] (3)", con)
+        self.assertIn("Sections no page draws on:\n- [[source-x|Front]] Front", con)
+        self.assertEqual(sourcemap.cite_of({"1": "Part One", "2": "Part One", "F": "Front"}), {"Part One": "1", "Front": "F"})
+
+
 class Cited(unittest.TestCase):
     def test_closing_citations_only(self):
         md = ("- As [[source-x|9]] says, a rule applies [[source-x|1]]. Another rule [[source-x|2]], [[source-y|3]].\n"
