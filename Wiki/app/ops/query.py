@@ -62,13 +62,21 @@ async def _browse(wiki: dict, question: str, sources: str, shortlist: list[dict]
         new, words = [], sum(len(p["content_md"].split()) for p in read)
         for x in want:
             if x in got and (not read or words + len(got[x]["content_md"].split()) <= s.browse_max_words):
-                read.append(got[x])
+                read += await _with_maps(wiki, [got[x]])  # the next round sees what the answer will see
                 new.append(x)
                 words += len(got[x]["content_md"].split())
         rounds.append({"round": rnd, "chose": out["read"], "read": new, "enough": out["enough"], "why": out["why"],
                        "words_read": words})
         if out["enough"] or not new or len(read) >= s.browse_max_pages:
             break
+    chk = checks.load(wiki["schema_md"])
+    if chk and len(read) < chk.min_read:  # the schema's Pages read before answering: the shortlist's best, unread
+        have = {p["slug"] for p in read}
+        want = [h["slug"] for h in shortlist if h["slug"] in known and h["slug"] not in have][:chk.min_read - len(read)]
+        more = await _with_maps(wiki, await _restrict(wiki, await store.get_pages(wiki["id"], want), sources)) if want else []
+        read += more
+        rounds.append({"round": "minimum", "read": [p["slug"] for p in more], "why": f"the schema's Pages read before "
+                       f"answering: at least {chk.min_read}"})
     return read, rounds
 
 
@@ -204,6 +212,15 @@ def _log_md(wiki: dict, sources: str, pages: list[dict], extra: list[dict], roun
             + _rounds_md(rounds) + checked)
 
 
+def _plain_system(wiki: dict) -> str:
+    """The answer instruction where the schema lays out no answer (no Answer layout): the plain one, then, where its
+    Source map line says yes, the schema's section that points to that line, word for word, as rules that win."""
+    chk = checks.load(wiki["schema_md"])
+    rules = checks.section_using(wiki["schema_md"], checks.OPTIONAL_LISTS["source_map"]) if chk and chk.source_map else ""
+    return prompts.QUERY_SYSTEM + (f"\nFollow the schema's rules for answers, given here word for word; where they differ "
+                                   f"from the lines above, they win:\n<answer_rules>\n{rules}\n</answer_rules>" if rules else "")
+
+
 def _prompt(wiki: dict, question: str, pages: list[dict], extra: list[dict]) -> str:
     ask = prompts.query_prompt(question, _pages_md(pages)) if not extra else prompts.query_saved_prompt(question, _pages_md(pages), _pages_md(extra))
     return prompts.with_schema(wiki["schema_md"], ask)
@@ -315,7 +332,7 @@ async def _compose(wiki: dict, question: str, pages: list[dict], extra: list[dic
     pages = await _with_maps(wiki, pages)
     if answering.ready(chk):
         return await _checked(wiki, chk, question, pages, extra, sources)
-    return await llm.generate(prompts.QUERY_SYSTEM, _prompt(wiki, question, pages, extra)), pages, None
+    return await llm.generate(_plain_system(wiki), _prompt(wiki, question, pages, extra)), pages, None
 
 
 async def answer(wiki: dict, question: str, save: bool = False, mode: str = "auto", sources: str = "all",
@@ -349,7 +366,7 @@ async def stream_answer(wiki: dict, question: str, sources: str = "all",
         return pages + extra, _once(text), report
     await store.add_log(wiki["id"], "query", question[:200], _log_md(wiki, sources, pages, extra, rounds))
     pages = await _with_maps(wiki, pages)
-    return pages + extra, llm.stream(prompts.QUERY_SYSTEM, _prompt(wiki, question, pages, extra)), None
+    return pages + extra, llm.stream(_plain_system(wiki), _prompt(wiki, question, pages, extra)), None
 
 
 async def save_answer(wiki: dict, question: str, answer_md: str, mode: str, sources: str = "all") -> dict:

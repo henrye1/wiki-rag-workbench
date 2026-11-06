@@ -59,6 +59,16 @@ class SchemaLine(unittest.TestCase):
         self.assertNotIn("source map with each page read", missing.missing + missing.answer_missing + missing.unknown)
 
 
+    def test_pages_read_minimum(self):
+        self.assertEqual(checks.load(self.BASE + "- Pages read before answering: at least 2. Why.\n").min_read, 2)
+        self.assertEqual(checks.load(self.BASE).min_read, 0)  # no line: page choosing as before
+
+    def test_section_pointing_to_the_line(self):
+        md = "## Workflow: Answer\n- Answered from the maps (Checks: Source map with each page read).\n\n## Other\n- x\n"
+        self.assertTrue(checks.section_using(md, "source map with each page read").startswith("## Workflow: Answer"))
+        self.assertEqual(checks.section_using(md, "answer layout"), "")
+
+
 class AsText(unittest.TestCase):
     def test_page_and_contents(self):
         page = sourcemap.page_map_md([{"slug": "source-x", "title": "Paper X", "not_in_source": [],
