@@ -38,11 +38,14 @@ class SynthDraftIn(BaseModel):
     chat_id: str = Field(min_length=4)
     chat_title: str = ""
     answers: list[SynthAnswer] = Field(min_length=1, description="The chat's wiki answers, oldest first (never RAG answers)")
+    answer_seq: int | None = Field(None, description="The number in the chat of the one answer drafted on its own")
+    into: str | None = Field(None, description="An existing synthesis page the answer is added to")
 
 
 class SynthCheckIn(BaseModel):
     content_md: str
     answers: list[SynthAnswer] = Field(min_length=1)
+    into: str | None = Field(None, description="An existing synthesis page the answer is added to")
 
 
 class SynthSaveIn(SynthCheckIn):
@@ -54,21 +57,29 @@ class SynthSaveIn(SynthCheckIn):
 
 @router.post("/wikis/{w}/synthesis/draft")
 async def synthesis_draft(body: SynthDraftIn, wiki: dict = Depends(wiki_dep)):
-    """Draft one synthesis page from a chat's wiki answers, with its citation problems. Nothing is saved."""
-    return await synthesis.draft(wiki, body.chat_id, body.chat_title, [a.model_dump() for a in body.answers])
+    """Draft one synthesis page from a chat's wiki answers, or from one of them (answer_seq) as its own page or added to
+    an existing synthesis page (into), with its citation problems. Nothing is saved."""
+    try:
+        return await synthesis.draft(wiki, body.chat_id, body.chat_title, [a.model_dump() for a in body.answers],
+                                     body.answer_seq, body.into)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
 
 
 @router.post("/wikis/{w}/synthesis/check")
 async def synthesis_check(body: SynthCheckIn, wiki: dict = Depends(wiki_dep)):
     """Check an (edited) draft again. Nothing is saved."""
-    return await synthesis.check(wiki, body.content_md, [a.model_dump() for a in body.answers])
+    try:
+        return await synthesis.check(wiki, body.content_md, [a.model_dump() for a in body.answers], body.into)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
 
 
 @router.post("/wikis/{w}/synthesis", status_code=201)
 async def synthesis_save(body: SynthSaveIn, wiki: dict = Depends(wiki_dep)):
     """Save the draft as a synthesis page (a saved answer); the same chat updates the same page."""
     try:
-        return await synthesis.save(wiki, body.model_dump(exclude={"answers"}), [a.model_dump() for a in body.answers])
+        return await synthesis.save(wiki, body.model_dump(exclude={"answers", "into"}), [a.model_dump() for a in body.answers], body.into)
     except ValueError as e:
         raise HTTPException(409, str(e))
 
