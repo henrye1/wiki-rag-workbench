@@ -12,9 +12,17 @@ A heading that begins with one of these (any case) starts the Standard's own tex
 
 ## Appendices of a Standard
 A heading that is exactly one of these (any case) starts that appendix; its paragraphs take the reader kind after "=".
+A heading that names what an appendix holds comes after its letter heading and decides its kind, whatever its letter:
+IAS Standards print their application guidance as Appendix A (IAS 39, IAS 21) or as an unlettered appendix (IAS 32),
+and their amendments to other pronouncements as Appendix B. IAS 36 prints its guidance on present value techniques
+as Appendix A, named only by its own heading.
 - Appendix A = appendix_a
 - Appendix B = appendix_b
 - Appendix C = appendix_c
+- Application guidance = appendix_b
+- Amendments to other pronouncements = appendix_c
+- Amendment to IAS 16 = appendix_c
+- Using present value techniques to measure value in use = appendix_b
 
 ## Where a Standard's own text ends
 A heading that begins with one of these (any case) ends the Standard's own text: what follows is not read as part of it.
@@ -23,11 +31,14 @@ A heading that begins with one of these (any case) ends the Standard's own text:
 - Dissenting
 
 ## Paragraph numbers in a Standard
-The letters a paragraph number may start with, before its digits ("B5.5.17", "C2", "BA.1"). <letter> stands for any
+The letters a paragraph number may start with, before its digits ("B5.5.17", "C2", "BA.1", and in IAS Standards
+"AG14A" for application guidance and "A1" for an appendix numbered by its letter). <letter> stands for any
 capital letter.
 - B<letter>.
 - B
 - C
+- AG
+- A
 - BC
 - BCZ
 - IE
