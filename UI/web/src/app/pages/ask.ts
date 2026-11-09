@@ -182,10 +182,11 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
               <div class="panes" [class.single]="m.mode !== 'both'">
                 @if (m.rag; as p) {
                   <div class="pane card">
-                    <header class="row"><h3 class="grow">RAG · {{ m.rag_collection }}</h3>@if (p.ms) { <span class="muted">{{ p.ms / 1000 }} s</span> }</header>
+                    <header class="row"><h3 class="grow">RAG · {{ m.rag_collection }}</h3>@if (p.ms) { <span class="muted">{{ p.ms / 1000 }} s</span> }
+                      <button mat-icon-button (click)="copyAnswer(ragAns, i, 'rag')" [disabled]="p.running || !p.answer" [title]="copied() === i + 'rag' ? 'Copied' : 'Copy the answer as shown'"><mat-icon>{{ copied() === i + 'rag' ? 'check' : 'content_copy' }}</mat-icon></button></header>
                     @if (p.running) { <mat-progress-bar mode="indeterminate" /> }
                     @if (p.error) { <p class="error">{{ p.error }}</p> }
-                    <app-md [text]="p.answer" />
+                    <div #ragAns><app-md [text]="p.answer" /></div>
                     @if (p.sources.length) {
                       <div class="chips"><span class="muted">Sources:</span>
                         @for (c of p.sources; track c.chunk_id) { <button class="chip" (click)="cites.openRag(c.para_ref ?? c.chunk_id)" [title]="c.snippet">{{ c.para_ref ?? c.chunk_id }}</button> }
@@ -195,10 +196,11 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
                 }
                 @if (m.wiki; as p) {
                   <div class="pane card">
-                    <header class="row"><h3 class="grow">Wiki · {{ m.wiki_slug }}</h3>@if (p.ms) { <span class="muted">{{ p.ms / 1000 }} s</span> }</header>
+                    <header class="row"><h3 class="grow">Wiki · {{ m.wiki_slug }}</h3>@if (p.ms) { <span class="muted">{{ p.ms / 1000 }} s</span> }
+                      <button mat-icon-button (click)="copyAnswer(wikiAns, i, 'wiki')" [disabled]="p.running || !p.answer" [title]="copied() === i + 'wiki' ? 'Copied' : 'Copy the answer as shown'"><mat-icon>{{ copied() === i + 'wiki' ? 'check' : 'content_copy' }}</mat-icon></button></header>
                     @if (p.running) { <mat-progress-bar mode="indeterminate" /> }
                     @if (p.error) { <p class="error">{{ p.error }}</p> }
-                    <app-md [text]="p.answer" [wiki]="m.wiki_slug ?? ''" [titles]="titles(p)" [cites]="false" />
+                    <div #wikiAns><app-md [text]="p.answer" [wiki]="m.wiki_slug ?? ''" [titles]="titles(p)" [cites]="false" /></div>
                     @if (p.check; as k) {
                       <div class="small" [class.warn]="k.left?.length" [class.muted]="!k.left?.length"
                            title="The schema's answer checks (Workflow: Answer and check): run on the answer, which is sent back once with what they find">
@@ -293,6 +295,7 @@ export class Ask {
   readonly chatId = signal<string | null>(null);
   readonly messages = signal<Msg[]>([]);
   readonly busy = signal(false);
+  readonly copied = signal<string>(''); // which answer was just copied (message index + pane), for the button's tick
   readonly draft = signal<any>(null);
   readonly synthBusy = signal(false);
   readonly synthError = signal('');
@@ -530,4 +533,18 @@ export class Ask {
       this.synthBusy.set(false);
     }
   }
+
+  /** Copy an answer exactly as it is shown: its formatted text (for Word or email), with plain text for apps that take none. */
+  async copyAnswer(el: HTMLElement, i: number, pane: string) {
+    const html = el.innerHTML, text = el.innerText;
+    try {
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/html': new Blob([html], { type: 'text/html' }), 'text/plain': new Blob([text], { type: 'text/plain' }) })]);
+    } catch {
+      await navigator.clipboard.writeText(text); // a browser without formatted copy: the text as shown
+    }
+    this.copied.set(i + pane);
+    setTimeout(() => this.copied() === i + pane && this.copied.set(''), 2000);
+  }
 }
+
