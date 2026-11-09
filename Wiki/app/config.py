@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     page_background_words: int = 2000  # other sections' paragraphs given to a section page as context only
     route_batch: int = 120  # paragraphs per call when assigning paragraphs to schema sections
     route_batch_last: int = 5  # the last routing round: what the earlier rounds left unplaced, a few paragraphs per call
-    llm_concurrency: int = 4  # parallel LLM calls inside one job
+    llm_concurrency: int = 8  # parallel LLM calls inside one job (each call is independent: the same prompts at any setting)
     job_workers: int = 2  # jobs running at once
     browse_max_rounds: int = 6  # choosing pages to answer from: safety nets only; the model stops when it has enough
     browse_max_pages: int = 30
