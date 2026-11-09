@@ -519,6 +519,21 @@ def synthesis_prompt(chat_title: str, answers: str) -> str:
     )
 
 
+def synthesis_add_prompt(title: str, page: str, answers: str) -> str:
+    return (
+        f"This is an existing synthesis page (\"{title}\") and a new wiki answer to add to it. Write the page again as ONE "
+        "consolidated summary that keeps everything the page already says and adds what the new answer establishes, "
+        "organised by topic.\n"
+        "- Use only what the page and the answer say: no outside knowledge, no new facts, no conclusions they do not draw.\n"
+        "- Keep each statement's citations exactly as they appear on the page or in the answer (same [[...]] links, same "
+        "labels); cite nothing else. Where the answer repeats a point the page makes, state it once.\n"
+        "- If the answer differs from the page or is narrower, say so rather than merging them.\n"
+        "- Do not list the questions or the dates: they are recorded on the page separately.\n"
+        "- Write plain markdown (headings, paragraphs, - bullet lists); never HTML tags such as <ul> or <li>.\n\n"
+        f"<page>\n{page}\n</page>\n\n<answers>\n{answers}\n</answers>"
+    )
+
+
 def save_answer_prompt(question: str, answer: str, linkable: str) -> str:
     return (
         "Turn this question and answer into a synthesis page for the wiki. Keep every citation link. "

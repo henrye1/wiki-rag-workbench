@@ -121,7 +121,7 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
         @if (draft(); as d) {
           <div class="card draft">
             <div class="row"><h3 class="grow">Synthesis draft · {{ d.wiki }}</h3>
-              <span class="muted small">{{ d.answers.length }} wiki answer(s){{ d.other ? ' · ' + d.other + ' from another wiki left out' : '' }}</span></div>
+              <span class="muted small">{{ d.into ? 'existing page + ' : '' }}{{ d.answers.length }} wiki answer(s){{ d.other ? ' · ' + d.other + ' from another wiki left out' : '' }}</span></div>
             <p class="muted small">Page <b>{{ d.slug }}</b>{{ d.exists ? ' already exists (v' + d.version + '): saving updates it' : ' (new)' }}.
               Nothing is saved until you press Save.</p>
             <div class="row">
@@ -197,7 +197,26 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
                 @if (m.wiki; as p) {
                   <div class="pane card">
                     <header class="row"><h3 class="grow">Wiki · {{ m.wiki_slug }}</h3>@if (p.ms) { <span class="muted">{{ p.ms / 1000 }} s</span> }
-                      <button mat-icon-button (click)="copyAnswer(wikiAns, i, 'wiki')" [disabled]="p.running || !p.answer" [title]="copied() === i + 'wiki' ? 'Copied' : 'Copy the answer as shown'"><mat-icon>{{ copied() === i + 'wiki' ? 'check' : 'content_copy' }}</mat-icon></button></header>
+                      <button mat-icon-button (click)="copyAnswer(wikiAns, i, 'wiki')" [disabled]="p.running || !p.answer" [title]="copied() === i + 'wiki' ? 'Copied' : 'Copy the answer as shown'"><mat-icon>{{ copied() === i + 'wiki' ? 'check' : 'content_copy' }}</mat-icon></button>
+                      <button mat-stroked-button (click)="openAdd(i)" [disabled]="p.running || !p.answer || !!p.error || !m.created_at || synthBusy() || !!draft()"
+                              title="Put this one answer into a synthesis page: a new page of its own, or added to an existing one"><mat-icon>add</mat-icon> Synthesis</button></header>
+                    @if (addFor()?.i === i) {
+                      <div class="addbox">
+                        <b>Add this answer to a synthesis</b>
+                        <label><input type="radio" name="addmode" [checked]="!addFor()!.into" (change)="setInto('')" /> New synthesis page from this answer</label>
+                        <label><input type="radio" name="addmode" [checked]="!!addFor()!.into" [disabled]="!synthPages().length" (change)="setInto(synthPages()[0]?.slug ?? '')" />
+                          Add to an existing synthesis page</label>
+                        @if (addFor()!.into) {
+                          <select [ngModel]="addFor()!.into" (ngModelChange)="setInto($event)">
+                            @for (sp of synthPages(); track sp.slug) { <option [value]="sp.slug">{{ sp.title }}</option> }
+                          </select>
+                        }
+                        @if (!synthPages().length) { <span class="muted small">This wiki has no synthesis pages yet.</span> }
+                        <div class="row"><span class="grow"></span>
+                          <button mat-button (click)="addFor.set(null)">Cancel</button>
+                          <button mat-flat-button (click)="draftOne(i)">Draft</button></div>
+                      </div>
+                    }
                     @if (p.running) { <mat-progress-bar mode="indeterminate" /> }
                     @if (p.error) { <p class="error">{{ p.error }}</p> }
                     <div #wikiAns><app-md [text]="p.answer" [wiki]="m.wiki_slug ?? ''" [titles]="titles(p)" [cites]="false" /></div>
@@ -269,6 +288,8 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
     .chip.dim { opacity: .6; } .chip.saved { border-style: dashed; }
     .synth { margin-top: 12px; gap: 12px; align-items: center; }
     .draft { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .addbox { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; padding: 10px 12px; border: 1px solid var(--mat-sys-outline-variant); border-radius: 8px; font-size: 14px; }
+    .addbox select { max-width: 100%; padding: 4px; }
     .draft h3 { margin: 0; }
     .editor { width: 100%; min-height: 360px; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; line-height: 1.45;
               background: var(--mat-sys-surface-container); color: inherit; border: 1px solid var(--mat-sys-outline-variant); border-radius: 8px; padding: 10px; box-sizing: border-box; }
@@ -296,6 +317,8 @@ export class Ask {
   readonly messages = signal<Msg[]>([]);
   readonly busy = signal(false);
   readonly copied = signal<string>(''); // which answer was just copied (message index + pane), for the button's tick
+  readonly addFor = signal<{ i: number; into: string } | null>(null); // the answer being put into a synthesis, and the page it goes into ('' = a new page)
+  readonly synthPages = signal<any[]>([]); // the wiki's synthesis pages, to add an answer to
   readonly draft = signal<any>(null);
   readonly synthBusy = signal(false);
   readonly synthError = signal('');
@@ -494,11 +517,46 @@ export class Ask {
     }
   }
 
+  /** Open the choice for one answer: a new synthesis page from it, or added to one of the wiki's synthesis pages. */
+  async openAdd(i: number) {
+    const m = this.messages()[i];
+    this.synthError.set('');
+    this.synthSaved.set(null);
+    this.addFor.set({ i, into: '' });
+    try {
+      const pages = await this.api.get<any[]>(`/api/wiki/wikis/${enc(m.wiki_slug ?? '')}/pages`);
+      this.synthPages.set(pages.filter((p) => p.type === 'synthesis').sort((a, b) => a.title.localeCompare(b.title)));
+    } catch (e) {
+      this.synthPages.set([]);
+    }
+  }
+
+  setInto(slug: string) { this.addFor.update((x) => (x ? { ...x, into: slug } : x)); }
+
+  /** Draft a synthesis from this one answer, as its own page or added to the chosen page: then the same draft panel. */
+  async draftOne(i: number) {
+    const m = this.messages()[i], into = this.addFor()?.into || null, wiki = m.wiki_slug ?? '';
+    const answers = [{ searched: m.searched, answer: m.wiki!.answer, sources: m.sources, date: m.created_at! }];
+    this.addFor.set(null);
+    this.synthBusy.set(true);
+    this.synthError.set('');
+    try {
+      const title = this.chats().find((c) => c.id === this.chatId())?.title ?? '';
+      const d = await this.api.post<any>(`/api/wiki/wikis/${enc(wiki)}/synthesis/draft`,
+        { chat_id: this.chatId(), chat_title: title, answers, answer_seq: m.seq ?? i, into });
+      this.draft.set({ ...d, wiki, answers, other: 0, into, checkedText: d.content_md, confirm: false });
+    } catch (e) {
+      this.synthError.set(errMsg(e));
+    } finally {
+      this.synthBusy.set(false);
+    }
+  }
+
   draftEdited() { this.draft.update((d) => ({ ...d, confirm: false })); }
 
   async checkDraft(): Promise<any> {
     const d = this.draft();
-    const r = await this.api.post<any>(`/api/wiki/wikis/${enc(d.wiki)}/synthesis/check`, { content_md: d.content_md, answers: d.answers });
+    const r = await this.api.post<any>(`/api/wiki/wikis/${enc(d.wiki)}/synthesis/check`, { content_md: d.content_md, answers: d.answers, into: d.into ?? null });
     this.draft.update((x) => ({ ...x, problems: r.problems, checkedText: x.content_md }));
     return r;
   }
@@ -523,7 +581,7 @@ export class Ask {
       }
       const d = this.draft();
       const r = await this.api.post<any>(`/api/wiki/wikis/${enc(d.wiki)}/synthesis`, {
-        slug: d.slug, title: d.title, summary: d.summary, tags: d.tags, content_md: d.content_md, answers: d.answers,
+        slug: d.slug, title: d.title, summary: d.summary, tags: d.tags, content_md: d.content_md, answers: d.answers, into: d.into ?? null,
       });
       this.synthSaved.set({ ...r, wiki: d.wiki });
       this.draft.set(null);
