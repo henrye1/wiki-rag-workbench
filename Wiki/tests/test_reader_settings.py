@@ -16,6 +16,9 @@ MADE_UP = """# Settings
 ## Paragraph numbers in a Standard
 - Q<letter>.
 - Q
+## How a paragraph number may end
+- <capital letters><digits>
+- <up to 2 capital letters>
 ## Paragraph numbers in documents published with a Standard
 - EX = example
 - RS<up to 3 letters> = basis_for_conclusions
@@ -51,12 +54,15 @@ class Load(unittest.TestCase):
         self.assertEqual(r["starts"], ["rulebook part"])
         self.assertEqual(r["appendices"], {"annex one": "appendix_a"})
         self.assertEqual(r["para_prefixes"], ["Q[A-Z]\\.", "Q"])
+        self.assertEqual(r["para_endings"], ["[A-Z]+\\d+", "[A-Z]{0,2}"])
         self.assertEqual(r["accompanying"], {"EX": "example", "RS[A-Z]{0,3}": "basis_for_conclusions"})
         self.assertEqual(r["kind_labels"], {"example": "Worked case"})
         self.assertEqual((r["ig_letters"], r["ig_prefix"], r["margin_x"]), ("[A-C]", "HA", 140.0))
 
     def test_reader_uses_the_file(self):
         self.assertTrue(pdf_ifrs.PARA_RE.match("B5.5.17") and pdf_ifrs.PARA_RE.match("BA.1"))
+        self.assertTrue(pdf_ifrs.PARA_RE.match("102Z1") and pdf_ifrs.PARA_RE.match("42AA"))
+        self.assertFalse(pdf_ifrs.PARA_RE.match("1A2B"))
         self.assertEqual(pdf_ifrs.accompanying_kind("BCZ4.1"), "basis_for_conclusions")
         self.assertEqual(pdf_ifrs._section_for_heading("International Accounting Standard 32", "intro"), "standard")
         self.assertEqual(pdf_ifrs._section_for_heading("Appendix B", "standard"), "appendix_b")

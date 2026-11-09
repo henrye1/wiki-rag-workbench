@@ -25,6 +25,12 @@ def _prefix_re(prefix: str) -> str:
     return (re.escape(prefix).replace(re.escape("<letter>"), "[A-Z]").replace(re.escape("<up to 3 letters>"), "[A-Z]{0,3}"))
 
 
+def _ending_re(ending: str) -> str:
+    """An ending as written in the file, as a pattern."""
+    return (re.escape(ending).replace(re.escape("<up to 2 capital letters>"), "[A-Z]{0,2}")
+            .replace(re.escape("<capital letters>"), "[A-Z]+").replace(re.escape("<digits>"), r"\d+"))
+
+
 def load(path: pathlib.Path = FILE) -> dict:
     s = _sections(path.read_text(encoding="utf-8"))
     get = lambda name: s.get(name.casefold(), [])
@@ -37,6 +43,7 @@ def load(path: pathlib.Path = FILE) -> dict:
         "appendices": {k.casefold(): v for k, v in _pairs(get("Appendices of a Standard"), "=").items()},
         "ends": [x.casefold() for x in get("Where a Standard's own text ends")],
         "para_prefixes": [_prefix_re(x) for x in get("Paragraph numbers in a Standard")],
+        "para_endings": [_ending_re(x) for x in get("How a paragraph number may end")],  # longest first, as written
         "accompanying": {_prefix_re(k): v for k, v in accompanying.items()},  # prefix pattern -> reader kind
         "kind_labels": _pairs(get("Kind shown before each paragraph of a document published with a Standard"), "="),
         "ig_title": ig["Title begins"], "ig_letters": f"[{first}-{last}]", "ig_prefix": ig["Question label prefix"],

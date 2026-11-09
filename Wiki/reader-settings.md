@@ -44,6 +44,14 @@ capital letter.
 - IE
 - IG
 
+## How a paragraph number may end
+What may follow a paragraph number's digits, as one of these ("102Z" and "42AA": up to two capital letters; "102Z1":
+capital letters followed by digits). <up to 2 capital letters> stands for none to two capital letters, <capital
+letters> for one or more, <digits> for one or more digits. Paragraph numbers in a Standard and in documents published
+with it end the same way.
+- <capital letters><digits>
+- <up to 2 capital letters>
+
 ## Paragraph numbers in documents published with a Standard
 The prefix of each paragraph number and the reader kind of its paragraphs. <up to 3 letters> stands for none to three
 capital letters ("BC", "BCZ", "BCIN"). Text without such a number is read as the introduction.
