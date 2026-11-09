@@ -16,9 +16,10 @@ from .models import ACCOMPANYING_TYPES, Chunk
 from .text import clean, split_long
 
 R = reader_settings.load()  # the publisher's words, fonts and positions, from Wiki/reader-settings.md
-PARA_RE = re.compile(rf"^(?:{'|'.join(R['para_prefixes'])})?\d+(?:\.\d+)*[A-Z]{{0,2}}$")  # a paragraph number of a Standard
+ENDING = f"(?:{'|'.join(R['para_endings'])})"  # what may follow a paragraph number's digits (the settings)
+PARA_RE = re.compile(rf"^(?:{'|'.join(R['para_prefixes'])})?\d+(?:\.\d+)*{ENDING}$")  # a paragraph number of a Standard
 # Documents published with a Standard, numbered by prefix (each prefix's reader kind is in the settings)
-ACCOMPANYING_RE = re.compile(rf"^({'|'.join(R['accompanying'])})(?:\d+|\.\d+)(?:\.\d+)*[A-Z]{{0,2}}$")
+ACCOMPANYING_RE = re.compile(rf"^({'|'.join(R['accompanying'])})(?:\d+|\.\d+)(?:\.\d+)*{ENDING}$")
 # Implementation guidance numbers its questions in their headings, not in the margin
 IG_HEADING_RE = re.compile(rf"^({R['ig_letters']})\.(\d+)\s+\S")
 IG_TITLE_RE = re.compile(rf"^{re.escape(R['ig_title'])}\b", re.I)  # its title; the note under it says the guidance is not part of the Standard
