@@ -58,12 +58,7 @@ def _outline(chunks) -> list[str]:
 
 
 # How each kind of paragraph from a document published with a Standard is marked in the text the wiki is built from
-KIND_LABELS = {
-    "example": "Illustrative example",
-    "implementation_guidance": "Implementation guidance",
-    "basis_for_conclusions": "Basis for Conclusions",
-    "dissenting_opinion": "Dissenting opinion",
-}
+KIND_LABELS = pdf_ifrs.R["kind_labels"]  # the label written before each paragraph of these kinds (Wiki/reader-settings.md)
 UNRECOGNISED_IFRS = ("This PDF looks like an IFRS publication, but its paragraph numbering was not recognised: "
                      "the text was kept page by page, without paragraph numbers.")
 NOT_IFRS = "This PDF does not have the IFRS layout: the text was kept page by page, without paragraph numbers."
