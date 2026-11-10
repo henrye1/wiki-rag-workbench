@@ -1,7 +1,9 @@
 import { DecimalPipe } from '@angular/common';
 import { Component, computed, effect, inject, input, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
 import { MatButtonToggleModule } from '@angular/material/button-toggle';
+import { MatIconModule } from '@angular/material/icon';
 import { RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../../core/api';
 import { LABEL } from './systems';
@@ -10,7 +12,7 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki' | 'rag_q';
 
 @Component({
   selector: 'app-bench-run',
-  imports: [FormsModule, RouterLink, DecimalPipe, MatButtonToggleModule],
+  imports: [FormsModule, RouterLink, DecimalPipe, MatButtonModule, MatButtonToggleModule, MatIconModule],
   template: `
     <div class="page">
       <a routerLink="/benchmark" class="muted">← Runs</a>
@@ -28,6 +30,12 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki' | 'rag_q';
           RAG: {{ ragDocs(d) }} · Wiki: {{ d.config.systems?.wiki?.wiki?.pages ?? '?' }} pages · commit {{ d.config.git_commit ?? '—' }}
           @if (d.config.context_checks?.version; as v) { · Context checks {{ v }}{{ d.config.context_checks.rescored ? ' (re-scored ' + d.config.context_checks.rescored.at.slice(0, 10) + ', was ' + d.config.context_checks.rescored.from + ')' : '' }} }</p>
         <p class="muted small">Rubric: {{ rubricLabel(d) }}</p>
+        <div class="row downloads">
+          <span class="muted small">Download</span>
+          @for (f of downloads; track f.kind) {
+            <a mat-stroked-button [href]="downloadUrl(f.kind)" download [title]="f.title"><mat-icon>download</mat-icon> {{ f.label }}</a>
+          }
+        </div>
         @for (p of pairs(d); track p) {
           <div class="card gaps">
             <h3>Scorecard: Wiki vs {{ label(p) }}</h3>
@@ -130,6 +138,7 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki' | 'rag_q';
     </div>
   `,
   styles: `
+    .downloads { gap: 8px; align-items: center; flex-wrap: wrap; margin: 4px 0 12px; }
     .unit { font-size: 16px; } .small { font-size: 12px; } .head { margin-top: 20px; }
     .kv { display: flex; justify-content: space-between; margin-top: 6px; }
     .secrow { display: grid; grid-template-columns: 110px 1fr; gap: 8px; align-items: center; margin: 4px 0; }
@@ -149,6 +158,13 @@ export class BenchRun {
   readonly data = signal<any>(null);
   readonly error = signal('');
   readonly sort = signal<SortKey>('number');
+  /** The run as files, read only; the reference memo is named by its label. */
+  readonly downloads = [
+    { kind: 'results.csv', label: 'Results CSV', title: 'One row per topic, run and system: scores, key point grades, contradictions, winner and metrics' },
+    { kind: 'answers.csv', label: 'All answers CSV', title: 'Every answer as each system gave it, with its question, what it read and its latency' },
+    { kind: 'review.html', label: 'Side-by-side review', title: 'A page with each topic\'s question, reference text, key point grades and the answers side by side' },
+  ];
+  downloadUrl(kind: string) { return `/api/bench/runs/${enc(this.id())}/download/${kind}`; }
   /** The systems a run compared, as it recorded them. */
   systems(d: any): string[] { return d?.config?.systems_compared ?? []; }
   /** The RAG columns, each graded against the wiki in its own pair. */
