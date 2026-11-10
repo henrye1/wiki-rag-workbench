@@ -42,6 +42,17 @@ class RunExport(unittest.TestCase):
         self.assertIn("B 5.5.3", page)  # a wiki link shows its label
         self.assertIn("Reference memo 1", page)
 
+    def test_scorecard_as_the_page(self):
+        run = {**RUN, "summary": {"by_system": {"rag": {"similarity": {"mean": 3.1, "n": 2}}, "wiki": {"similarity": {"mean": 4.3, "n": 2}}},
+                                  "wins_by_run": {"rag": 1, "wiki": 3},
+                                  "gaps": {"similarity": {"diff": 1.2, "ci": [0.5, 1.9], "verdict": "Wiki better", "leader": "wiki"}}}}
+        r = rows(run_export.scorecard_csv(run, LABEL))
+        self.assertEqual(len(r) - 1, len(run_export.GAP_ORDER))
+        self.assertEqual(r[1][1:4], ["Similarity (0–10)", "3.1/10", "4.3/10"])
+        self.assertEqual(r[1][6:12], ["+1.20", "1.2", "+0.50 to +1.90", "0.5", "1.9", "Wiki better"])
+        cov = next(x for x in r if x[1] == "Coverage")
+        self.assertEqual((cov[2], cov[13]), ("Not run yet", "no graded answers"))
+
     def test_memo_file_name_is_found(self):
         self.assertEqual(run_export.unmasked(b"see Secret memo.docx", ["Secret memo.docx"]), ["Secret memo.docx"])
         self.assertEqual(run_export.unmasked(b"Reference memo 1", ["Secret memo.docx"]), [])

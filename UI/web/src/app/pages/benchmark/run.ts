@@ -160,6 +160,7 @@ export class BenchRun {
   readonly sort = signal<SortKey>('number');
   /** The run as files, read only; the reference memo is named by its label. */
   readonly downloads = [
+    { kind: 'scorecard.csv', label: 'Scorecard CSV', title: 'The scorecards above: every test, each system\'s score, the wiki-minus-RAG gap with its 95% interval and the result' },
     { kind: 'results.csv', label: 'Results CSV', title: 'One row per topic, run and system: scores, key point grades, contradictions, winner and metrics' },
     { kind: 'answers.csv', label: 'All answers CSV', title: 'Every answer as each system gave it, with its question, what it read and its latency' },
     { kind: 'review.html', label: 'Side-by-side review', title: 'A page with each topic\'s question, reference text, key point grades and the answers side by side' },
