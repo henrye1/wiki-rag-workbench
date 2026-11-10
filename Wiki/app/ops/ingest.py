@@ -2513,6 +2513,7 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             failing.setdefault(source["slug"], []).append(f"Paragraph {u['paragraph']} was routed to no section and discarded{said}.")
     failing = {sl: list(dict.fromkeys(fs)) for sl, fs in failing.items() if sl in {o.slug for o in ops}}
     await ctx.progress(stage="commit")
+    ops, unchanged = await _without_unchanged(wiki_id, ops, failing)
     summary = f"Ingest: {ex.title}"
     result = await store.commit(wiki_id, "ingest", summary, ops, mode, job_id=ctx.id, source_id=source["id"], failures=failing)
     if failing:
@@ -2533,7 +2534,20 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     subtopics = {sl: [label(i) for i in sub["paras"]] for sl, sub in sub_of.items()}
     also_recorded = {f"{x['num']:02d} {x['name']}": [label(i) for i in also[x["num"]]] for x in sections if x["num"] in also}
     return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "empty_retries": empty_retries, "check_fixes": check_fixes, "routing": routing, "subtopics": subtopics, "splits": splits, "unassigned": unassigned, "stubs": [_ref(paras[i]) for i in sorted(stubs)],
-            "also_recorded": also_recorded, "also_declined": declined, "missed_paragraphs": missed, "restored": restored, "resplit": resplit, "citations": citations, "fill_passes": fill_passes, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
+            "also_recorded": also_recorded, "also_declined": declined, "missed_paragraphs": missed, "restored": restored, "resplit": resplit, "citations": citations, "fill_passes": fill_passes, "unchanged_skipped": unchanged, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
+
+
+async def _without_unchanged(wiki_id, ops: list[Op], failing: dict) -> tuple[list[Op], list[str]]:
+    """The ops without updates that would save a page exactly as it already is (same title, type, summary, text and
+    tags): saving them would only add an identical version and index it again. A page whose checks still fail is kept,
+    so what is held, and flagged, is the same."""
+    now = {p["slug"]: p for p in await store.list_pages(wiki_id, with_content=True)}
+    held = await store.held_paragraphs(wiki_id)
+    same = lambda o, p: (o.title, o.type, o.summary or "", o.content_md or "", list(o.tags or [])) == \
+        (p["title"], p["type"], p["summary"] or "", p["content_md"] or "", list(p["tags"] or [])) and \
+        all(set(v) == held.get(o.slug, {}).get(k, set()) for k, v in (o.holds or {}).items())  # and what it holds is as recorded
+    unchanged = [o.slug for o in ops if o.op == "update" and o.slug not in failing and o.slug in now and same(o, now[o.slug])]
+    return [o for o in ops if o.slug not in unchanged], unchanged
 
 
 async def run_safe(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: str) -> dict:

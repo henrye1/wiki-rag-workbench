@@ -9,7 +9,7 @@ from .auth import require_api_key
 from .config import get_settings
 from .routers import ops, pages, sources, view, wikis
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(name)s:%(message)s")  # time stamped, to see where an upload spends its time
 
 
 @asynccontextmanager
