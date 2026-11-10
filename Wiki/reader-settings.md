@@ -15,10 +15,13 @@ A heading that is exactly one of these (any case) starts that appendix; its para
 A heading that names what an appendix holds comes after its letter heading and decides its kind, whatever its letter:
 IAS Standards print their application guidance as Appendix A (IAS 39, IAS 21) or as an unlettered appendix (IAS 32),
 and their amendments to other pronouncements as Appendix B. IAS 36 prints its guidance on present value techniques
-as Appendix A, named only by its own heading.
+as Appendix A, named only by its own heading. IFRS 1 goes on to Appendices D and E (exemptions from other IFRSs and
+short-term exemptions), read like its Appendix C (exemptions for business combinations).
 - Appendix A = appendix_a
 - Appendix B = appendix_b
 - Appendix C = appendix_c
+- Appendix D = appendix_c
+- Appendix E = appendix_c
 - Application guidance = appendix_b
 - Amendments to other pronouncements = appendix_c
 - Amendment to IAS 16 = appendix_c
@@ -31,12 +34,14 @@ A heading that begins with one of these (any case) ends the Standard's own text:
 - Dissenting
 
 ## Paragraph numbers in a Standard
-The letters a paragraph number may start with, before its digits ("B5.5.17", "C2", "BA.1", and in IAS Standards
-"AG14A" for application guidance and "A1" for an appendix numbered by its letter). <letter> stands for any
-capital letter.
+The letters a paragraph number may start with, before its digits ("B5.5.17", "C2", "BA.1", in IAS Standards
+"AG14A" for application guidance and "A1" for an appendix numbered by its letter, and in IFRS 1 "D1" and "E1" for
+its Appendices D and E). <letter> stands for any capital letter.
 - B<letter>.
 - B
 - C
+- D
+- E
 - AG
 - A
 - BC
