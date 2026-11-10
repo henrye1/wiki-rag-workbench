@@ -4,7 +4,7 @@ import csv
 import io
 import unittest
 
-from app import run_export
+from app import run_export, scorecard
 
 LABEL = {"rag": "RAG (per topic)", "wiki": "Wiki"}
 RUN = {
@@ -47,7 +47,7 @@ class RunExport(unittest.TestCase):
                                   "wins_by_run": {"rag": 1, "wiki": 3},
                                   "gaps": {"similarity": {"diff": 1.2, "ci": [0.5, 1.9], "verdict": "Wiki better", "leader": "wiki"}}}}
         r = rows(run_export.scorecard_csv(run, LABEL))
-        self.assertEqual(len(r) - 1, len(run_export.GAP_ORDER))
+        self.assertEqual(len(r) - 1, len(scorecard.ORDER))
         self.assertEqual(r[1][1:4], ["Similarity (0–10)", "3.1/10", "4.3/10"])
         self.assertEqual(r[1][6:12], ["+1.20", "1.2", "+0.50 to +1.90", "0.5", "1.9", "Wiki better"])
         cov = next(x for x in r if x[1] == "Coverage")

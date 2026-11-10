@@ -17,6 +17,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
+from . import scorecard
 from .config import get_settings
 from .proxy import client
 
@@ -232,6 +233,7 @@ async def get_run(run_id: str):
     # what the run compared, from the run row (set when it was started) and its config
     data["compared"] = {"rag_collection": row["rag_collection"], "wiki": row["wiki_slug"], "sources": row["sources"], "use_saved": row["use_saved"],
                         "rag_editorial": (data.get("config") or {}).get("rag_include_editorial")}
+    data["scorecard"] = scorecard.build(data)  # the page shows these rows; the Scorecard CSV writes the same
     return data
 
 
