@@ -1,7 +1,9 @@
 import { DecimalPipe } from '@angular/common';
 import { Component, computed, effect, inject, input, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { MatButtonModule } from '@angular/material/button';
 import { MatButtonToggleModule } from '@angular/material/button-toggle';
+import { MatIconModule } from '@angular/material/icon';
 import { RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../../core/api';
 import { LABEL } from './systems';
@@ -10,7 +12,7 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki' | 'rag_q';
 
 @Component({
   selector: 'app-bench-run',
-  imports: [FormsModule, RouterLink, DecimalPipe, MatButtonToggleModule],
+  imports: [FormsModule, RouterLink, DecimalPipe, MatButtonModule, MatButtonToggleModule, MatIconModule],
   template: `
     <div class="page">
       <a routerLink="/benchmark" class="muted">← Runs</a>
@@ -28,28 +30,31 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki' | 'rag_q';
           RAG: {{ ragDocs(d) }} · Wiki: {{ d.config.systems?.wiki?.wiki?.pages ?? '?' }} pages · commit {{ d.config.git_commit ?? '—' }}
           @if (d.config.context_checks?.version; as v) { · Context checks {{ v }}{{ d.config.context_checks.rescored ? ' (re-scored ' + d.config.context_checks.rescored.at.slice(0, 10) + ', was ' + d.config.context_checks.rescored.from + ')' : '' }} }</p>
         <p class="muted small">Rubric: {{ rubricLabel(d) }}</p>
+        <div class="row downloads">
+          <span class="muted small">Download</span>
+          @for (f of downloads; track f.kind) {
+            <a mat-stroked-button [href]="downloadUrl(f.kind)" download [title]="f.title"><mat-icon>download</mat-icon> {{ f.label }}</a>
+          }
+        </div>
         @for (p of pairs(d); track p) {
           <div class="card gaps">
             <h3>Scorecard: Wiki vs {{ label(p) }}</h3>
             <table class="simple">
               <thead><tr><th>Test</th><th class="n">{{ label(p) }}</th><th class="n">Wiki</th><th class="n">Wiki − RAG</th><th class="n">95% confidence interval</th><th>Result</th></tr></thead>
               <tbody>
-                @for (k of gapOrder; track k) {
-                  @let r = score(d, p, k, p);
-                  @let w = score(d, 'wiki', k, p);
-                  @let e = gapFor(d, p, k);
+                @for (x of rows(d, p); track x.key) {
                   <tr>
-                    <td>{{ gapLabel[k] }}</td>
-                    <td class="n" [class.muted]="!r.ok" [title]="r.reason">{{ r.text }}</td>
-                    <td class="n" [class.muted]="!w.ok" [title]="w.reason">{{ w.text }}</td>
-                    @if (e && r.ok && w.ok) {
-                      <td class="n">{{ fmtGap(k, e.diff) }}</td>
-                      <td class="n">{{ e.ci ? fmtGap(k, e.ci[0]) + ' to ' + fmtGap(k, e.ci[1]) : '—' }}</td>
+                    <td>{{ x.label }}</td>
+                    <td class="n" [class.muted]="!x.rag.ok" [title]="x.rag.reason">{{ x.rag.text }}</td>
+                    <td class="n" [class.muted]="!x.wiki.ok" [title]="x.wiki.reason">{{ x.wiki.text }}</td>
+                    @if (x.gap; as e) {
+                      <td class="n">{{ e.text }}</td>
+                      <td class="n">{{ e.ci_text || '—' }}</td>
                       <td>@if (e.leader) { <span class="pill" [class.rag]="e.leader === 'rag'" [class.rag_q]="e.leader === 'rag_q'" [class.wiki]="e.leader === 'wiki'">{{ e.verdict }}</span> }
                           @else { <span class="muted">{{ e.verdict }}</span> }</td>
                     } @else {
                       <td class="n muted">—</td><td class="n muted">—</td>
-                      <td class="muted small">{{ !r.ok ? r.reason : !w.ok ? w.reason : counted.includes(k) ? 'no interval: a count per answer' : '' }}</td>
+                      <td class="muted small">{{ x.note }}</td>
                     }
                   </tr>
                 }
@@ -67,15 +72,15 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki' | 'rag_q';
                 <h3>{{ label(sys) }}</h3>
                 <div class="stat">{{ s.by_system[sys].similarity.mean }}<span class="muted unit">/10</span></div>
                 <div class="muted">similarity (± {{ s.by_system[sys].similarity.sd }})</div>
-                @let ss = extra(d, sys, 'std_similarity', sys === 'rag_q' ? 'rag_q' : 'rag');
+                @let ss = card(d, sys, 'std_similarity');
                 <div class="kv"><span>Standard-only similarity</span><b [class.muted]="!ss.ok" [title]="ss.reason">{{ ss.text }}</b></div>
                 <div class="kv"><span>Coverage</span><b>{{ s.by_system[sys].coverage.mean }}%</b></div>
                 <div class="kv"><span>Standard-only coverage</span><b>{{ s.by_system[sys].coverage_standard.mean }}%</b></div>
                 <div class="kv"><span>Wins</span><b>{{ sys === 'rag_q' ? s.pairs?.rag_q?.wins_by_run?.rag_q : s.wins_by_run[sys] }}</b></div>
                 @if (sys === 'wiki' && s.pairs?.rag_q) { <div class="muted small">vs RAG (per topic); wins vs RAG (per question): {{ s.pairs.rag_q.wins_by_run.wiki }}</div> }
-                @for (k of counted; track k) {
-                  @let x = extra(d, sys, k);
-                  <div class="kv"><span>{{ cardLabel[k] }}</span><b [class.muted]="!x.ok" [title]="x.reason">{{ x.text }}</b></div>
+                @for (k of ['contradictions', 'no_contradiction']; track k) {
+                  @let x = card(d, sys, k);
+                  <div class="kv"><span>{{ d.scorecard?.card_label?.[k] ?? k }}</span><b [class.muted]="!x.ok" [title]="x.reason">{{ x.text }}</b></div>
                 }
               </div>
             }
@@ -130,6 +135,7 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki' | 'rag_q';
     </div>
   `,
   styles: `
+    .downloads { gap: 8px; align-items: center; flex-wrap: wrap; margin: 4px 0 12px; }
     .unit { font-size: 16px; } .small { font-size: 12px; } .head { margin-top: 20px; }
     .kv { display: flex; justify-content: space-between; margin-top: 6px; }
     .secrow { display: grid; grid-template-columns: 110px 1fr; gap: 8px; align-items: center; margin: 4px 0; }
@@ -149,12 +155,19 @@ export class BenchRun {
   readonly data = signal<any>(null);
   readonly error = signal('');
   readonly sort = signal<SortKey>('number');
+  /** The run as files, read only; the reference memo is named by its label. */
+  readonly downloads = [
+    { kind: 'scorecard.csv', label: 'Scorecard CSV', title: 'The scorecards above: every test, each system\'s score, the wiki-minus-RAG gap with its 95% interval and the result' },
+    { kind: 'results.csv', label: 'Results CSV', title: 'One row per topic, run and system: scores, key point grades, contradictions, winner and metrics' },
+    { kind: 'answers.csv', label: 'All answers CSV', title: 'Every answer as each system gave it, with its question, what it read and its latency' },
+    { kind: 'review.html', label: 'Side-by-side review', title: 'A page with each topic\'s question, reference text, key point grades and the answers side by side' },
+  ];
+  downloadUrl(kind: string) { return `/api/bench/runs/${enc(this.id())}/download/${kind}`; }
   /** The systems a run compared, as it recorded them. */
   systems(d: any): string[] { return d?.config?.systems_compared ?? []; }
   /** The RAG columns, each graded against the wiki in its own pair. */
   pairs(d: any): string[] { return this.systems(d).filter((s) => s !== 'wiki'); }
   label(sys: string) { return LABEL[sys] ?? sys; }
-  pairGaps(d: any, p: string) { return p === 'rag' ? d.summary?.gaps : d.summary?.pairs?.[p]?.gaps; }
 
   readonly topics = computed(() => {
     const d = this.data();
@@ -184,88 +197,12 @@ export class BenchRun {
     effect(() => { this.api.get(`/api/bench/runs/${enc(this.id())}`).then((d) => this.data.set(d)).catch((e) => this.error.set(errMsg(e))); });
   }
 
-  readonly gapOrder = ['similarity', 'std_similarity', 'coverage', 'coverage_standard', 'coverage_std_supp', 'wins', 'contradictions',
-                       'no_contradiction', 'completeness', 'exact_match',
-                       'exact_match_standard', 'citation_accuracy', 'faithfulness', 'context_recall', 'context_recall_standard', 'latency_s', 'cost_usd'];
-  readonly gapLabel: Record<string, string> = {
-    similarity: 'Similarity (0–10)', coverage: 'Coverage', coverage_standard: 'Standard-only coverage',
-    coverage_std_supp: 'Standard + Supporting coverage', exact_match_standard: 'Standard-only exact match', wins: 'Wins (gap: share of answers)',
-    exact_match: 'Exact match', faithfulness: 'Faithfulness', citation_accuracy: 'Citation accuracy', context_recall: 'Context recall', context_recall_standard: 'Standard-only context recall',
-    completeness: 'Completeness', latency_s: 'Latency (s, lower is better)', cost_usd: 'Cost per query (lower is better)',
-    std_similarity: 'Standard-only similarity (0–10)', contradictions: 'Contradictions per answer (lower is better)',
-    no_contradiction: 'Answers with no contradiction',
-  };
-
-  /** One system's score on one test in one pair, or "Not run yet" with the reason. The judged tests and wins come from
-   *  the pair's own grading (the wiki is graded once per RAG column); the other tests are per answer. */
-  score(d: any, sys: string, k: string, pair = 'rag'): { ok: boolean; text: string; reason: string } {
-    if (this.extras.includes(k)) return this.extra(d, sys, k, pair);
-    const no = (reason: string) => ({ ok: false, text: 'Not run yet', reason });
-    if (!d.summary) return no('the run has not finished');
-    const other = pair !== 'rag' ? d.summary.pairs?.[pair] : null;
-    if (k === 'wins') return { ok: true, text: String((other ? other.wins_by_run : d.summary.wins_by_run)?.[sys] ?? 0),
-                               reason: 'answers won (both grading orders agreeing)' };
-    if (this.judged.includes(k)) {
-      const v = sys === 'wiki' && other ? other.wiki?.[k] : d.summary.by_system?.[sys]?.[k];
-      if (v?.mean != null) return { ok: true, text: k === 'similarity' ? `${v.mean}/10` : `${v.mean}%`, reason: `${v.n} topic(s)` };
-      if (k === 'coverage_std_supp' && d.config?.sources === 'standard') return no('this run used Standard only (Part A), so Supporting points were not in play');
-      return no('no graded answers');
-    }
-    const m = d.metrics?.by_system?.[sys]?.[k];
-    if (!m) return no('not measured in this run');
-    if (m.status !== 'measured' || m.mean == null) return no(m.reason ?? 'not measured');
-    return { ok: true, text: this.fmtMetric(k, m.mean), reason: `${m.n} answer(s)${m.not_measured_in ? '; some not measured' : ''}` };
-  }
-
-  readonly judged = ['similarity', 'coverage', 'coverage_standard', 'coverage_std_supp'];
-
-  /** Measures read from what the run stored besides its summary: standard-only similarity (the last step of every Full
-   *  run; `python -m bench.std_similarity` adds it to a finished run) and the contradictions found in each answer. */
-  readonly extras = ['std_similarity', 'contradictions', 'no_contradiction'];
-  /** Counts per answer: shown without a wiki-minus-RAG interval. */
-  readonly counted = ['contradictions', 'no_contradiction'];
-  readonly cardLabel: Record<string, string> = {
-    std_similarity: 'Standard-only similarity', contradictions: 'Contradictions per answer', no_contradiction: 'Answers with no contradiction',
-  };
-  /** The wiki-minus-RAG gap and interval of a test in one pair, where the run has one. */
-  gapFor(d: any, pair: string, k: string) {
-    if (k === 'std_similarity') return this.stdSim(d, pair)?.gap;
-    return this.counted.includes(k) ? null : this.pairGaps(d, pair)?.[k];
-  }
-  stdSim(d: any, pair: string) { return pair === 'rag' ? d.extras?.std_similarity : d.extras?.pairs?.[pair]?.std_similarity; }
-
-  /** One system's figure on an extra measure in one pair (the wiki's in the RAG (per question) pair is from that pair's
-   *  grading), or "not measured" with the reason. */
-  extra(d: any, sys: string, k: string, pair = 'rag'): { ok: boolean; text: string; reason: string } {
-    const no = (reason: string) => ({ ok: false, text: 'not measured', reason });
-    if (k === 'std_similarity') {
-      const v = this.stdSim(d, pair)?.by_system?.[sys];
-      if (v?.mean == null) return no(d.extras?.std_similarity_failed ? `failed: ${d.extras.std_similarity_failed}`
-                                     : d.config?.mode === 'quick' ? 'Quick mode: standard-only similarity runs only in Full mode'
-                                     : 'standard-only similarity was not run on this run');
-      return { ok: true, text: `${v.mean}/10`, reason: `${v.n_topics} topic(s)` };
-    }
-    const c = sys === 'wiki' && pair !== 'rag' ? d.extras?.pairs?.[pair]?.contradictions?.wiki : d.extras?.contradictions?.[sys];
-    if (!c) return no('no answer in this run was checked for contradictions');
-    return k === 'contradictions'
-      ? { ok: true, text: c.mean.toFixed(2), reason: `${c.n} answer(s)` }
-      : { ok: true, text: `${c.none} of ${c.n} (${c.none_pct.toFixed(0)}%)`, reason: `${c.n} answer(s)` };
-  }
-
-  fmtMetric(k: string, v: number) {
-    if (k === 'cost_usd') return `$${v.toFixed(4)}`;
-    if (k === 'latency_s') return `${v.toFixed(1)} s`;
-    return `${v.toFixed(1)}%`;
-  }
-
-  fmtGap(k: string, v: number) {
-    const sign = v > 0 ? '+' : v < 0 ? '−' : '';
-    const a = Math.abs(v);
-    if (k === 'cost_usd') return `${sign}$${a.toFixed(4)}`;
-    if (k === 'latency_s') return `${sign}${a.toFixed(1)} s`;
-    if (k === 'similarity' || k === 'std_similarity') return `${sign}${a.toFixed(2)}`;
-    if (k === 'wins') return `${sign}${(a * 100).toFixed(0)} pts`;
-    return `${sign}${a.toFixed(1)} pts`;
+  /** The scorecard rows of one RAG column against the wiki, as the server builds them (UI/server/app/scorecard.py, the
+   *  one place the tests, their order, scores, gaps and formats are set; the Scorecard CSV writes the same rows). */
+  rows(d: any, pair: string): any[] { return (d.scorecard?.pairs ?? []).find((x: any) => x.pair === pair)?.rows ?? []; }
+  /** A system card's extra figure (standard-only similarity, contradictions), as the server builds it. */
+  card(d: any, sys: string, k: string): { ok: boolean; text: string; reason: string } {
+    return d.scorecard?.cards?.[sys]?.[k] ?? { ok: false, text: 'not measured', reason: 'not in this run\'s data' };
   }
 
   rubricLabel(d: any) {

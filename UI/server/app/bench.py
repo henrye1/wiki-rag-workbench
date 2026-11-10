@@ -17,6 +17,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
+from . import scorecard
 from .config import get_settings
 from .proxy import client
 
@@ -232,7 +233,27 @@ async def get_run(run_id: str):
     # what the run compared, from the run row (set when it was started) and its config
     data["compared"] = {"rag_collection": row["rag_collection"], "wiki": row["wiki_slug"], "sources": row["sources"], "use_saved": row["use_saved"],
                         "rag_editorial": (data.get("config") or {}).get("rag_include_editorial")}
+    data["scorecard"] = scorecard.build(data)  # the page shows these rows; the Scorecard CSV writes the same
     return data
+
+
+@router.get("/runs/{run_id}/download/{kind}")
+async def download_run(run_id: str, kind: Literal["results.csv", "answers.csv", "review.html", "scorecard.csv"]):
+    """One run, read only, as a file: its results (one row per topic, run and system), all its answers, a side-by-side
+    review page, or its summary scorecard (as the run page shows it). Built from what the run page receives, with the
+    reference memo named by its label; a download that still holds a memo's file name is refused."""
+    from . import run_export
+    data = await get_run(run_id)
+    pairs = await _masks()
+    data["topics"] = _mask(data.get("topics") or {}, pairs)
+    build = {"results.csv": run_export.results_csv, "answers.csv": run_export.answers_csv, "scorecard.csv": run_export.scorecard_csv}
+    blob = (await asyncio.to_thread(build[kind], data, SYSTEM_LABEL) if kind in build
+            else await asyncio.to_thread(run_export.review_html, data, SYSTEM_LABEL, run_id))
+    if run_export.unmasked(blob, [n for n, _ in pairs]):
+        raise HTTPException(500, "This download would name a reference memo's file; it was not sent")
+    name = f"run-{run_id}-{kind}"
+    return Response(blob, media_type="text/csv; charset=utf-8" if kind.endswith(".csv") else "text/html; charset=utf-8",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
 
 
 @router.get("/runs/{run_id}/status")
