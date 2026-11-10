@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import traceback
+from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable
 from uuid import UUID
 
@@ -25,8 +26,14 @@ class JobContext:
         self.id = job_id
 
     async def progress(self, **kw):
+        """Record progress; a new stage also records when it started (stage_times: stage -> time), so where an upload
+        spends its time can be read from the job."""
+        at = {kw["stage"]: datetime.now(timezone.utc).isoformat()} if "stage" in kw else {}
         async with get_pool().connection() as conn:
-            await conn.execute("update wiki.jobs set progress = progress || %s where id = %s", (Jsonb(kw), self.id))
+            await conn.execute(
+                """update wiki.jobs set progress = progress || %s
+                   || jsonb_build_object('stage_times', coalesce(progress->'stage_times', '{}'::jsonb) || %s) where id = %s""",
+                (Jsonb(kw), Jsonb(at), self.id))
 
 
 async def recover():
