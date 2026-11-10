@@ -1,29 +1,30 @@
-"""Layout-aware parser for IFRS Foundation annotated standards (e.g. IFRS 9 PDF).
+"""Layout-aware parser for the publisher's annotated standards.
 
-Layout facts it relies on:
-- Paragraph numbers (1.1, 5.5.3, B5.5.17) sit in the left margin in the body (Swift) font.
-- Body text is indented further right than the margin.
-- Editorial material ([Refer:], [Note:], [Link], IFRIC boxes, E-footnotes) uses HelveticaLTPro-BoldCond.
-- Headings use HelveticaLTPro Bold/Oblique at >= 9.5pt.
-- Running header/footer use HelveticaLTPro-Roman 9pt.
+Layout facts it relies on, each with its values in Wiki/reader-settings.md (reader_settings), the file the wiki's
+reader uses too:
+- Paragraph numbers sit in the left margin in the body font; body text is indented further right.
+- Editorial material uses its own font; headings use the heading font at or above a size.
+- The running header and footer use their own font, above or below set positions.
 """
 import re
 from dataclasses import dataclass, field
 
 import pymupdf
 
+from . import reader_settings
 from .models import ACCOMPANYING_TYPES, Chunk
 from .text import clean, split_long
 
-PARA_RE = re.compile(r"^(?:B|C|BCZ?|IE|IG)?\d+(?:\.\d+)*[A-Z]{0,2}$")
-# Documents published with a Standard (Parts B and C of the IFRS bound volumes), numbered by prefix:
-# IE = illustrative example, IG = implementation guidance, BC/BCZ/BCIN/BCE/... = Basis for Conclusions, DO = dissenting opinion
-ACCOMPANYING_RE = re.compile(r"^(IE|IG|BC[A-Z]{0,3}|DO)(?:\d+|\.\d+)(?:\.\d+)*[A-Z]{0,2}$")
-ACCOMPANYING_KINDS = {"IE": "example", "IG": "implementation_guidance", "DO": "dissenting_opinion"}  # BC... -> basis_for_conclusions
+R = reader_settings.load()  # the publisher's words, fonts and positions, from Wiki/reader-settings.md
+ENDING = f"(?:{'|'.join(R['para_endings'])})"  # what may follow a paragraph number's digits (the settings)
+PARA_RE = re.compile(rf"^(?:{'|'.join(R['para_prefixes'])})?\d+(?:\.\d+)*{ENDING}$")  # a paragraph number of a Standard
+# Documents published with a Standard, numbered by prefix (each prefix's reader kind is in the settings)
+ACCOMPANYING_RE = re.compile(rf"^({'|'.join(R['accompanying'])})(?:\d+|\.\d+)(?:\.\d+)*{ENDING}$")
 RANGE_DASH = ("\u2013", "-")  # "BC2.17A–" continued by "BC2.17H" on the next line: a range of deleted paragraphs
 EDITORIAL_BRACKETS = re.compile(r"\[(?:Refer|Note|Link|now)\b[^\]]*\]", re.I)
-MARGIN_MAX_X = 150
-HEADER_Y, FOOTER_Y = 110, 720
+MARGIN_MAX_X = R["margin_x"]
+HEADER_Y, FOOTER_Y = R["header_y"], R["footer_y"]
+BODY_FONT, HEADER_FONT = R["body_font"], R["header_font"]
 
 
 @dataclass
@@ -37,12 +38,12 @@ class _Para:
 
 
 def _is_editorial(font: str, size: float = 8.5, x: float = 999) -> bool:
-    # BoldCond = [Refer]/[Note]/IFRIC boxes; small Helvetica Bold left of body = IFRIC box sub-headings
-    return "BoldCond" in font or (font == "HelveticaLTPro-Bold" and size < 9 and x < 175)
+    # the editorial font = notes, pointers and boxes; the box heading font, small and left of the body = box sub-headings
+    return R["editorial_font"] in font or (font == R["box_heading_font"] and size < R["box_heading_below"] and x < R["box_heading_left_of"])
 
 
 def _is_heading(font: str, size: float) -> bool:
-    return font.startswith("HelveticaLTPro") and not _is_editorial(font) and "Roman" not in font and size >= 9.4
+    return font.startswith(R["heading_font"]) and not _is_editorial(font) and HEADER_FONT not in font and size >= R["heading_min"]
 
 
 def looks_like_ifrs(doc: pymupdf.Document) -> bool:
@@ -51,7 +52,7 @@ def looks_like_ifrs(doc: pymupdf.Document) -> bool:
         for b in page.get_text("dict")["blocks"]:
             for l in b.get("lines", []):
                 for s in l["spans"]:
-                    if s["bbox"][0] < MARGIN_MAX_X and s["font"].startswith("Swift") and PARA_RE.match(s["text"].strip()):
+                    if s["bbox"][0] < MARGIN_MAX_X and s["font"].startswith(BODY_FONT) and PARA_RE.match(s["text"].strip()):
                         hits += 1
     return hits >= 10
 
@@ -76,16 +77,13 @@ def _lines(page: pymupdf.Page):
 
 
 def _section_for_heading(text: str, current: str) -> str:
+    """The part of a Standard a heading starts (the settings' start, appendix and end headings), else the current one."""
     t = text.lower()
-    if t.startswith("international financial reporting standard"):
+    if t.startswith(tuple(R["starts"])):
         return "standard"
-    if t == "appendix a":
-        return "appendix_a"
-    if t == "appendix b":
-        return "appendix_b"
-    if t == "appendix c":
-        return "appendix_c"
-    if t.startswith("approval by the board") or t.startswith("basis for conclusions") or t.startswith("dissenting"):
+    if t in R["appendices"]:
+        return R["appendices"][t]
+    if t.startswith(tuple(R["ends"])):
         return "back_matter"
     return current
 
@@ -106,7 +104,7 @@ def _join(parts: list[str]) -> str:
 def accompanying_kind(ref: str) -> str:
     m = ACCOMPANYING_RE.match(ref.rstrip("".join(RANGE_DASH)))
     prefix = m.group(1) if m else ""
-    return ACCOMPANYING_KINDS.get(prefix, "basis_for_conclusions" if prefix.startswith("BC") else "intro")
+    return next((kind for rx, kind in R["accompanying"].items() if re.fullmatch(rx, prefix)), "intro")
 
 
 def parse_document(doc: pymupdf.Document, max_words: int = 500) -> tuple[list[Chunk], str]:
@@ -146,7 +144,7 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
             y = row[0]["bbox"][1]
             for s in row:
                 text, font, size, x = s["text"].strip(), s["font"], s["size"], s["bbox"][0]
-                if "Roman" in font and size >= 8.9 and (y < HEADER_Y or y > FOOTER_Y):
+                if HEADER_FONT in font and size >= R["header_min"] and (y < HEADER_Y or y > FOOTER_Y):
                     continue  # running header/footer
                 if size < 6:
                     continue  # superscript E-footnote markers
@@ -165,7 +163,7 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
                     heading = " ".join(heading_buf)
                     continue
                 if accompanying:
-                    margin_label = x < MARGIN_MAX_X and font.startswith("Swift") and ACCOMPANYING_RE.match(text.rstrip("".join(RANGE_DASH)))
+                    margin_label = x < MARGIN_MAX_X and font.startswith(BODY_FONT) and ACCOMPANYING_RE.match(text.rstrip("".join(RANGE_DASH)))
                     if margin_label and cur.ref and cur.ref.endswith(RANGE_DASH) and last_label and last_label[0] == pno and 0 < y - last_label[1] < 14:
                         cur.ref = f"{cur.ref}{text}"  # second half of a range label, e.g. BC2.17A–BC2.17H
                         last_label = (pno, y)
@@ -180,7 +178,7 @@ def parse(doc: pymupdf.Document, max_words: int = 500, accompanying: bool = Fals
                     is_label = (
                         section in ("standard", "appendix_a", "appendix_b", "appendix_c")
                         and x < MARGIN_MAX_X
-                        and font.startswith("Swift")
+                        and font.startswith(BODY_FONT)
                         and (PARA_RE.match(text) or (section == "appendix_a" and "Bold" in font))
                     )
                 if is_label:
