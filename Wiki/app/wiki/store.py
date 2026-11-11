@@ -167,14 +167,51 @@ async def get_changeset(changeset_id: UUID) -> tuple[dict, list[dict]]:
     return cs, ops
 
 
+class Conflicts(Exception):
+    """A changeset not applied because pages it changes have changed since it was written (or a page it creates now
+    exists). conflicts: [{slug, reason}]."""
+    def __init__(self, conflicts: list[dict]):
+        super().__init__(f"{len(conflicts)} page(s) changed since the changeset was written")
+        self.conflicts = conflicts
+
+
+def _conflict(o: "Op", page: dict | None) -> str | None:
+    """Why an op no longer fits its page: the page now exists where the op creates it, or is at another version than
+    the one the op was written against. None when it fits."""
+    if not page:
+        return None
+    if o.op == "create":
+        return f"page was created elsewhere since (now v{page['version']})"
+    if o.base_version is not None and page["version"] != o.base_version:
+        return f"page is at v{page['version']}, op written against v{o.base_version}"
+    return None
+
+
+def _ops(op_rows: list[dict]) -> list["Op"]:
+    return [Op(**{k: r[k] for k in Op.__dataclass_fields__}) for r in op_rows]
+
+
+async def stale_ops(wiki_id: UUID, op_rows: list[dict]) -> list[dict]:
+    """The ops of a changeset that no longer fit the wiki as it is now ([{slug, reason}]): applying it would be refused
+    while there are any. The same rule apply_changeset uses."""
+    ops = _ops(op_rows)
+    pages = {p["slug"]: p for p in await get_pages(wiki_id, [o.slug for o in ops])} if ops else {}
+    return [{"slug": o.slug, "reason": why} for o in ops if (why := _conflict(o, pages.get(o.slug)))]
+
+
 async def apply_changeset(changeset_id: UUID, force: bool = False, reviewer: str | None = None) -> dict:
-    """Apply a pending changeset. Ops whose page changed since they were written are skipped as conflicts unless force.
+    """Apply a pending changeset, all of it or nothing: if any op no longer fits its page (the page changed since the
+    changeset was written), nothing is applied, it stays pending and Conflicts names the pages. force: apply anyway,
+    overwriting those pages (they are returned as "overwritten").
     reviewer: the named reviewer who applies it, recorded with it (a held upload is applied only by one)."""
     cs, op_rows = await get_changeset(changeset_id)
     if cs["status"] != "pending":
         raise ValueError(f"Changeset is {cs['status']}")
     wiki_id = cs["wiki_id"]
-    ops = [Op(**{k: r[k] for k in Op.__dataclass_fields__}) for r in op_rows]
+    ops = _ops(op_rows)
+    overwritten = await stale_ops(wiki_id, op_rows)
+    if overwritten and not force:  # before the embeddings are paid for
+        raise Conflicts(overwritten)
 
     # Embeddings are computed before the transaction (network calls)
     to_embed = {o.slug: _chunks(o.title or o.slug, o.summary or "", o.content_md or "") for o in ops if o.op != "delete"}
@@ -183,20 +220,16 @@ async def apply_changeset(changeset_id: UUID, force: bool = False, reviewer: str
     vec_iter = iter(vectors)
     embedded = {slug: [(c, next(vec_iter)) for c in chunks] for slug, chunks in to_embed.items()}
 
-    applied, conflicts = [], []
+    applied, conflicts = [], []  # conflicts: pages changed between the check above and this transaction
     changes: dict[str, set] = {}  # page -> paragraphs whose write-up this changeset changes (for saved answers)
     async with get_pool().connection() as conn, conn.transaction():
         for o in ops:
             page = await (
                 await conn.execute("select * from wiki.pages where wiki_id = %s and slug = %s for update", (wiki_id, o.slug))
             ).fetchone()
-            if page and not force:
-                if o.op == "create":
-                    conflicts.append({"slug": o.slug, "reason": f"page was created elsewhere since (now v{page['version']})"})
-                    continue
-                if o.base_version is not None and page["version"] != o.base_version:
-                    conflicts.append({"slug": o.slug, "reason": f"page is at v{page['version']}, op written against v{o.base_version}"})
-                    continue
+            if not force and (why := _conflict(o, page)):
+                conflicts.append({"slug": o.slug, "reason": why})
+                continue
             if (o.type or (page or {}).get("type")) != "synthesis":
                 changes[o.slug] = saved.changed_clauses(page["content_md"] if page else "", "" if o.op == "delete" else o.content_md or "")
             if o.op == "delete":
@@ -241,6 +274,8 @@ async def apply_changeset(changeset_id: UUID, force: bool = False, reviewer: str
                        where s.wiki_id = %s and s.slug = %s on conflict (page_id, source_id) do update set held = excluded.held""",
                     (pid, list(labels), wiki_id, src_slug))
             applied.append({"slug": o.slug, "op": action, "version": row["version"]})
+        if conflicts:  # rolls the transaction back: nothing is applied and the changeset stays pending
+            raise Conflicts(conflicts)
         await conn.execute("update wiki.changesets set status='applied', applied_at=now() where id=%s", (changeset_id,))
         if reviewer:
             await conn.execute("update wiki.changesets set reviewer=%s, reviewed_at=now() where id=%s", (reviewer, changeset_id))
@@ -261,10 +296,12 @@ async def apply_changeset(changeset_id: UUID, force: bool = False, reviewer: str
         to_check = await saved.flag_changed(conn, wiki_id, {k: v for k, v in changes.items() if k in applied_slugs},
                                             cs["summary"] or cs["kind"])
         detail = "\n".join(f"- {a['op']} [[{a['slug']}]]" for a in applied)
-        if conflicts:
-            detail += "\n\nConflicts (skipped):\n" + "\n".join(f"- [[{c['slug']}]]: {c['reason']}" for c in conflicts)
+        if overwritten:
+            detail += "\n\nApplied with force, overwriting pages changed since it was written:\n" + "\n".join(
+                f"- [[{c['slug']}]]: {c['reason']}" for c in overwritten)
         await add_log(wiki_id, "apply", cs["summary"] or f"{cs['kind']} changeset", detail, conn=conn)
-    return {"changeset_id": str(changeset_id), "applied": applied, "conflicts": conflicts, "saved_answers_to_check": to_check}
+    return {"changeset_id": str(changeset_id), "applied": applied, "conflicts": [], "overwritten": overwritten,
+            "saved_answers_to_check": to_check}
 
 
 async def _reindex_page(conn, wiki_id: UUID, page_id: UUID, md: str, chunks: list[tuple[str, list[float]]]):
@@ -291,9 +328,9 @@ async def _reindex_page(conn, wiki_id: UUID, page_id: UUID, md: str, chunks: lis
         )
 
 
-async def discard_changeset(changeset_id: UUID, reviewer: str | None = None) -> str | None:
-    """Discard a pending changeset. For an ingest, the source is removed too (if no page uses it) so it can be re-ingested.
-    reviewer: the named reviewer who discards it, recorded with it."""
+async def discard_changeset(changeset_id: UUID, reviewer: str | None = None, keep_source: bool = False) -> str | None:
+    """Discard a pending changeset. For an ingest, the source is removed too (if no page uses it) so it can be re-ingested,
+    unless keep_source (the upload is run again from it). reviewer: the named reviewer who discards it, recorded with it."""
     async with get_pool().connection() as conn, conn.transaction():
         cs = await (
             await conn.execute(
@@ -305,7 +342,7 @@ async def discard_changeset(changeset_id: UUID, reviewer: str | None = None) -> 
             raise ValueError("Changeset not found or not pending")
         if reviewer:
             await conn.execute("update wiki.changesets set reviewer=%s, reviewed_at=now() where id=%s", (reviewer, changeset_id))
-        if cs["kind"] == "ingest" and cs["source_id"]:
+        if cs["kind"] == "ingest" and cs["source_id"] and not keep_source:
             row = await (
                 await conn.execute(
                     """delete from wiki.sources s where s.id = %s
@@ -346,7 +383,11 @@ async def commit(wiki_id: UUID, kind: str, summary: str, ops: list[Op], mode: st
     if mode == "auto" and failures:
         return {"changeset_id": str(cs_id), "status": "held", "held_for": failures, "ops": [{"op": o.op, "slug": o.slug} for o in ops]}
     if mode == "auto":
-        res = await apply_changeset(cs_id)
+        try:
+            res = await apply_changeset(cs_id)
+        except Conflicts as e:  # pages changed while it was being written: left pending, nothing applied
+            return {"changeset_id": str(cs_id), "status": "pending", "conflicts": e.conflicts,
+                    "ops": [{"op": o.op, "slug": o.slug} for o in ops]}
         return {**res, "status": "applied"}
     return {"changeset_id": str(cs_id), "status": "pending", "ops": [{"op": o.op, "slug": o.slug} for o in ops]}
 

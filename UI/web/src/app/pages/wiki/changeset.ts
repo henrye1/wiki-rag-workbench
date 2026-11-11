@@ -30,12 +30,31 @@ import { Markdown } from '../../shared/markdown';
           <mat-form-field appearance="outline" subscriptSizing="dynamic"><mat-label>Reviewer</mat-label>
             <input matInput [(ngModel)]="reviewer" [required]="failingPages(c).length > 0" /></mat-form-field>
           <button mat-stroked-button (click)="discard()" [disabled]="busy()"><mat-icon>delete_sweep</mat-icon> Discard</button>
-          <button mat-flat-button (click)="apply(false)" [disabled]="busy() || (failingPages(c).length > 0 && !reviewer.trim())"
-                  [title]="failingPages(c).length ? 'A held upload is applied only by a named reviewer' : ''"><mat-icon>done_all</mat-icon> Apply</button>
+          @if (c.rerun) {
+            <button mat-stroked-button (click)="rerun()" [disabled]="busy()"
+                    title="Discard this changeset and write the upload again against the wiki as it is now, from the passages saved at upload">
+              <mat-icon>replay</mat-icon> Re-run against the current wiki</button>
+          }
+          <button mat-flat-button (click)="apply(false)" [disabled]="busy() || stale(c).length > 0 || (failingPages(c).length > 0 && !reviewer.trim())"
+                  [title]="stale(c).length ? 'Pages it changes have changed since it was written' : failingPages(c).length ? 'A held upload is applied only by a named reviewer' : ''"><mat-icon>done_all</mat-icon> Apply</button>
         }
       </div>
       @if (busy()) { <mat-progress-bar mode="indeterminate" /> }
       @if (error()) { <p class="error">{{ error() }}</p> }
+      @if (rerunJob(); as j) {
+        <div class="card">Re-run queued as job {{ j.job_id.slice(0, 8) }} ({{ j.mode }} mode); this changeset was discarded.
+          <a [routerLink]="['..', 'jobs']">Follow it on the Jobs tab →</a></div>
+      }
+      @if (c.status === 'pending' && stale(c).length) {
+        <div class="card">
+          <b>Written against an older wiki: {{ stale(c).length }} page(s) it changes have changed since.</b>
+          <span class="muted"> Applying it would lose those changes, so Apply is refused.
+            @if (c.rerun) { Re-run it against the current wiki instead. } @else { Discard it and upload the file again. }</span>
+          <ul>@for (x of stale(c); track x.slug) { <li>{{ x.slug }}: {{ x.reason }}</li> }</ul>
+          <button mat-button (click)="applyAnyway(c)" [disabled]="busy() || (failingPages(c).length > 0 && !reviewer.trim())">
+            <mat-icon>warning</mat-icon> Apply anyway (overwrite these pages)</button>
+        </div>
+      }
       @if (failingPages(c).length) {
         <div class="card">
           <b>Held for review: these pages still fail the schema's checks.</b>
@@ -49,9 +68,9 @@ import { Markdown } from '../../shared/markdown';
       @if (outcome(); as o) {
         <div class="card">
           <b>Applied {{ o.applied?.length ?? 0 }}</b>
-          @if (o.conflicts?.length) {
-            <p class="error">{{ o.conflicts.length }} conflict(s) skipped (page changed since this changeset was written):</p>
-            <ul>@for (x of o.conflicts; track x.slug) { <li>{{ x.slug }}: {{ x.reason }}</li> }</ul>
+          @if (o.overwritten?.length) {
+            <p class="error">Applied anyway: {{ o.overwritten.length }} page(s) changed since it was written were overwritten:</p>
+            <ul>@for (x of o.overwritten; track x.slug) { <li>{{ x.slug }}: {{ x.reason }}</li> }</ul>
           }
           @if (o.removed_source) { <p>Source {{ o.removed_source }} removed; it can be re-ingested.</p> }
         </div>
@@ -63,7 +82,7 @@ import { Markdown } from '../../shared/markdown';
               <mat-panel-title><span class="pill" [class.ok]="o.op === 'create'" [class.bad]="o.op === 'delete'">{{ o.op }}</span> {{ o.title ?? o.slug }}</mat-panel-title>
               <mat-panel-description>
                 {{ o.slug }}
-                @if (o.op === 'update' && o.base_version !== o.current_version) { <span class="pill bad">stale: page now v{{ o.current_version }}</span> }
+                @if (staleOp(o.slug); as why) { <span class="pill bad" [title]="why">stale: {{ why }}</span> }
               </mat-panel-description>
             </mat-expansion-panel-header>
             <ng-template matExpansionPanelContent>
@@ -80,6 +99,8 @@ import { Markdown } from '../../shared/markdown';
 })
 export class WikiChangeset {
   failingPages(c: any): string[] { return Object.keys(c?.check_failures ?? {}); }
+  stale(c: any): any[] { return c?.stale ?? []; }
+  staleOp(slug: string): string { return this.stale(this.cs()).find((x) => x.slug === slug)?.reason ?? ''; }
   private api = inject(Api);
   readonly w = input.required<string>();
   readonly id = input.required<string>();
@@ -87,6 +108,7 @@ export class WikiChangeset {
   readonly busy = signal(false);
   readonly error = signal('');
   readonly outcome = signal<any>(null);
+  readonly rerunJob = signal<any>(null);
   reviewer = '';
 
   constructor() { effect(() => { void this.load(); }); }
@@ -107,5 +129,16 @@ export class WikiChangeset {
     }
   }
   apply(force: boolean) { return this.act(() => this.api.post(`${this.url()}/apply`, {}, { force, reviewer: this.reviewer.trim() })); }
+  applyAnyway(c: any) {
+    const pages = this.stale(c).map((x: any) => x.slug).join('\n');
+    if (!confirm(`Apply anyway? These pages changed since this changeset was written; what changed on them will be overwritten:\n\n${pages}`)) return;
+    return this.apply(true);
+  }
+  rerun() {
+    return this.act(async () => {
+      this.rerunJob.set(await this.api.post(`${this.url()}/rerun`, {}, { reviewer: this.reviewer.trim() }));
+      return null;
+    });
+  }
   discard() { return this.act(() => this.api.post(`${this.url()}/discard`, {}, { reviewer: this.reviewer.trim() })); }
 }

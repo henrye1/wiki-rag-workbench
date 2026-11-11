@@ -9,8 +9,9 @@ from sse_starlette.sse import EventSourceResponse
 
 from .. import jobs
 from ..db import get_pool
-from ..ops import composed, lint, query, recheck, summaries, synthesis, watchdog
+from ..ops import composed, ingest, lint, query, recheck, summaries, synthesis, watchdog
 from ..wiki import checks, store
+from . import sources
 from .deps import Mode, wiki_dep
 
 router = APIRouter(tags=["operations"])
@@ -218,9 +219,23 @@ async def _cs_in_wiki(wiki: dict, cs_id: UUID):
     return cs, ops
 
 
+async def _rerunnable(wiki: dict, cs: dict) -> bool:
+    """An upload changeset whose source kept its passages: it can be run again against the current wiki."""
+    if cs["kind"] != "ingest" or not cs["source_id"]:
+        return False
+    async with get_pool().connection() as conn:
+        row = await (await conn.execute("select sections is not null as kept from wiki.sources where id = %s",
+                                        (cs["source_id"],))).fetchone()
+    return bool(row and row["kept"])
+
+
 @router.get("/wikis/{w}/changesets/{cs_id}")
 async def get_changeset(cs_id: UUID, diff: bool = True, wiki: dict = Depends(wiki_dep)):
+    """A changeset and its ops. While pending: stale, the ops that no longer fit the wiki (applying is refused while
+    there are any), and rerun, whether it can be run again against the current wiki."""
     cs, ops = await _cs_in_wiki(wiki, cs_id)
+    if cs["status"] == "pending":
+        cs = {**cs, "stale": await store.stale_ops(wiki["id"], ops), "rerun": await _rerunnable(wiki, cs)}
     out = []
     for o in ops:
         item = dict(o)
@@ -244,8 +259,13 @@ async def apply_changeset(cs_id: UUID, force: bool = False, reviewer: str | None
         raise HTTPException(409, "This changeset was held for review: it is applied only by a named reviewer (give reviewer).")
     try:
         res = await store.apply_changeset(cs_id, force=force, reviewer=reviewer)
+    except store.Conflicts as e:
+        raise HTTPException(409, {"message": f"Not applied: {len(e.conflicts)} page(s) changed since this changeset was "
+                                  "written. It is still pending. Re-run it against the current wiki, or apply it anyway "
+                                  "to overwrite those pages.", "conflicts": e.conflicts})
     except ValueError as e:
         raise HTTPException(409, str(e))
+    jobs.release(wiki["id"])
     if reviewer:
         await store.add_log(wiki["id"], "edit", f"Changeset {cs_id} applied by {reviewer}")
     return res
@@ -259,9 +279,41 @@ async def discard_changeset(cs_id: UUID, reviewer: str | None = None, wiki: dict
         removed_source = await store.discard_changeset(cs_id, reviewer=reviewer)
     except ValueError as e:
         raise HTTPException(409, str(e))
+    jobs.release(wiki["id"])
     await store.add_log(wiki["id"], "edit", f"Changeset {cs_id} discarded" + (f" by {reviewer}" if reviewer else "")
                         + (f"; source {removed_source} removed" if removed_source else ""))
     return {"ok": True, "removed_source": removed_source}
+
+
+@router.post("/wikis/{w}/changesets/{cs_id}/rerun", status_code=202)
+async def rerun_changeset(cs_id: UUID, reviewer: str | None = None, wiki: dict = Depends(wiki_dep)):
+    """Run a pending upload again against the wiki as it is now: the changeset is discarded, its source is kept, and a
+    new ingest job is queued from the passages the source saved at upload, in the upload's own mode. No file needed."""
+    cs, _ = await _cs_in_wiki(wiki, cs_id)
+    reviewer = (reviewer or "").strip() or None
+    if cs["status"] != "pending":
+        raise HTTPException(409, f"Changeset is {cs['status']}")
+    if cs["kind"] != "ingest" or not cs["source_id"]:
+        raise HTTPException(409, "Only an upload's changeset can be re-run")
+    async with get_pool().connection() as conn:
+        src = await (await conn.execute("select slug from wiki.sources where id = %s", (cs["source_id"],))).fetchone()
+        job = await (await conn.execute("select params from wiki.jobs where id = %s", (cs["job_id"],))).fetchone() \
+            if cs["job_id"] else None
+    saved = await ingest.saved_upload(wiki["id"], src["slug"]) if src else None
+    if not saved:
+        raise HTTPException(409, "This source was uploaded before passages were kept: discard the changeset and upload "
+                                 "the file again")
+    try:
+        await store.discard_changeset(cs_id, reviewer=reviewer, keep_source=True)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    source, ex = saved
+    mode = ((job or {}).get("params") or {}).get("mode") or "review"
+    job_id = await sources.submit_ingest(wiki, source, ex, mode, rerun_of=str(cs_id))
+    await store.add_log(wiki["id"], "edit", f"Changeset {cs_id} re-run against the current wiki as job {job_id}"
+                        + (f" by {reviewer}" if reviewer else ""))
+    jobs.release(wiki["id"])
+    return {"job_id": str(job_id), "source": source["slug"], "mode": mode, "discarded": str(cs_id)}
 
 
 class StatementIn(BaseModel):

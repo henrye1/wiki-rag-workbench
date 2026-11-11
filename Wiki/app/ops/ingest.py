@@ -49,11 +49,25 @@ async def save_source(wiki_id: UUID, ex: Extracted, uri: str | None) -> dict:
             slug, n = f"{base}-{n}", n + 1
         return await (
             await conn.execute(
-                """insert into wiki.sources (wiki_id, slug, title, kind, uri, sha256, text, meta)
-                   values (%s,%s,%s,%s,%s,%s,%s,%s) returning id, slug, title""",
-                (wiki_id, slug, ex.title, ex.kind, uri, sha, ex.text, Jsonb(ex.meta)),
+                """insert into wiki.sources (wiki_id, slug, title, kind, uri, sha256, text, meta, sections)
+                   values (%s,%s,%s,%s,%s,%s,%s,%s,%s) returning id, slug, title""",
+                (wiki_id, slug, ex.title, ex.kind, uri, sha, ex.text, Jsonb(ex.meta), Jsonb(ex.sections)),
             )
         ).fetchone()
+
+
+async def saved_upload(wiki_id: UUID, slug: str) -> tuple[dict, Extracted] | None:
+    """A source and the upload it was saved from (title, kind, text, passages in order, details), to run its ingest
+    again without the original file. None if the source is gone or was saved before passages were kept."""
+    async with get_pool().connection() as conn:
+        row = await (await conn.execute(
+            "select id, slug, title, kind, text, meta, sections from wiki.sources where wiki_id = %s and slug = %s",
+            (wiki_id, slug))).fetchone()
+    if not row or row["sections"] is None:
+        return None
+    meta = {k: v for k, v in (row["meta"] or {}).items() if k != "file"}  # the stored file is added after the upload
+    return ({"id": row["id"], "slug": row["slug"], "title": row["title"]},
+            Extracted(title=row["title"], kind=row["kind"], text=row["text"], sections=list(row["sections"]), meta=meta))
 
 
 def _notes_md(notes: list[dict]) -> str:
@@ -2552,6 +2566,9 @@ async def _without_unchanged(wiki_id, ops: list[Op], failing: dict) -> tuple[lis
 
 async def run_safe(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: str) -> dict:
     """Run ingest; on failure remove the source (if no page uses it) so the upload can be retried."""
+    async with get_pool().connection() as conn:  # an upload that waited its turn: its source may have been removed since
+        if not await (await conn.execute("select 1 from wiki.sources where id = %s", (source["id"],))).fetchone():
+            raise RuntimeError(f"Source {source['slug']} was removed while the upload waited its turn")
     try:
         return await run(ctx, wiki, source, ex, mode)
     except Exception:
