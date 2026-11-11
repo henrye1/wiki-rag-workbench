@@ -98,6 +98,13 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
                 @for (w of wikis(); track w.slug) { <mat-option [value]="w.slug">{{ w.name }}</mat-option> }
               </mat-select></mat-form-field>
           }
+          <mat-form-field appearance="outline" class="pick" subscriptSizing="dynamic"
+                          title="Optional: instructions added to how RAG and the wiki answer in this chat (not to what they search)">
+            <mat-label>Skills (optional)</mat-label>
+            <mat-select multiple [ngModel]="skillIds" (ngModelChange)="setSkills($event)">
+              @for (s of skills(); track s.id) { <mat-option [value]="s.id" [title]="s.description">{{ s.name }}</mat-option> }
+              @empty { <mat-option disabled>No skills yet: add them on the Skills page</mat-option> }
+            </mat-select></mat-form-field>
           <div class="sources" title="Which documents RAG and the wiki may use, for the next message">
             <span class="muted">Sources</span>
             <mat-button-toggle-group [(ngModel)]="sources" hideSingleSelectionIndicator>
@@ -311,6 +318,8 @@ export class Ask {
   sources: Sources = 'all';
   wiki = '';
   renameText = '';
+  skillIds: string[] = []; // the chat's skills (optional)
+  readonly skills = signal<any[]>([]);
   readonly wikis = signal<any[]>([]);
   readonly chats = signal<any[]>([]);
   readonly chatId = signal<string | null>(null);
@@ -336,6 +345,7 @@ export class Ask {
       this.wiki ||= w[0]?.slug ?? '';
     });
     void this.loadChats();
+    this.api.get<any[]>('/api/skills').then((s) => this.skills.set(s), (e) => this.error.set(errMsg(e)));
     const chat = this.route.snapshot.queryParamMap.get('chat');  // /ask?chat=<id> opens a saved chat
     if (chat) void this.open(chat);
   }
@@ -359,10 +369,25 @@ export class Ask {
     this.chatId.set(null);
     this.remember(null);
     this.messages.set([]);
+    this.skillIds = [];
     this.draft.set(null);
     this.synthSaved.set(null);
     this.question = '';
     this.error.set('');
+  }
+
+  /** The chat's skills changed: saved on the chat at once (a new chat gets them when it is created). */
+  async setSkills(ids: string[]) {
+    this.skillIds = ids;
+    const id = this.chatId();
+    if (!id) return;
+    try { await this.api.patch(`/api/ask/chats/${enc(id)}`, { skill_ids: ids }); } catch (e) { this.error.set(errMsg(e)); }
+  }
+
+  /** The chosen skills' text, given to both sides' answer instruction; undefined (left out) when none are chosen. */
+  private instructions(): string | undefined {
+    const chosen = this.skills().filter((s) => this.skillIds.includes(s.id));
+    return chosen.length ? chosen.map((s) => `## ${s.name}\n\n${s.instructions}`).join('\n\n') : undefined;
   }
 
   async open(id: string) {
@@ -372,6 +397,7 @@ export class Ask {
       const c = await this.api.get<any>(`/api/ask/chats/${enc(id)}`);
       this.chatId.set(id);
       this.remember(id);
+      this.skillIds = c.skill_ids ?? [];
       this.draft.set(null);
       this.synthSaved.set(null);
       this.messages.set(c.messages.map((m: any) => ({ ...m, rag: stored(m.rag), wiki: stored(m.wiki) })));
@@ -419,7 +445,7 @@ export class Ask {
     try {
       let id = this.chatId();
       if (!id) {
-        id = (await this.api.post<any>('/api/ask/chats', {})).id as string;
+        id = (await this.api.post<any>('/api/ask/chats', { skill_ids: this.skillIds })).id as string;
         this.chatId.set(id);
         this.remember(id);
       }
@@ -453,7 +479,8 @@ export class Ask {
     this.abort = new AbortController();
     const m = this.messages()[i];
     this.patch(i, (x) => ({ ...x, rag: x.mode !== 'wiki' ? pane() : null, wiki: x.mode !== 'rag' ? pane() : null, created_at: undefined }));
-    const body = { question: m.searched, sources: m.sources };
+    const instructions = this.instructions(); // the chat's skills, if any: the same text for both sides
+    const body = { question: m.searched, sources: m.sources, ...(instructions ? { instructions } : {}) };
     // the RAG also searches the Standard's editorial text, as the benchmark asks it (Benchmark RAG_INCLUDE_EDITORIAL)
     const ragBody = { ...body, include_editorial: true };
     await Promise.all([

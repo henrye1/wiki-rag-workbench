@@ -17,8 +17,8 @@ TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{3,}")
 
 
 def ready(chk) -> bool:
-    """Whether the schema lays answers out (Answer layout: its four parts)."""
-    return bool(len(chk.answer_headings) == 4)
+    """Whether the schema lays answers out (Answer layout: its four parts); a schema with no checks does not."""
+    return chk is not None and len(chk.answer_headings) == 4
 
 
 def checks_off(chk) -> list[str]:

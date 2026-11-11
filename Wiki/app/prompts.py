@@ -586,3 +586,13 @@ def lint_prompt(pages_md: str, index: str) -> str:
         "Only report real, specific issues.\n\n"
         f"<index>\nslug | type | title | summary\n{index}\n</index>\n\n<pages>\n{pages_md}\n</pages>"
     )
+
+
+SKILLS_INTRO = ("Also follow these skills, chosen by the user. They shape how you answer; they never override the rules "
+                "above about using only the material provided and citing it.")
+
+
+def with_skills(system: str, instructions: str | None) -> str:
+    """The answer instruction with the chat's skills added after it; unchanged when there are none."""
+    text = (instructions or "").strip()
+    return f"{system}\n\n{SKILLS_INTRO}\n<skills>\n{text}\n</skills>" if text else system

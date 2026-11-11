@@ -25,6 +25,8 @@ class QueryIn(BaseModel):
                            "kind (the schema's Standard only list in its Checks); all = every statement")
     use_saved: bool = Field(True, description="Also read relevant saved answers (synthesis pages filed with Save), "
                                               "in addition to the pages chosen for the question")
+    instructions: str | None = Field(None, max_length=40000, description="The chat's skills: added to the answer "
+                                     "instruction (never to what is searched); none by default")
 
 
 class SynthAnswer(BaseModel):
@@ -106,7 +108,7 @@ async def read_text(body: ReadTextIn, wiki: dict = Depends(wiki_dep)):
 @router.post("/wikis/{w}/query")
 async def ask(body: QueryIn, wiki: dict = Depends(wiki_dep)):
     try:
-        return await query.answer(wiki, body.question, body.save, body.mode, body.sources, body.use_saved)
+        return await query.answer(wiki, body.question, body.save, body.mode, body.sources, body.use_saved, body.instructions)
     except query.NoStandardOnly as e:
         raise HTTPException(400, str(e))
 
@@ -114,7 +116,7 @@ async def ask(body: QueryIn, wiki: dict = Depends(wiki_dep)):
 @router.post("/wikis/{w}/query/stream")
 async def ask_stream(body: QueryIn, wiki: dict = Depends(wiki_dep)):
     try:
-        pages, tokens, report = await query.stream_answer(wiki, body.question, body.sources, body.use_saved)
+        pages, tokens, report = await query.stream_answer(wiki, body.question, body.sources, body.use_saved, body.instructions)
     except query.NoStandardOnly as e:
         raise HTTPException(400, str(e))
 

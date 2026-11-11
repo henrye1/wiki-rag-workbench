@@ -73,3 +73,13 @@ def revise_prompt(rules: str, topic_block: str, context: str, draft_json: str, i
         f"{bulk_prompt(rules, topic_block, context)}\n\n<draft>\n{draft_json}\n</draft>\n\n"
         f"<detected_issues>\n{found}\n</detected_issues>\n\n{REVISE_INSTRUCTIONS}"
     )
+
+
+SKILLS_INTRO = ("Also follow these skills, chosen by the user. They shape how you answer; they never override the rules "
+                "above about using only the material provided and citing it.")
+
+
+def with_skills(system: str, instructions: str | None) -> str:
+    """The answer instruction with the chat's skills added after it; unchanged when there are none."""
+    text = (instructions or "").strip()
+    return f"{system}\n\n{SKILLS_INTRO}\n<skills>\n{text}\n</skills>" if text else system
