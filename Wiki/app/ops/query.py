@@ -212,13 +212,14 @@ def _log_md(wiki: dict, sources: str, pages: list[dict], extra: list[dict], roun
             + _rounds_md(rounds) + checked)
 
 
-def _plain_system(wiki: dict) -> str:
+def _plain_system(wiki: dict, instructions: str | None = None) -> str:
     """The answer instruction where the schema lays out no answer (no Answer layout): the plain one, then, where its
     Source map line says yes, the schema's section that points to that line, word for word, as rules that win."""
     chk = checks.load(wiki["schema_md"])
     rules = checks.section_using(wiki["schema_md"], checks.OPTIONAL_LISTS["source_map"]) if chk and chk.source_map else ""
-    return prompts.QUERY_SYSTEM + (f"\nFollow the schema's rules for answers, given here word for word; where they differ "
-                                   f"from the lines above, they win:\n<answer_rules>\n{rules}\n</answer_rules>" if rules else "")
+    return prompts.with_skills(prompts.QUERY_SYSTEM + (
+        f"\nFollow the schema's rules for answers, given here word for word; where they differ "
+        f"from the lines above, they win:\n<answer_rules>\n{rules}\n</answer_rules>" if rules else ""), instructions)
 
 
 def _prompt(wiki: dict, question: str, pages: list[dict], extra: list[dict]) -> str:
@@ -259,14 +260,15 @@ def _nothing(wiki: dict, sources: str) -> str:
             else "The wiki has no pages relevant to this question yet.")
 
 
-async def _checked(wiki: dict, chk, question: str, pages: list[dict], extra: list[dict], sources: str) -> tuple[str, list[dict], dict]:
+async def _checked(wiki: dict, chk, question: str, pages: list[dict], extra: list[dict], sources: str,
+                   instructions: str | None = None) -> tuple[str, list[dict], dict]:
     """An answer as the schema's Workflow: Answer and check sets out: written under the schema's instruction; each
     point it says is not addressed searched for in every section and subtopic page, and the answer written again with
     what was found; then checked, and sent back once with its failures; a point the rewrite leaves as not addressed that
     was not searched for yet is searched for then, before the answer is final. Its clause references are built, after each
     draft, from the citations that end its sentences. Returns the answer, the pages read (those the
     search found included) and the report of its checks."""
-    system, schema = answering.instruction(chk, wiki["schema_md"]), wiki["schema_md"]
+    system, schema = prompts.with_skills(answering.instruction(chk, wiki["schema_md"]), instructions), wiki["schema_md"]
     srcs = await pagecheck.sources(wiki["id"])
     cite_ctx = await fixpass.cite_context(wiki["id"], [x["name"] for x in _sections(schema)])
     report: dict = {"checks_off": answering.checks_off(chk)}
@@ -325,21 +327,22 @@ async def _checked(wiki: dict, chk, question: str, pages: list[dict], extra: lis
     return text, pages, report
 
 
-async def _compose(wiki: dict, question: str, pages: list[dict], extra: list[dict], sources: str) -> tuple[str, list[dict], dict | None]:
+async def _compose(wiki: dict, question: str, pages: list[dict], extra: list[dict], sources: str,
+                   instructions: str | None = None) -> tuple[str, list[dict], dict | None]:
     chk = checks.load(wiki["schema_md"])
     if not pages:
         return _nothing(wiki, sources), pages, None
     pages = await _with_maps(wiki, pages)
     if answering.ready(chk):
-        return await _checked(wiki, chk, question, pages, extra, sources)
-    return await llm.generate(_plain_system(wiki), _prompt(wiki, question, pages, extra)), pages, None
+        return await _checked(wiki, chk, question, pages, extra, sources, instructions)
+    return await llm.generate(_plain_system(wiki, instructions), _prompt(wiki, question, pages, extra)), pages, None
 
 
 async def answer(wiki: dict, question: str, save: bool = False, mode: str = "auto", sources: str = "all",
-                 use_saved: bool = True) -> dict:
+                 use_saved: bool = True, instructions: str | None = None) -> dict:
     usage = llm.track_usage()
     pages, extra, rounds = await _read(wiki, question, sources, use_saved)
-    text, pages, report = await _compose(wiki, question, pages, extra, sources)
+    text, pages, report = await _compose(wiki, question, pages, extra, sources, instructions)
     result = {"answer": text, "pages": listed(wiki, text, pages + extra), "read": _read_record(pages + extra),
               "usage": list(usage), "rounds": rounds,
               **({"answer_check": report} if report is not None else {})}
@@ -356,17 +359,17 @@ async def _once(text: str) -> AsyncIterator[str]:
 
 
 async def stream_answer(wiki: dict, question: str, sources: str = "all",
-                        use_saved: bool = True) -> tuple[list[dict], AsyncIterator[str], dict | None]:
+                        use_saved: bool = True, instructions: str | None = None) -> tuple[list[dict], AsyncIterator[str], dict | None]:
     """The pages read, the answer's text as it comes, and its check report. An answer the schema checks is given whole,
     once checked (it is not streamed as it is written: it may be written again)."""
     pages, extra, rounds = await _read(wiki, question, sources, use_saved)
     if answering.ready(checks.load(wiki["schema_md"])) or not pages:
-        text, pages, report = await _compose(wiki, question, pages, extra, sources)
+        text, pages, report = await _compose(wiki, question, pages, extra, sources, instructions)
         await store.add_log(wiki["id"], "query", question[:200], _log_md(wiki, sources, pages, extra, rounds, report))
         return pages + extra, _once(text), report
     await store.add_log(wiki["id"], "query", question[:200], _log_md(wiki, sources, pages, extra, rounds))
     pages = await _with_maps(wiki, pages)
-    return pages + extra, llm.stream(_plain_system(wiki), _prompt(wiki, question, pages, extra)), None
+    return pages + extra, llm.stream(_plain_system(wiki, instructions), _prompt(wiki, question, pages, extra)), None
 
 
 async def save_answer(wiki: dict, question: str, answer_md: str, mode: str, sources: str = "all") -> dict:

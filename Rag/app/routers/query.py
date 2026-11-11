@@ -59,6 +59,8 @@ class QueryIn(BaseModel):
         "whole", description="whole = one search for the whole question (top_k passages, a setting); per_question = when the "
         "question lists numbered questions (Q1. ..., Q2. ...), one search for its first line and one per question, as the "
         "bulk run searches (bulk_k_per_query each, up to bulk_max_chunks), answered with the same prompt")
+    instructions: str | None = Field(None, max_length=40000, description="The chat's skills: added to the answer "
+                                     "instruction (never to what is searched); none by default")
 
 
 def _queries(question: str) -> list[str]:
@@ -82,6 +84,10 @@ def _prompt(q: QueryIn, rows: list[dict]) -> str:
     return prompts.query_prompt(q.question, retrieval.format_context(rows))
 
 
+def _system(q: QueryIn) -> str:
+    return prompts.with_skills(prompts.QUERY_SYSTEM, q.instructions)
+
+
 NOTHING = "No relevant passages found."
 
 
@@ -101,7 +107,7 @@ async def query(q: QueryIn, col: dict = Depends(collection_dep)):
              "document_id": str(r["document_id"]), "content": r["content"]} for r in rows]
     if not rows:
         return {"answer": NOTHING, "citations": [], "read": [], "usage": usage}
-    answer = await llm.generate(prompts.QUERY_SYSTEM, _prompt(q, rows))
+    answer = await llm.generate(_system(q), _prompt(q, rows))
     return {"answer": answer, "citations": _cited(answer, rows), "read": read, "usage": usage}
 
 
@@ -116,7 +122,7 @@ async def query_stream(q: QueryIn, col: dict = Depends(collection_dep)):
             yield {"event": "done", "data": ""}
             return
         parts = []
-        async for t in llm.stream(prompts.QUERY_SYSTEM, _prompt(q, rows)):
+        async for t in llm.stream(_system(q), _prompt(q, rows)):
             parts.append(t)
             yield {"event": "token", "data": json.dumps(t)}
         yield {"event": "citations", "data": json.dumps(_cited("".join(parts), rows))}

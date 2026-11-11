@@ -70,6 +70,7 @@ export class App {
   readonly nav = [
     { path: '/', label: 'Home', icon: 'home' },
     { path: '/ask', label: 'Ask (side by side)', icon: 'forum' },
+    { path: '/skills', label: 'Skills', icon: 'auto_awesome' },
     { path: '/documents', label: 'RAG documents', icon: 'description' },
     { path: '/bulk', label: 'Bulk requirements', icon: 'playlist_add_check' },
     { path: '/wiki', label: 'Wiki', icon: 'menu_book' },

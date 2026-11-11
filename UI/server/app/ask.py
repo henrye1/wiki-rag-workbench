@@ -42,7 +42,8 @@ async def _chat(chat_id: UUID) -> dict:
 
 
 class ChatIn(BaseModel):
-    title: str = ""
+    title: str | None = None
+    skill_ids: list[UUID] | None = Field(None, description="The chat's skills (optional); left out = unchanged")
 
 
 @router.get("/chats")
@@ -56,7 +57,8 @@ async def list_chats():
 
 @router.post("/chats", status_code=201)
 async def create_chat(body: ChatIn):
-    return await _q("insert into ask.chats (title) values (%s) returning *", (body.title.strip()[:120],), one=True)
+    return await _q("insert into ask.chats (title, skill_ids) values (%s, %s) returning *",
+                    ((body.title or "").strip()[:120], body.skill_ids or []), one=True)
 
 
 @router.get("/chats/{chat_id}")
@@ -67,9 +69,12 @@ async def get_chat(chat_id: UUID):
 
 
 @router.patch("/chats/{chat_id}")
-async def rename_chat(chat_id: UUID, body: ChatIn):
-    await _chat(chat_id)
-    return await _q("update ask.chats set title = %s where id = %s returning *", (body.title.strip()[:120], chat_id), one=True)
+async def update_chat(chat_id: UUID, body: ChatIn):
+    """Rename the chat and/or set its skills (each only when given)."""
+    chat = await _chat(chat_id)
+    title = body.title.strip()[:120] if body.title is not None else chat["title"]
+    skill_ids = body.skill_ids if body.skill_ids is not None else chat["skill_ids"]
+    return await _q("update ask.chats set title = %s, skill_ids = %s where id = %s returning *", (title, skill_ids, chat_id), one=True)
 
 
 @router.delete("/chats/{chat_id}", status_code=204)

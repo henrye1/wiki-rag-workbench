@@ -3,6 +3,7 @@ import { Routes } from '@angular/router';
 export const routes: Routes = [
   { path: '', loadComponent: () => import('./pages/home').then((m) => m.Home), title: 'Workbench' },
   { path: 'ask', loadComponent: () => import('./pages/ask').then((m) => m.Ask), title: 'Ask' },
+  { path: 'skills', loadComponent: () => import('./pages/skills').then((m) => m.Skills), title: 'Skills' },
   { path: 'documents', loadComponent: () => import('./pages/documents').then((m) => m.Documents), title: 'RAG documents' },
   { path: 'bulk', loadComponent: () => import('./pages/bulk').then((m) => m.Bulk), title: 'Bulk requirements' },
   { path: 'wiki', loadComponent: () => import('./pages/wiki/wiki-select').then((m) => m.WikiSelect), title: 'Wiki' },
