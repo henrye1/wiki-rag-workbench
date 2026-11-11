@@ -10,7 +10,9 @@ import { poller } from '../../shared/poll';
   selector: 'app-wiki-jobs',
   imports: [DatePipe, JsonPipe, RouterLink, MatButtonModule, MatProgressBarModule],
   template: `
-    <p class="muted">Ingest and LLM lint run as background jobs (one at a time per wiki). This list refreshes while jobs are active.</p>
+    <p class="muted">Ingest and LLM lint run as background jobs (one at a time per wiki). Uploads to a wiki take turns: each
+      starts once the one before it is applied or discarded, so it is written against the wiki as it then stands. This list
+      refreshes while jobs are active.</p>
     <table class="simple">
       <thead><tr><th>Job</th><th>Status</th><th>Progress</th><th>Started</th><th>Result</th></tr></thead>
       <tbody>
@@ -21,6 +23,10 @@ import { poller } from '../../shared/poll';
             <td class="prog">
               @if (j.status === 'running' || j.status === 'queued') { <mat-progress-bar mode="indeterminate" /> }
               <span class="muted">{{ stage(j) }}</span>
+              @if (j.status === 'queued' && j.progress?.waiting; as wt) {
+                <div class="muted">{{ wt.message }}
+                  @if (wt.changeset) { <a [routerLink]="['..', 'changesets', wt.changeset]">review it →</a> }</div>
+              }
               @if (j.progress?.failed_sections?.length) { <div class="error">{{ j.progress.failed_sections.length }} section(s) failed</div> }
               @if (j.progress?.failed_pages?.length) { <div class="error" [title]="j.progress.failed_pages[0].error">{{ j.progress.failed_pages.length }} page(s) skipped: @for (f of j.progress.failed_pages; track f.slug) { {{ f.slug }} } </div> }
               @for (c of j.progress?.citations?.corrected ?? []; track c.page) {

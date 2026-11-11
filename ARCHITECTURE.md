@@ -67,6 +67,21 @@ Entry: `POST /wikis/{w}/sources` → a background job (`Wiki/app/jobs.py`) → `
    sections.
 8. **Commit** as a changeset (`wiki/store.py` `commit`): applied, or held for review when checks still fail.
 
+**Uploads take turns, and a changeset is applied whole or not at all.**
+- *Queue* (`Wiki/app/jobs.py` `_turn`): an ingest job waits, queued, with the reason in `progress.waiting` (shown on
+  the Jobs tab), while an earlier upload to the same wiki is running or waiting, or the wiki has an upload changeset
+  pending review. It starts when that one is applied or discarded, so each upload is written against the wiki as it
+  stands after the one before. A clean auto-applied upload releases the next one at once. Other wikis are not held up.
+- *Restarts*: each source keeps its passages in order (`wiki.sources.sections`, migration 0010). On startup, this
+  service's uploads still waiting are put back in the queue from them (`sources._resume_ingest`). Uploads waiting in
+  another service on the same database are left alone.
+- *Apply* (`wiki/store.py` `apply_changeset`): if any page a changeset changes has changed since it was written
+  (`_conflict`, the same rule the changeset screen's stale warning uses via `stale_ops`), nothing is applied and it
+  stays pending. `force` overwrites those pages, and the overwritten pages are recorded in the log.
+- *Re-run* (`POST /wikis/{w}/changesets/{id}/rerun`): an upload's pending changeset is discarded, its source is kept,
+  and the upload is written again against the current wiki from the saved passages. No file is needed. Sources
+  uploaded before migration 0010 have no saved passages and need their file again.
+
 `ops/recheck.py` runs steps 6–8 again on an existing wiki without re-reading the sources. `ops/lint.py` runs the
 schema's Maintain checks that need no rewrite.
 

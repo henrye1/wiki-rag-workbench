@@ -36,12 +36,27 @@ async def _start(wiki: dict, ex: extract.Extracted, uri: str | None, mode: str,
         raise HTTPException(409, {"message": "Source already ingested", "source": e.slug})
     if file:  # keep the original upload so it can be viewed later
         await attach_file(source["id"], storage.object_path("wiki", str(wiki["id"]), source["slug"], file[0]), file[1], file[0])
-    job_id = await jobs.submit(
-        wiki["id"], "ingest", {"source": source["slug"], "mode": mode},
-        lambda ctx: ingest.run_safe(ctx, wiki, source, ex, mode),
-    )
+    job_id = await submit_ingest(wiki, source, ex, mode)
     return {"job_id": str(job_id), "source": source["slug"], "title": ex.title, "sections": len(ex.sections), "mode": mode,
             "warnings": ex.meta.get("warnings", [])}
+
+
+async def submit_ingest(wiki: dict, source: dict, ex: extract.Extracted, mode: str, **params):
+    """Queue a source's ingest job. It waits its turn behind the wiki's other uploads (see jobs.py)."""
+    return await jobs.submit(wiki["id"], "ingest", {"source": source["slug"], "mode": mode, **params},
+                             lambda ctx: ingest.run_safe(ctx, wiki, source, ex, mode))
+
+
+@jobs.resumer("ingest")
+async def _resume_ingest(job: dict):
+    """An upload still waiting its turn when the service restarted: run from its source's saved passages."""
+    async with get_pool().connection() as conn:
+        wiki = await (await conn.execute("select * from wiki.wikis where id = %s", (job["wiki_id"],))).fetchone()
+    saved = await ingest.saved_upload(wiki["id"], job["params"].get("source")) if wiki else None
+    if not saved:
+        return None
+    source, ex = saved
+    return lambda ctx: ingest.run_safe(ctx, wiki, source, ex, job["params"].get("mode") or "review")
 
 
 @router.post("/wikis/{w}/sources/describe")
