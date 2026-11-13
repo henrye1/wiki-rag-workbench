@@ -78,18 +78,40 @@ def build(chk, pages: dict[str, dict], sources: dict[str, dict], sections: list[
     holders = {sl: p for sl, p in pages.items() if p["type"] in ("topic", "subtopic")}
     order = {sec["num"]: k for k, sec in enumerate(sections)}
 
-    # the terms, from the page that defines the wiki's terms (the page citing most of them)
-    held = {sl: checks.defined_terms(p["content_md"], chk) for sl, p in pages.items() if p["type"] in ("topic", "subtopic")}
-    terms_page = max(held, key=lambda sl: len(held[sl]), default=None)
+    # the terms: each source's, from the page that defines that source's terms (the page citing most of them in the
+    # Defined-term citation form; on a tie the first page), so a page that cites more terms of other sources never
+    # takes a source's terms away. A term several sources define is one concept with one definition line: the one the
+    # page that defines the wiki's terms (the page citing most terms of all) gives it, else its first source's in
+    # upload order (the home standard's sources are uploaded first).
     prefix = chk.defined_term_form.split("<", 1)[0] if "<" in chk.defined_term_form else ""
-    terms: dict[str, str] = {}  # term -> its citation on the terms page
-    if chk.concept_terms and terms_page and held[terms_page]:
-        for m in store.LINK_RE.finditer(pages[terms_page]["content_md"]):
+
+    def citation(m, term):
+        return f"[[{m.group(1)}|{prefix}{term}]]" if f"{prefix}{term}" in sources.get(m.group(1), {}).get("own", {}) else m.group(0)
+
+    def page_terms(slug, source=None):  # (term, citation) for each defined-term link on the page, of one source or all
+        for m in store.LINK_RE.finditer(pages[slug]["content_md"] or ""):
+            lab = (m.group(2) or "").strip()
+            if m.group(1).startswith("source-") and (source is None or m.group(1) == source) and prefix and lab.startswith(prefix):
+                term = re.sub(r"\s*\([a-z0-9]{1,3}\)$", "", lab[len(prefix):].strip())
+                yield term, citation(m, term)
+
+    held_all = {sl: checks.defined_terms(p["content_md"], chk) for sl, p in pages.items() if p["type"] in ("topic", "subtopic")}
+    terms_page = max(held_all, key=lambda sl: len(held_all[sl]), default=None)
+    held: dict[str, dict[str, set]] = {}  # source -> page -> the source's terms the page cites
+    for sl in held_all:
+        for m in store.LINK_RE.finditer(pages[sl]["content_md"] or ""):
             lab = (m.group(2) or "").strip()
             if m.group(1).startswith("source-") and prefix and lab.startswith(prefix):
-                term = re.sub(r"\s*\([a-z0-9]{1,3}\)$", "", lab[len(prefix):].strip())
-                terms.setdefault(term, f"[[{m.group(1)}|{prefix}{term}]]" if f"{prefix}{term}" in
-                                 sources.get(m.group(1), {}).get("own", {}) else m.group(0))
+                held.setdefault(m.group(1), {}).setdefault(sl, set()).add(lab[len(prefix):].strip())
+    terms: dict[str, tuple[str, str]] = {}  # term -> (the page holding its definition, its citation there)
+    if chk.concept_terms:
+        if terms_page and held_all[terms_page]:
+            for term, cite in page_terms(terms_page):
+                terms.setdefault(term, (terms_page, cite))
+        for s in sorted(held, key=lambda s: sources.get(s, {}).get("rank", len(sources))):
+            page = max(held[s], key=lambda sl: len(held[s][sl]))
+            for term, cite in page_terms(page, s):
+                terms.setdefault(term, (page, cite))
     term_res = sorted(((t, _term_re(t, chk.concept_match)) for t in terms), key=lambda x: -len(x[0]))
 
     # the major headings of each source's own text: the paragraphs under each, and its level
@@ -166,7 +188,7 @@ def build(chk, pages: dict[str, dict], sources: dict[str, dict], sections: list[
             if not chk.concept_terms:
                 continue
             title, slug = key[1], _slug(chk, framework, key[1])
-            first = [_fill(chk.concept_defined, [terms_page, terms[key[1]]])] if chk.concept_defined and terms_page else []
+            first = [_fill(chk.concept_defined, list(terms[key[1]]))] if chk.concept_defined else []
         if slug in made:  # two concepts that would take the same slug are the same page
             continue
         made.add(slug)
