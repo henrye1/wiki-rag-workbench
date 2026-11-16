@@ -2,6 +2,7 @@ import { DecimalPipe } from '@angular/common';
 import { Component, computed, effect, inject, input, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../../core/api';
+import { WikiNames } from '../../core/wiki-names';
 import { LABEL } from './systems';
 
 /** The columns compared: each RAG column, and the wiki as graded in each RAG column's pair (the judge compares two
@@ -21,8 +22,8 @@ const COLUMNS = [
       <a routerLink="/benchmark" class="muted">← Runs</a>
       <h1>Compare {{ a() }} → {{ b() }}</h1>
       @if (runA()?.compared && runB()?.compared) {
-        <p>A: <b>{{ runA().compared.rag_collection || '—' }}</b> vs <b>{{ runA().compared.wiki || '—' }}</b>, Sources <span class="pill">{{ label(runA().compared.sources) }}</span>
-          · B: <b>{{ runB().compared.rag_collection || '—' }}</b> vs <b>{{ runB().compared.wiki || '—' }}</b>, Sources <span class="pill">{{ label(runB().compared.sources) }}</span></p>
+        <p>A: <b>{{ runA().compared.rag_collection || '—' }}</b> vs <b>{{ names.name(runA().compared.wiki) || '—' }}</b>, Sources <span class="pill">{{ label(runA().compared.sources) }}</span>
+          · B: <b>{{ runB().compared.rag_collection || '—' }}</b> vs <b>{{ names.name(runB().compared.wiki) || '—' }}</b>, Sources <span class="pill">{{ label(runB().compared.sources) }}</span></p>
         @if (runA().compared.sources !== runB().compared.sources) {
           <p class="warn"><b>Different sources:</b> run A used {{ label(runA().compared.sources) }}, run B {{ label(runB().compared.sources) }}. Differences may come from the setting, not the systems.</p>
         }
@@ -62,6 +63,7 @@ const COLUMNS = [
 })
 export class BenchCompare {
   private api = inject(Api);
+  readonly names = inject(WikiNames);
   readonly a = input.required<string>();
   readonly b = input.required<string>();
   readonly runA = signal<any>(null);

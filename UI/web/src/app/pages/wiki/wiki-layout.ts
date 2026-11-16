@@ -3,6 +3,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatTabsModule } from '@angular/material/tabs';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { Api } from '../../core/api';
+import { WikiNames } from '../../core/wiki-names';
 
 @Component({
   selector: 'app-wiki-layout',
@@ -10,7 +11,7 @@ import { Api } from '../../core/api';
   template: `
     <div class="page">
       <div class="row">
-        <h1 class="grow">{{ info()?.name ?? w() }}</h1>
+        <h1 class="grow">{{ names.name(w(), info()?.name) }}</h1>
         <a [href]="'/view/' + w()" target="_blank" class="muted" title="Server-rendered read-only viewer">Public viewer ↗</a>
       </div>
       <nav mat-tab-nav-bar [tabPanel]="panel">
@@ -27,6 +28,7 @@ import { Api } from '../../core/api';
 })
 export class WikiLayout {
   private api = inject(Api);
+  readonly names = inject(WikiNames);
   readonly w = input.required<string>();
   readonly info = signal<any>(null);
   readonly tabs = [

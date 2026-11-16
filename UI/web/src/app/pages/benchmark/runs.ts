@@ -11,6 +11,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { Router, RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../../core/api';
+import { WikiNames } from '../../core/wiki-names';
 import { FileDrop } from '../../shared/file-drop';
 import { poller } from '../../shared/poll';
 import { SYSTEMS } from './systems';
@@ -39,7 +40,7 @@ import { SYSTEMS } from './systems';
           <span class="muted">vs</span>
           <mat-form-field appearance="outline" subscriptSizing="dynamic" class="wiki"><mat-label>Wiki</mat-label>
             <mat-select [(ngModel)]="wiki">
-              @for (w of wikis(); track w.slug) { <mat-option [value]="w.slug">{{ w.name }} ({{ w.slug }})</mat-option> }
+              @for (w of wikis(); track w.slug) { <mat-option [value]="w.slug">{{ names.name(w.slug, w.name) }}@if (!names.masked(w.slug)) { ({{ w.slug }}) }</mat-option> }
             </mat-select></mat-form-field>
           <div class="sources" title="Both systems always get the same setting">
             <span class="muted">Sources</span>
@@ -142,7 +143,7 @@ import { SYSTEMS } from './systems';
             <tr>
               <td><mat-checkbox [checked]="selected().includes(r.id)" (change)="toggle(r.id)" /></td>
               <td><a [routerLink]="[r.id]">{{ r.id }}</a><div class="muted small">{{ r.started | date: 'd MMM, HH:mm' }}</div></td>
-              <td class="small">{{ r.rag_collection || '—' }}<div class="muted">vs {{ r.wiki || '—' }}</div></td>
+              <td class="small">{{ r.rag_collection || '—' }}<div class="muted">vs {{ names.name(r.wiki) || '—' }}</div></td>
               <td class="small nowrap" [title]="setupTitle(r)">{{ r.mode === 'full' ? 'Full' : r.mode === 'quick' ? 'Quick' : '—' }} · {{ r.topics }}×{{ r.runs }}</td>
               @if (r.summary?.by_system; as b) {
                 @for (sys of systems; track sys) {
@@ -184,6 +185,7 @@ import { SYSTEMS } from './systems';
 })
 export class BenchRuns {
   private api = inject(Api);
+  readonly names = inject(WikiNames);
   private router = inject(Router);
   readonly list = signal<any[]>([]);
   readonly active = signal<any>(null);
