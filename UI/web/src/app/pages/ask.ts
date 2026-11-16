@@ -10,6 +10,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../core/api';
+import { WikiNames } from '../core/wiki-names';
 import { RagCollections } from '../core/collections';
 import { postSse } from '../core/sse';
 import { CitationService } from '../shared/citation-service';
@@ -95,7 +96,7 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
           @if (mode !== 'rag') {
             <mat-form-field appearance="outline" class="pick" subscriptSizing="dynamic"><mat-label>Wiki</mat-label>
               <mat-select [(ngModel)]="wiki">
-                @for (w of wikis(); track w.slug) { <mat-option [value]="w.slug">{{ w.name }}</mat-option> }
+                @for (w of wikis(); track w.slug) { <mat-option [value]="w.slug">{{ names.name(w.slug, w.name) }}</mat-option> }
               </mat-select></mat-form-field>
           }
           <mat-form-field appearance="outline" class="pick" subscriptSizing="dynamic"
@@ -308,6 +309,7 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
 })
 export class Ask {
   private api = inject(Api);
+  readonly names = inject(WikiNames);
   private route = inject(ActivatedRoute);
   private router = inject(Router);
   readonly cites = inject(CitationService);

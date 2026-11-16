@@ -4,6 +4,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { RouterLink } from '@angular/router';
 import { Api, errMsg } from '../core/api';
+import { WikiNames } from '../core/wiki-names';
 
 @Component({
   selector: 'app-home',
@@ -26,7 +27,7 @@ import { Api, errMsg } from '../core/api';
             <div class="stat">{{ pages(s) | number }}</div>
             <div class="muted">pages in {{ s.wiki.wikis.length }} wiki(s)</div>
             <div class="row actions">
-              @for (w of s.wiki.wikis; track w.slug) { <a mat-button [routerLink]="['/wiki', w.slug]">{{ w.name }}</a> }
+              @for (w of s.wiki.wikis; track w.slug) { <a mat-button [routerLink]="['/wiki', w.slug]">{{ names.name(w.slug, w.name) }}</a> }
               @empty { <a mat-button routerLink="/wiki">Create a wiki</a> }
             </div>
           </div>
@@ -59,6 +60,7 @@ import { Api, errMsg } from '../core/api';
 })
 export class Home {
   private api = inject(Api);
+  readonly names = inject(WikiNames);
   readonly s = signal<any>(null);
   readonly error = signal('');
   constructor() {

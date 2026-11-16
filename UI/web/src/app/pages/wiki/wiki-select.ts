@@ -5,6 +5,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { Router, RouterLink } from '@angular/router';
 import { Api, errMsg } from '../../core/api';
+import { WikiNames } from '../../core/wiki-names';
 import { slugify } from '../../shared/markdown';
 
 @Component({
@@ -15,11 +16,15 @@ import { slugify } from '../../shared/markdown';
       <h1>Wikis</h1>
       <div class="cards">
         @for (w of wikis(); track w.slug) {
-          <a class="card link" [routerLink]="['/wiki', w.slug]">
-            <h3>{{ w.name }}</h3>
-            <div class="muted">{{ w.description }}</div>
-            <p><span class="pill">{{ w.pages }} pages</span><span class="pill">{{ w.sources }} sources</span></p>
-          </a>
+          <div class="card">
+            <a class="link" [routerLink]="['/wiki', w.slug]">
+              <h3>{{ names.name(w.slug, w.name) }}</h3>
+              @if (!names.masked(w.slug)) { <div class="muted">{{ w.description }}</div> }
+              <p><span class="pill">{{ w.pages }} pages</span><span class="pill">{{ w.sources }} sources</span></p>
+            </a>
+            <label class="hide small muted"><input type="checkbox" [checked]="names.hidden().has(w.slug)"
+              (change)="names.setHidden(w.slug, $any($event.target).checked)" /> Hide this name</label>
+          </div>
         }
       </div>
       <div class="card create">
@@ -36,11 +41,13 @@ import { slugify } from '../../shared/markdown';
       </div>
     </div>
   `,
-  styles: `.link { text-decoration: none; color: inherit; } .link:hover { border-color: var(--mat-sys-primary); } .create { margin-top: 24px; }`,
+  styles: `.link { display: block; text-decoration: none; color: inherit; } .card:hover { border-color: var(--mat-sys-primary); }
+    .hide { display: flex; align-items: center; gap: 6px; cursor: pointer; } .create { margin-top: 24px; }`,
 })
 export class WikiSelect {
   private api = inject(Api);
   private router = inject(Router);
+  readonly names = inject(WikiNames);
   readonly wikis = signal<any[]>([]);
   readonly error = signal('');
   readonly slugify = slugify;

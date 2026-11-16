@@ -6,6 +6,7 @@ import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { MatIconModule } from '@angular/material/icon';
 import { RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../../core/api';
+import { WikiNames } from '../../core/wiki-names';
 import { LABEL } from './systems';
 
 type SortKey = 'number' | 'gap' | 'rag' | 'wiki' | 'rag_q';
@@ -20,7 +21,7 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki' | 'rag_q';
       @if (data(); as d) {
         <h1>Run {{ id() }}</h1>
         @if (d.compared; as c) {
-          <p class="compared"><b>{{ c.rag_collection || '—' }}</b><span class="muted">&nbsp;vs&nbsp;</span><b>{{ c.wiki || '—' }}</b> ·
+          <p class="compared"><b>{{ c.rag_collection || '—' }}</b><span class="muted">&nbsp;vs&nbsp;</span><b>{{ names.name(c.wiki) || '—' }}</b> ·
             Sources: <span class="pill">{{ c.sources === 'standard' ? 'Standard only' : c.sources === 'all' ? 'All' : '—' }}</span>
             · Saved answers: <span class="pill">{{ c.use_saved === true ? 'On' : c.use_saved === false ? 'Off' : 'not recorded' }}</span>
             <span class="muted small">(the same for every system)</span>
@@ -151,6 +152,7 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki' | 'rag_q';
 })
 export class BenchRun {
   private api = inject(Api);
+  readonly names = inject(WikiNames);
   readonly id = input.required<string>();
   readonly data = signal<any>(null);
   readonly error = signal('');

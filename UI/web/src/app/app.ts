@@ -7,6 +7,7 @@ import { MatToolbarModule } from '@angular/material/toolbar';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { AuthService } from './core/auth';
 import { Loading } from './core/loading';
+import { WikiNames } from './core/wiki-names';
 import { CitationService } from './shared/citation-service';
 import { CitationPanel } from './shared/citations';
 import { Login } from './shared/login';
@@ -29,6 +30,11 @@ import { Login } from './shared/login';
             </a>
           }
         </mat-nav-list>
+        <button type="button" class="names" (click)="names.toggle()" [attr.aria-pressed]="names.on()"
+                title="Hides the names of the wikis ticked on the Wiki page. Only what is shown changes.">
+          <mat-icon>{{ names.on() ? 'visibility' : 'visibility_off' }}</mat-icon>
+          {{ names.on() ? 'Show client wiki names' : 'Hide client wiki names' }}
+        </button>
       </mat-sidenav>
       <mat-sidenav position="end" mode="over" class="drawer" [opened]="drawerOpen()" (closedStart)="cites.close()">
         <app-citation-panel />
@@ -49,6 +55,12 @@ import { Login } from './shared/login';
     .nav { width: 220px; border-right: 1px solid var(--mat-sys-outline-variant); }
     .brand { display: flex; align-items: center; gap: 8px; padding: 16px; font: var(--mat-sys-title-medium); }
     .drawer { width: min(560px, 92vw); }
+    .names {
+      display: flex; align-items: center; gap: 8px; margin: 8px 16px; padding: 8px 12px; cursor: pointer;
+      border: 1px solid var(--mat-sys-outline-variant); border-radius: 8px; background: none; color: inherit;
+      font: var(--mat-sys-label-large);
+    }
+    .names[aria-pressed="true"] { background: var(--mat-sys-secondary-container); }
     .loading {
       position: fixed; inset: 0 0 0 220px; display: grid; place-items: center; pointer-events: none; z-index: 5;
       animation: appear 150ms ease-out;
@@ -64,6 +76,8 @@ export class App {
   readonly auth = inject(AuthService);
   readonly cites = inject(CitationService);
   readonly loading = inject(Loading);
+  readonly names = inject(WikiNames);
+  private readonly numbering = effect(() => { if (this.auth.authenticated()) void this.names.refresh(); });
   // empty-list messages (class "empty") wait until the screen's data has loaded
   private readonly busyClass = effect(() => document.body.classList.toggle('loading-data', this.loading.busy()));
   readonly drawerOpen = computed(() => this.cites.target() !== null);
