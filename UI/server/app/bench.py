@@ -256,6 +256,50 @@ async def download_run(run_id: str, kind: Literal["results.csv", "answers.csv", 
                     headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
 
 
+async def _review_data(run_id: str) -> dict:
+    data = await get_run(run_id)
+    data["topics"] = _mask(data.get("topics") or {}, await _masks())
+    return data
+
+
+@router.get("/runs/{run_id}/expert-review/options")
+async def expert_review_options(run_id: str):
+    """What the run can give expert review files for: the judged pairs, and the repetitions of each."""
+    from . import expert_review
+    return expert_review.options(await _review_data(run_id))
+
+
+@router.get("/runs/{run_id}/expert-review/plan")
+async def expert_review_plan(run_id: str, seed: int, pair: str = "rag_q", rep: int = 1, reviewers: int = 2, shared: int = 4):
+    """How the expert review files would share out the run's topics (and what the run offers), without making them."""
+    from . import expert_review
+    try:
+        return expert_review.plan(await _review_data(run_id), pair, rep, reviewers, seed, shared)
+    except expert_review.ReviewError as e:
+        raise HTTPException(422, str(e))
+
+
+@router.get("/runs/{run_id}/expert-review.zip")
+async def expert_review_files(run_id: str, seed: int, pair: str = "rag_q", rep: int = 1, reviewers: int = 2, shared: int = 4):
+    """The expert review files in one zip: an Excel file per reviewer (blind: Answer A and Answer B; the shared topics in
+    every reviewer's file, the same in each) and the KEY file saying which answer is which. Refused if a reviewer file would name a memo's file or a system."""
+    from . import expert_review
+    data = await _review_data(run_id)
+    try:
+        files, written = await asyncio.to_thread(expert_review.build, data, run_id, pair, rep, reviewers, seed, SYSTEM_LABEL, shared)
+    except expert_review.ReviewError as e:
+        raise HTTPException(422, str(e))
+    from .run_export import unmasked
+    if unmasked(written.encode(), [n for n, _ in await _masks()]):
+        raise HTTPException(500, "A reviewer file would name a reference memo's file; nothing was sent")
+    systems = [SYSTEM_LABEL[s] for s in SYSTEMS] + [x for x in ((data.get("compared") or {}).get(k) for k in ("wiki", "rag_collection")) if x]
+    if leaked := [s for s in systems if s in written]:
+        raise HTTPException(500, f"A reviewer file would show which system wrote an answer ({', '.join(leaked)}); nothing was sent")
+    name = f"Expert_Review_{run_id}.zip"
+    return Response(expert_review.zipped(files), media_type="application/zip",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
+
+
 @router.get("/runs/{run_id}/status")
 async def status(run_id: str):
     row = await _row(run_id, "results->'config' as config, results->'errors' as errors, log")
