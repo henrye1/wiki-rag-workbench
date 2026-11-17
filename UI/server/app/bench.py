@@ -270,23 +270,23 @@ async def expert_review_options(run_id: str):
 
 
 @router.get("/runs/{run_id}/expert-review/plan")
-async def expert_review_plan(run_id: str, seed: int, pair: str = "rag_q", rep: int = 1, reviewers: int = 2):
+async def expert_review_plan(run_id: str, seed: int, pair: str = "rag_q", rep: int = 1, reviewers: int = 2, shared: int = 4):
     """How the expert review files would share out the run's topics (and what the run offers), without making them."""
     from . import expert_review
     try:
-        return expert_review.plan(await _review_data(run_id), pair, rep, reviewers, seed)
+        return expert_review.plan(await _review_data(run_id), pair, rep, reviewers, seed, shared)
     except expert_review.ReviewError as e:
         raise HTTPException(422, str(e))
 
 
 @router.get("/runs/{run_id}/expert-review.zip")
-async def expert_review_files(run_id: str, seed: int, pair: str = "rag_q", rep: int = 1, reviewers: int = 2):
-    """The expert review files in one zip: an Excel file per reviewer (blind: Answer A and Answer B) and the KEY file saying
-    which answer is which. Refused if a reviewer file would name a memo's file or a system."""
+async def expert_review_files(run_id: str, seed: int, pair: str = "rag_q", rep: int = 1, reviewers: int = 2, shared: int = 4):
+    """The expert review files in one zip: an Excel file per reviewer (blind: Answer A and Answer B; the shared topics in
+    every reviewer's file, the same in each) and the KEY file saying which answer is which. Refused if a reviewer file would name a memo's file or a system."""
     from . import expert_review
     data = await _review_data(run_id)
     try:
-        files, written = await asyncio.to_thread(expert_review.build, data, run_id, pair, rep, reviewers, seed, SYSTEM_LABEL)
+        files, written = await asyncio.to_thread(expert_review.build, data, run_id, pair, rep, reviewers, seed, SYSTEM_LABEL, shared)
     except expert_review.ReviewError as e:
         raise HTTPException(422, str(e))
     from .run_export import unmasked

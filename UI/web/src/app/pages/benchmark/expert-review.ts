@@ -11,8 +11,8 @@ import { LABEL } from './systems';
 /** A new seed for the topic split and the A/B order (shown, so the same files can be made again). */
 function newSeed(): number { return Math.floor(100000 + Math.random() * 900000); }
 
-/** The Expert review (Excel) panel: choose a run, the RAG column the wiki is checked against, the repetition and the
- * number of reviewers; see how the topics are shared out; download the reviewer files and the KEY file in one zip. */
+/** The Expert review (Excel) panel: choose a run, the RAG column the wiki is checked against, the repetition, the
+ * number of reviewers and of shared topics; see how the topics are shared out; download the reviewer files and the KEY file in one zip. */
 @Component({
   selector: 'app-expert-review',
   imports: [FormsModule, MatButtonModule, MatFormFieldModule, MatIconModule, MatSelectModule],
@@ -23,7 +23,8 @@ function newSeed(): number { return Math.floor(100000 + Math.random() * 900000);
         <button mat-icon-button type="button" (click)="closed.emit()" aria-label="Close"><mat-icon>close</mat-icon></button>
       </div>
       <p class="muted small">Files for experts to grade the judge's key points themselves, blind: they see only "Answer A" and
-        "Answer B", in a random order per topic. Each topic goes to one reviewer. The KEY file says which answer is which:
+        "Answer B", in a random order per topic. The shared topics go to every reviewer, exactly the same in each file; every
+        other topic goes to one reviewer. The KEY file says which answer is which:
         keep it yourself and send each reviewer only their own file.</p>
       <div class="row choices">
         <mat-form-field appearance="outline" subscriptSizing="dynamic" class="run"><mat-label>Run</mat-label>
@@ -42,20 +43,26 @@ function newSeed(): number { return Math.floor(100000 + Math.random() * 900000);
           <mat-select [ngModel]="reviewers()" (ngModelChange)="reviewers.set($event)">
             @for (n of [1, 2, 3, 4]; track n) { <mat-option [value]="n">{{ n }}</mat-option> }
           </mat-select></mat-form-field>
+        <mat-form-field appearance="outline" subscriptSizing="dynamic" class="small-field"
+                        title="Topics every reviewer gets, the same in each file, to compare the reviewers with each other"><mat-label>Shared topics</mat-label>
+          <mat-select [ngModel]="shared()" (ngModelChange)="shared.set($event)">
+            @for (n of [0, 1, 2, 3, 4]; track n) { <mat-option [value]="n">{{ n }}</mat-option> }
+          </mat-select></mat-form-field>
       </div>
       @if (error()) { <p class="error">{{ error() }}</p> }
       @if (plan(); as p) {
         <h4>Topic split</h4>
-        <p class="muted small">Seed {{ p.seed }} · every topic to one reviewer, shared out evenly within topics
-          {{ groupText(p) }}, at random.
+        <p class="muted small">Seed {{ p.seed }} · shared topics (every reviewer): {{ p.shared.length ? p.shared.join(', ') : 'none' }} ·
+          the other topics each to one reviewer, shared out evenly within topics {{ groupText(p) }}, at random.
           <button mat-button type="button" (click)="seed.set(newSeed())"><mat-icon>casino</mat-icon> New seed</button></p>
         <table class="simple split">
-          <thead><tr><th>Reviewer</th><th class="n">Topics</th>@for (g of p.groups; track $index) { <th class="n">{{ g[0] }}–{{ g[1] }}</th> }<th>Topic numbers</th></tr></thead>
+          <thead><tr><th>Reviewer</th><th class="n">Topics</th>@for (g of p.groups; track $index) { <th class="n">{{ g[0] }}–{{ g[1] }}</th> }<th class="n">Shared</th><th>Topic numbers</th></tr></thead>
           <tbody>
             @for (r of p.reviewers; track r.n) {
               <tr><td>Reviewer {{ r.n }}</td><td class="n">{{ r.topics.length }}</td>
                 @for (c of r.by_group; track $index) { <td class="n">{{ c }}</td> }
-                <td>{{ r.topics.join(', ') }}</td></tr>
+                <td class="n">{{ r.topics.length - r.own.length }}</td>
+                <td>@for (n of r.topics; track n; let last = $last) { <span [class.shared]="p.shared.includes(n)">{{ n }}</span>{{ last ? '' : ', ' }} }</td></tr>
             }
           </tbody>
         </table>
@@ -71,6 +78,7 @@ function newSeed(): number { return Math.floor(100000 + Math.random() * 900000);
     .panel { margin: 0 0 16px; } .head { align-items: center; } .head h3 { margin: 0; }
     .choices { gap: 8px; flex-wrap: wrap; align-items: center; } .run { min-width: 280px; } .small-field { width: 120px; }
     .small { font-size: 12px; } h4 { margin: 14px 0 4px; } .split td.n, .split th.n { text-align: right; }
+    .shared { font-weight: 600; text-decoration: underline; }
     .dl { gap: 12px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
   `,
 })
@@ -87,6 +95,7 @@ export class ExpertReview {
   readonly pair = signal('rag_q');
   readonly rep = signal(1);
   readonly reviewers = signal(2);
+  readonly shared = signal(4);
   readonly seed = signal(newSeed());
   readonly plan = signal<any>(null);
   readonly error = signal('');
@@ -97,7 +106,7 @@ export class ExpertReview {
     effect(() => { const id = this.run(); untracked(() => this.pick(id)); });
     effect(() => {
       const id = this.chosen(), opt = this.options();
-      const q = { seed: this.seed(), pair: this.pair(), rep: this.rep(), reviewers: this.reviewers() };
+      const q = { seed: this.seed(), pair: this.pair(), rep: this.rep(), reviewers: this.reviewers(), shared: this.shared() };
       if (!id || !opt || !opt.pairs.includes(q.pair)) return;
       this.api.get(`/api/bench/runs/${enc(id)}/expert-review/plan`, q)
         .then((p) => { this.plan.set(p); this.error.set(''); })
@@ -135,7 +144,8 @@ export class ExpertReview {
     return [...p.reviewers.map((r: any) => `Expert_Review_${id}_Reviewer${r.n}.xlsx`), `Expert_Review_${id}_KEY.xlsx`].join(', ');
   }
   downloadUrl() {
-    const q = new URLSearchParams({ seed: String(this.seed()), pair: this.pair(), rep: String(this.rep()), reviewers: String(this.reviewers()) });
+    const q = new URLSearchParams({ seed: String(this.seed()), pair: this.pair(), rep: String(this.rep()), reviewers: String(this.reviewers()),
+                                    shared: String(this.shared()) });
     return `/api/bench/runs/${enc(this.chosen())}/expert-review.zip?${q}`;
   }
 }
