@@ -7,13 +7,14 @@ import { MatIconModule } from '@angular/material/icon';
 import { RouterLink } from '@angular/router';
 import { Api, enc, errMsg } from '../../core/api';
 import { WikiNames } from '../../core/wiki-names';
+import { ExpertReview } from './expert-review';
 import { LABEL } from './systems';
 
 type SortKey = 'number' | 'gap' | 'rag' | 'wiki' | 'rag_q';
 
 @Component({
   selector: 'app-bench-run',
-  imports: [FormsModule, RouterLink, DecimalPipe, MatButtonModule, MatButtonToggleModule, MatIconModule],
+  imports: [FormsModule, RouterLink, DecimalPipe, MatButtonModule, MatButtonToggleModule, MatIconModule, ExpertReview],
   template: `
     <div class="page">
       <a routerLink="/benchmark" class="muted">← Runs</a>
@@ -36,7 +37,10 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki' | 'rag_q';
           @for (f of downloads; track f.kind) {
             <a mat-stroked-button [href]="downloadUrl(f.kind)" download [title]="f.title"><mat-icon>download</mat-icon> {{ f.label }}</a>
           }
+          <button mat-stroked-button type="button" (click)="reviewOpen.set(!reviewOpen())" [attr.aria-expanded]="reviewOpen()"
+                  title="Excel files for experts to grade the judge's key points blind, one file per reviewer, and a KEY file"><mat-icon>table_view</mat-icon> Expert review (Excel)</button>
         </div>
+        @if (reviewOpen()) { <app-expert-review [run]="id()" (closed)="reviewOpen.set(false)" /> }
         @for (p of pairs(d); track p) {
           <div class="card gaps">
             <h3>Scorecard: Wiki vs {{ label(p) }}</h3>
@@ -157,6 +161,7 @@ export class BenchRun {
   readonly data = signal<any>(null);
   readonly error = signal('');
   readonly sort = signal<SortKey>('number');
+  readonly reviewOpen = signal(false);
   /** The run as files, read only; the reference memo is named by its label. */
   readonly downloads = [
     { kind: 'scorecard.csv', label: 'Scorecard CSV', title: 'The scorecards above: every test, each system\'s score, the wiki-minus-RAG gap with its 95% interval and the result' },
