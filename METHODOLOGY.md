@@ -3455,6 +3455,8 @@ The answer is recorded with its citations, latency, what was read (`read`) and t
 | Coverage | % | pair | `100 × Σ weight / #key points`, with full 1, partial 0.5, missing 0; mean of both orders | `run.py:coverage`, `WEIGHT` |
 | Standard-only coverage | % | pair | the same, over key points tagged `standard` | `run.py:coverage(..., "standard")` |
 | Standard + Supporting coverage | % | pair | the same, over `standard` and `supporting`; only when `sources == "all"` | `run.py:_record` |
+| Multi-source: secondary-document coverage | % | pair, multi-source topics | on topics whose key points come from two or more documents (each key point's document is the one holding the paragraph its backing reference names), the same as coverage over the key points not from the topic's main document; worked out on the server from stored grades, no model call | `UI/server/app/multisource.py` |
+| Multi-source: all documents covered | % | pair, multi-source topics | share of answers that covered at least half of the key points from every document the topic needs (per order, averaged over both orders) | `UI/server/app/multisource.py` |
 | Wins | count; gap as share of answers | pair | the system both orders pick, else a tie | `run.py:_record`, `aggregate` |
 | Completeness | % | answer | answered 1, partly 0.5, not answered 0, over the topic's questions | `checks.py:score` |
 | Exact match | % | answer | share of the topic's hard facts the answer states | `checks.py:score` |
