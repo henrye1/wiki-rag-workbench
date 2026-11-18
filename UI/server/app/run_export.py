@@ -155,7 +155,8 @@ def unmasked(blob: bytes, names: list[str]) -> list[str]:
 # ---------- the summary scorecard: the rows scorecard.build makes, the same the run page shows ----------
 def scorecard_csv(data: dict, label: dict) -> bytes:
     """The run page's scorecards, one row per pair and test: each system's score as shown and as a number, the
-    wiki-minus-RAG gap with its 95% interval and the verdict, or why a test has no score."""
+    wiki-minus-RAG gap with its 95% interval and the verdict, or why a test has no score, and what a test was worked out
+    over where the page shows it beside the test (the multi-source tests: how many topics, and key points left out)."""
     out = []
     for p in (data.get("scorecard") or scorecard.build(data))["pairs"]:
         for x in p["rows"]:
@@ -163,7 +164,8 @@ def scorecard_csv(data: dict, label: dict) -> bytes:
             ci = e.get("ci")
             out.append([f"Wiki vs {label.get(p['pair'], p['pair'])}", x["label"], r["text"], w["text"], r["value"], w["value"],
                         e.get("text", ""), e.get("value", ""), e.get("ci_text", ""), ci[0] if ci else "", ci[1] if ci else "",
-                        e.get("verdict", ""), e.get("leader", ""), x["note"], r["reason"] if r["ok"] else "", w["reason"] if w["ok"] else ""])
+                        e.get("verdict", ""), e.get("leader", ""), x["note"], r["reason"] if r["ok"] else "", w["reason"] if w["ok"] else "",
+                        x.get("detail", "")])
     return _csv(["scorecard", "test", "RAG", "Wiki", "RAG value", "Wiki value", "Wiki − RAG", "Wiki − RAG value",
                  "95% confidence interval", "interval low", "interval high", "result", "leader", "note",
-                 "RAG covers", "Wiki covers"], out)
+                 "RAG covers", "Wiki covers", "about the test"], out)

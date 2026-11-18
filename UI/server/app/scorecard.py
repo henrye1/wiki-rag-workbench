@@ -3,7 +3,8 @@ shown (or why it has none), the wiki-minus-RAG gap with its 95% interval and res
 system cards show. The run page shows these rows as they are (GET /api/bench/runs/{id} carries them as "scorecard"),
 and the Scorecard CSV download writes the same rows, so the two cannot disagree."""
 
-ORDER = ("similarity", "std_similarity", "coverage", "coverage_standard", "coverage_std_supp", "wins", "contradictions",
+ORDER = ("similarity", "std_similarity", "coverage", "coverage_standard", "coverage_std_supp", "ms_secondary", "ms_all_docs",
+         "wins", "contradictions",
          "no_contradiction", "completeness", "exact_match", "exact_match_standard", "citation_accuracy", "faithfulness",
          "context_recall", "context_recall_standard", "latency_s", "cost_usd")
 LABEL = {
@@ -14,12 +15,15 @@ LABEL = {
     "completeness": "Completeness", "latency_s": "Latency (s, lower is better)", "cost_usd": "Cost per query (lower is better)",
     "std_similarity": "Standard-only similarity (0–10)", "contradictions": "Contradictions per answer (lower is better)",
     "no_contradiction": "Answers with no contradiction",
+    "ms_secondary": "Multi-source: secondary-document coverage",
+    "ms_all_docs": "Multi-source: all documents covered (at least half each)",
 }
 CARD_LABEL = {"std_similarity": "Standard-only similarity", "contradictions": "Contradictions per answer",
               "no_contradiction": "Answers with no contradiction"}
 JUDGED = ("similarity", "coverage", "coverage_standard", "coverage_std_supp")  # from the pair's own grading
 EXTRAS = ("std_similarity", "contradictions", "no_contradiction")  # read from what the run stored besides its summary
 COUNTED = ("contradictions", "no_contradiction")  # counts per answer: no wiki-minus-RAG interval
+MULTI = ("ms_secondary", "ms_all_docs")  # from the judge's grades by key point and each key point's document (multisource.py)
 
 
 def _g(obj, *keys):
@@ -72,11 +76,38 @@ def extra(d: dict, sys: str, k: str, pair: str = "rag") -> dict:
     return _cell(True, f"{c['none']} of {c['n']} ({c['none_pct']:.0f}%)", c["none_pct"], f"{c['n']} answer(s)")
 
 
+def multi(d: dict, sys: str, k: str, pair: str = "rag") -> dict:
+    """One system's multi-source figure in one pair (from the pair's own grading), or why it has none."""
+    m = d.get("multi_source")
+    if not m:
+        return _cell(False, "not measured", None, "not worked out for this run")
+    if not m.get("multi_source"):
+        return _cell(False, "no multi-source topics", None, "no topic's key points come from two or more documents")
+    v = _g(m, "pairs", pair, "by_system", sys, k)
+    if not v or v.get("mean") is None:
+        return _cell(False, "Not run yet", None, "no graded answers on the multi-source topics")
+    return _cell(True, f"{v['mean']}%", v["mean"], f"{v['n']} multi-source topic(s)")
+
+
+def multi_detail(d: dict) -> str:
+    """How many topics are multi-source, and how many key points were left out (shown beside the measure)."""
+    m = d.get("multi_source")
+    if not m:
+        return ""
+    out = f"{m['multi_source']} of {m['topics']} topics multi-source (key points from two or more documents)"
+    if m.get("left_out"):
+        out += (f"; {m['left_out']} of {m['points']} key points left out (the rubric names no backing paragraph, "
+                "or one that fits no single document)")
+    return out
+
+
 def score(d: dict, sys: str, k: str, pair: str = "rag") -> dict:
     """One system's score on one test in one pair, or "Not run yet" with the reason. The judged tests and wins come from
     the pair's own grading (the wiki is graded once per RAG column); the other tests are per answer."""
     if k in EXTRAS:
         return extra(d, sys, k, pair)
+    if k in MULTI:
+        return multi(d, sys, k, pair)
     no = lambda why: _cell(False, "Not run yet", None, why)
     s = d.get("summary")
     if not s:
@@ -104,6 +135,8 @@ def score(d: dict, sys: str, k: str, pair: str = "rag") -> dict:
 def _gap(d: dict, pair: str, k: str):
     if k == "std_similarity":
         return _g(_std_sim(d, pair), "gap")
+    if k in MULTI:
+        return _g(d, "multi_source", "pairs", pair, "gaps", k)
     if k in COUNTED:
         return None
     return _g(d, "summary", "gaps", k) if pair == "rag" else _g(d, "summary", "pairs", pair, "gaps", k)
@@ -120,7 +153,8 @@ def row(d: dict, pair: str, k: str) -> dict:
                "ci_text": f"{fmt_gap(k, ci[0])} to {fmt_gap(k, ci[1])}" if ci else "", "ci": ci or None,
                "verdict": e.get("verdict"), "leader": e.get("leader") or ""}
     note = "" if gap else (r["reason"] if not r["ok"] else w["reason"] if not w["ok"] else "no interval: a count per answer" if k in COUNTED else "")
-    return {"key": k, "label": LABEL[k], "rag": r, "wiki": w, "gap": gap, "note": note}
+    return {"key": k, "label": LABEL[k], "rag": r, "wiki": w, "gap": gap, "note": note,
+            "detail": multi_detail(d) if k in MULTI else ""}
 
 
 def build(d: dict) -> dict:

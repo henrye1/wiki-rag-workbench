@@ -17,7 +17,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
-from . import scorecard
+from . import multisource, scorecard
 from .config import get_settings
 from .proxy import client
 
@@ -233,8 +233,31 @@ async def get_run(run_id: str):
     # what the run compared, from the run row (set when it was started) and its config
     data["compared"] = {"rag_collection": row["rag_collection"], "wiki": row["wiki_slug"], "sources": row["sources"], "use_saved": row["use_saved"],
                         "rag_editorial": (data.get("config") or {}).get("rag_include_editorial")}
+    data["multi_source"] = multisource.measure(data, await _backing_documents(row["reference_sha"]), (data.get("config") or {}).get("seed", 42))
     data["scorecard"] = scorecard.build(data)  # the page shows these rows; the Scorecard CSV writes the same
     return data
+
+
+async def _backing_documents(ref_sha: str | None) -> list[dict]:
+    """The documents a key point's backing reference may point to, by name, with their paragraph labels (not their
+    text): those the memo's rubric tag check uses where ticked, else every document of the "standard" and "supporting" tiers. Cached with
+    the memo labels."""
+    key = f"backing:{ref_sha}"
+    hit = _ref_cache.get(key)
+    if hit and dt.datetime.now() - hit[0] < REF_TTL:
+        return hit[1]
+    ticked = ((await _labels()).get(ref_sha) or {}).get("tag_sources")
+    docs = [d for d in await _documents() if (d["slug"] in ticked if ticked is not None else d["tier"] != "other")]
+    rows = await _query(r"""select distinct on (slug) slug, array(select (regexp_matches(text, '^\[([^]\n]+)\]', 'gn'))[1]) as labels
+                            from wiki.sources where slug = any(%s) order by slug, length(text) desc""", ([d["slug"] for d in docs],))
+    labels = {r["slug"]: {" ".join(x.split()) for x in r["labels"]} for r in rows}
+    by_name: dict[str, dict] = {}
+    for d in docs:  # one entry per name: copies of a document in several wikis hold the same paragraphs
+        e = by_name.setdefault(d["name"], {"name": d["name"], "tier": d["tier"], "labels": set()})
+        e["labels"] |= labels.get(d["slug"], set())
+    out = list(by_name.values())
+    _ref_cache[key] = (dt.datetime.now(), out)
+    return out
 
 
 @router.get("/runs/{run_id}/download/{kind}")

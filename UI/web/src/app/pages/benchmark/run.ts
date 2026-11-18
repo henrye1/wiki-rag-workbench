@@ -49,7 +49,7 @@ type SortKey = 'number' | 'gap' | 'rag' | 'wiki' | 'rag_q';
               <tbody>
                 @for (x of rows(d, p); track x.key) {
                   <tr>
-                    <td>{{ x.label }}</td>
+                    <td>{{ x.label }}@if (x.detail) { <div class="muted small">{{ x.detail }}</div> }</td>
                     <td class="n" [class.muted]="!x.rag.ok" [title]="x.rag.reason">{{ x.rag.text }}</td>
                     <td class="n" [class.muted]="!x.wiki.ok" [title]="x.wiki.reason">{{ x.wiki.text }}</td>
                     @if (x.gap; as e) {

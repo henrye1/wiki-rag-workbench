@@ -20,6 +20,7 @@ The list and labels live in one place, `bench/systems.py` (the UI server keeps a
 4. **Scores.**
    - coverage % = (full + 0.5 × partial) / key points; standard-only coverage over Standard points; Standard + Supporting coverage (runs reading all sources only)
    - similarity (0–10) and wins
+   - multi-source synthesis (shown by the Workbench from the stored grades, no model call): on topics whose key points come from two or more source documents (each key point's document is the one holding its backing paragraph), secondary-document coverage over the key points outside the topic's main document, and the share of answers covering at least half of the points of every document; key points naming no backing paragraph are left out and counted
    - latency and cost per query (recorded tokens × `bench/prices.json`)
    - each topic gets the mean ± sd over its repetitions; the run summary averages the topic means
    - every wiki-minus-RAG gap has a 95% confidence interval (topics resampled 10,000 times); an interval crossing zero means no clear difference
