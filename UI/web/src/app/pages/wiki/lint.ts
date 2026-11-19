@@ -26,6 +26,16 @@ import { poller } from '../../shared/poll';
           <div class="card"><div class="stat" [class.error]="r[k.key]?.length">{{ r[k.key]?.length ?? 0 }}</div><div class="muted">{{ k.label }}</div></div>
         }
       </div>
+      @if (r.contradictions; as cs) {
+        <h3>Contradictions recorded on the pages ({{ cs.length }})</h3>
+        @if (cs.length) {
+          <table class="simple"><thead><tr><th>Page</th>@for (n of partNames(cs); track n) { <th>{{ n }}</th> }</tr></thead><tbody>
+            @for (c of cs; track $index) {
+              <tr><td><a [routerLink]="['..', 'pages', c.slug]">{{ c.title || c.slug }}</a></td>@for (n of partNames(cs); track n) { <td>{{ c.parts[n] }}</td> }</tr>
+            }
+          </tbody></table>
+        } @else { <p class="muted">No page holds a line in the schema's contradiction callout form.</p> }
+      }
       @if (r.broken_links?.length) {
         <h3>Broken links (page doesn’t exist yet)</h3>
         <table class="simple"><tbody>
@@ -111,6 +121,8 @@ export class WikiLint {
   readonly fix = signal<any>(null);
   readonly maintain = signal<any>(null);
   pageKeys(c: any): string[] { return Object.keys(c?.pages ?? {}); }
+  /** The parts of the schema's contradiction callout form, by the names it gives them, in its order. */
+  partNames(cs: any[]): string[] { return Object.keys(cs[0]?.parts ?? {}); }
   readonly busy = signal(false);
   readonly status = signal('');
   readonly error = signal('');

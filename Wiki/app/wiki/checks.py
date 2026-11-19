@@ -112,6 +112,10 @@ class Checks:
     note_markers: list[str] = field(default_factory=list)  # each starts a note of its own
     source_map: bool = False  # each page read for an answer is given with its source map
     min_read: int = 0  # page choosing for an answer does not end with fewer pages read than this
+    newer_version: dict = field(default_factory=dict)  # how an upload is a newer version of an earlier source: {"same":
+    # the document details both must share, "given": only where both give them, "spacing": paragraph text compared
+    # ignoring spacing}; empty: the stale-claim check is off
+    contradiction_form: str = ""  # the line a recorded contradiction is shown as (with its placeholders); empty: off
     missing: list[str] = field(default_factory=list)  # lists the schema does not give: their checks are off
     unreadable: list[str] = field(default_factory=list)  # lists the schema gives in wording the engine cannot read
     unknown: list[str] = field(default_factory=list)  # lines of the Checks section that name no list the engine knows
@@ -146,6 +150,7 @@ ANSWER_LISTS = {  # read like LISTS, but used only when answering and by lint: a
 }
 OPTIONAL_LISTS = {  # read like LISTS, but a missing one is simply off: nothing is reported, no upload is held
     "source_map": "source map with each page read", "min_read": "pages read before answering",
+    "newer_version": "newer version", "contradiction_form": "contradiction callout",
 }
 PLACEHOLDER = re.compile(r"<[^<>]+>")
 AGENDA = LISTS["agenda_markers"].rsplit(" ", 1)[0]  # the Openers entry an agenda decision takes: its list's name, less "marker"
@@ -358,6 +363,21 @@ def load(schema_md: str) -> Checks | None:
         c.source_map = value.split(".", 1)[0].strip().casefold() == "yes"
     if (value := get(OPTIONAL_LISTS["min_read"])) is not None and (m := re.match(r"\s*at least (\d+)", value, re.I)):
         c.min_read = int(m.group(1))
+    # an optional list the schema gives but in wording the engine cannot read is reported like any other list
+    if (value := get(OPTIONAL_LISTS["newer_version"])) is not None and value.strip().rstrip(".").casefold() != "none":
+        same = re.search(r"\bsame (.+?) as\b", value, re.I)
+        names = [x.strip().casefold() for x in re.split(r",\s*|\s+and\s+", same.group(1)) if x.strip()] if same else []
+        if names:
+            c.newer_version = {"same": names, "given": bool(re.search(r"\bboth are given\b", value, re.I)),
+                               "spacing": bool(re.search(r"\bignoring spacing\b", value, re.I))}
+        else:
+            c.unreadable.append(OPTIONAL_LISTS["newer_version"])
+    if (value := get(OPTIONAL_LISTS["contradiction_form"])) is not None and value.strip().rstrip(".").casefold() != "none":
+        form = (QUOTED.findall(value) or [""])[0].strip()
+        if len(PLACEHOLDER.findall(form)) >= 2:
+            c.contradiction_form = form
+        else:
+            c.unreadable.append(OPTIONAL_LISTS["contradiction_form"])
     return c
 
 
@@ -666,6 +686,44 @@ def closing_links(text: str) -> list[re.Match]:
         for u in units(line):
             if g := TRAILING_GROUP.search(LINE_END_JOIN.sub("", u.rstrip())):
                 out += [m for m in store.LINK_RE.finditer(g.group(0))]
+    return out
+
+
+def _outside_quotes(text: str, at: int) -> bool:
+    """Whether position at in text is outside a quotation (an even number of quote marks before it)."""
+    before = text[:at]
+    return (before.count('"') + before.count("\u201c") + before.count("\u201d")) % 2 == 0
+
+
+def form_lines(text: str, form: str) -> list[dict[str, str]]:
+    """Each line of text in a schema form such as "<prefix> <a> word <b>; <c> word <d>." (Checks: Contradiction
+    callout): {placeholder name: its text}, in the form's order. A separator is found only outside a quotation, so a
+    quoted text may hold one; the form's closing punctuation is optional on the line."""
+    parts = re.split(r"(<[^<>]+>)", form.strip())
+    lead, tail = parts[0], parts[-1].strip()
+    if not lead.strip():
+        return []
+    flat = lambda x: " ".join(x.split())
+    out = []
+    for line in text.splitlines():
+        line = flat(line)
+        if not line.startswith(flat(lead)):
+            continue
+        rest, got, ok = line[len(flat(lead)):], {}, True
+        for i in range(1, len(parts) - 1, 2):
+            name, sep = parts[i][1:-1].strip(), flat(parts[i + 1])
+            last = i + 2 >= len(parts) - 1
+            if last:
+                value = rest[:-len(tail)] if tail and rest.endswith(tail) else rest
+            else:
+                pos = next((m.start() for m in re.finditer(re.escape(sep), rest) if _outside_quotes(rest, m.start())), -1)
+                if pos < 0 or not sep:
+                    ok = False
+                    break
+                value, rest = rest[:pos], rest[pos + len(sep):]
+            got[name] = value.strip()
+        if ok and all(got.values()):
+            out.append(got)
     return out
 
 

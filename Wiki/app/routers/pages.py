@@ -100,6 +100,25 @@ async def versions(slug: str, wiki: dict = Depends(wiki_dep)):
         ).fetchall()
 
 
+@router.get("/wikis/{w}/pages/{slug}/changes")
+async def changes(slug: str, wiki: dict = Depends(wiki_dep)):
+    """The applied changesets that changed this page, newest first, from the stored changesets (read only): what kind
+    of change, the upload's source where there is one, what it did to the page and when it was applied."""
+    await _page_or_404(wiki, slug)
+    async with get_pool().connection() as conn:
+        return await (
+            await conn.execute(
+                """select c.id as changeset_id, c.kind, c.summary, c.applied_at, c.reviewer, o.op, o.change_note,
+                          s.slug as source_slug, s.title as source_title
+                   from wiki.changeset_ops o join wiki.changesets c on c.id = o.changeset_id
+                   left join wiki.sources s on s.id = c.source_id
+                   where c.wiki_id = %s and o.slug = %s and c.status = 'applied'
+                   order by c.applied_at desc nulls last, c.created_at desc""",
+                (wiki["id"], slug),
+            )
+        ).fetchall()
+
+
 @router.get("/wikis/{w}/pages/{slug}/versions/{version}")
 async def get_version(slug: str, version: int, wiki: dict = Depends(wiki_dep)):
     page = await _page_or_404(wiki, slug)
