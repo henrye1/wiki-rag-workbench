@@ -47,13 +47,17 @@ async def structural(wiki_id: UUID, chk: checks.Checks) -> dict:
                  and p.content_md not like '%%[[source-%%' order by p.slug"""
         )
         titles = await q("select slug, lower(title) as t from wiki.pages where wiki_id = %(w)s")
+        form = chk.contradiction_form if chk else ""
+        texts = await q("select slug, title, content_md from wiki.pages where wiki_id = %(w)s order by slug") if form else []
 
     norm: dict[str, list[str]] = {}
     for r in titles:
         key = re.sub(r"[^a-z0-9]", "", re.sub(r"s\b", "", r["t"]))
         norm.setdefault(key, []).append(r["slug"])
     duplicates = [v for v in norm.values() if len(v) > 1]
+    out = {"contradictions": contradictions(texts, form)} if form else {}  # Checks: Contradiction callout; off without it
     return {
+        **out,
         "broken_links": broken,
         "orphans": orphans,
         "missing_metadata": missing_meta,
@@ -61,6 +65,13 @@ async def structural(wiki_id: UUID, chk: checks.Checks) -> dict:
         "unsourced_pages": unsourced,
         "possible_duplicates": duplicates,
     }
+
+
+def contradictions(pages: list[dict], form: str) -> list[dict]:
+    """Every line on the pages in the schema's contradiction callout form: the page and the form's parts (the two
+    locations and what each says, by the names the form gives them), in page order."""
+    return [{"slug": p["slug"], "title": p["title"], "parts": parts}
+            for p in pages for parts in checks.form_lines(p["content_md"] or "", form)]
 
 
 def _only_empty_text(md: str, chk: checks.Checks | None) -> bool:

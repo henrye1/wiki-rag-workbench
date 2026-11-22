@@ -87,6 +87,16 @@ import { Markdown } from '../../shared/markdown';
             @if (docs().length) { <p class="hint">Open a document to see the sections this page cites, with the number of sentences citing each.</p> }
           </div>
           <div class="card">
+            <h3>Changed by</h3>
+            @for (c of changes(); track c.changeset_id) {
+              <div class="chg">
+                <a [routerLink]="['..', '..', 'changesets', c.changeset_id]">{{ c.summary || c.kind }}</a>
+                <div class="muted small">{{ c.op }}d · {{ c.applied_at | date: 'medium' }}@if (c.reviewer) { · {{ c.reviewer }}}</div>
+              </div>
+            }
+            @empty { <div class="muted empty">No stored changeset changed this page</div> }
+          </div>
+          <div class="card">
             <h3>History</h3>
             @for (v of versions(); track v.version) {
               <div class="ver" [class.sel]="v.version === selected()?.version">
@@ -118,7 +128,7 @@ import { Markdown } from '../../shared/markdown';
     h2 { font: var(--mat-sys-headline-small); margin: 12px 0 4px; }
     aside { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
     .ver { display: flex; align-items: center; gap: 4px; } .ver.sel { background: var(--mat-sys-secondary-container); border-radius: 8px; }
-    .small { font-size: 12px; } .hist { margin-top: 16px; }
+    .small { font-size: 12px; } .hist { margin-top: 16px; } .chg { margin: 4px 0; }
     .doc { display: flex; align-items: baseline; gap: 4px; } .tog { width: 18px; flex: none; border: 0; background: none; padding: 0; cursor: pointer; color: inherit; }
     .secs { margin: 2px 0 8px 22px; padding-left: 12px; font-size: 13px; } .secs li { margin: 2px 0; }
     .contents { margin-top: 24px; } .contents h4 { margin: 16px 0 4px; } .sec { margin: 6px 0; font-size: 14px; }
@@ -133,6 +143,7 @@ export class WikiPage {
   readonly page = signal<any>(null);
   readonly existing = signal<Set<string>>(new Set());
   readonly versions = signal<any[]>([]);
+  readonly changes = signal<any[]>([]); // the applied changesets that changed this page (read only)
   readonly selected = signal<any>(null);
   readonly diff = signal('');
   readonly error = signal('');
@@ -169,6 +180,8 @@ export class WikiPage {
       this.versions.set(versions);
       this.map.set(null);
       this.open.set(new Set());
+      this.changes.set([]);
+      this.api.get<any[]>(`/api/wiki/wikis/${enc(w)}/pages/${enc(slug)}/changes`).then((c) => this.changes.set(c), () => this.changes.set([]));
       this.api.get<any>(`/api/wiki/wikis/${enc(w)}/pages/${enc(slug)}/source-map`).then((m) => this.map.set(m), () => this.map.set(null));
     } catch (e: any) {
       this.page.set(null);

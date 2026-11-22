@@ -38,6 +38,10 @@ import { poller } from '../../shared/poll';
               @for (f of j.progress?.saved_answers_to_check ?? []; track f.slug) {
                 <div class="error">Saved answer needs checking: {{ f.slug }} ({{ f.paragraphs.join(', ') }} rewritten on {{ f.pages.join(', ') }})</div>
               }
+              @if (j.progress?.newer_version; as nv) {
+                <div class="warn">Newer version of {{ nv.earlier.title }}: {{ nv.changed }} paragraph(s) changed, {{ nv.removed }} removed;
+                  cited on {{ nv.pages }} page(s) (report only: no page was changed for it)</div>
+              }
               @for (m of j.progress?.missed_paragraphs ?? []; track m.page) {
                 <div class="error" [title]="m.reason">Not written up on {{ m.page }}: {{ m.paragraphs.join(', ') }} ({{ m.reason }})</div>
               }
@@ -60,6 +64,24 @@ import { poller } from '../../shared/poll';
                   @else { <span class="pill">{{ p.op }} {{ p.slug }}</span> }
                 }</p>
               }
+              @if (d.result?.newer_version?.error; as e) { <p class="error">Stale-claim check could not run: {{ e }}</p> }
+              @if (d.result?.newer_version?.earlier; as was) {
+                @let nv = d.result.newer_version;
+                <h4>Stale claims: pages citing what this newer version of {{ was.title }} changed</h4>
+                <p class="muted">Matched as the same {{ nv.same.join(' and ') }}. {{ nv.changed }} paragraph(s) changed and {{ nv.removed }}
+                  removed; {{ nv.pages.length }} page(s) cite one of them. A report only: no page was changed for it.</p>
+                <table class="simple stale"><thead><tr><th>Page</th><th>Paragraph</th><th>Old wording</th><th>New wording</th></tr></thead><tbody>
+                  @for (p of nv.pages; track p.slug) {
+                    @for (x of p.paragraphs; track x.label; let first = $first) {
+                      <tr>
+                        <td>@if (first) { <a [routerLink]="['..', 'pages', p.slug]">{{ p.title || p.slug }}</a> }</td>
+                        <td class="mono">{{ x.label }}</td><td>{{ x.old }}</td>
+                        <td>@if (x.status === 'removed') { <span class="error">removed</span> } @else { {{ x.new }} }</td>
+                      </tr>
+                    }
+                  }
+                </tbody></table>
+              }
               <details><summary class="muted">Raw result</summary><pre class="mono">{{ d.result | json }}</pre></details>
             </td></tr>
           }
@@ -67,7 +89,7 @@ import { poller } from '../../shared/poll';
       </tbody>
     </table>
   `,
-  styles: `.prog { min-width: 180px; } pre { white-space: pre-wrap; max-height: 300px; overflow: auto; }`,
+  styles: `.prog { min-width: 180px; } .stale td { vertical-align: top; font-size: 13px; } pre { white-space: pre-wrap; max-height: 300px; overflow: auto; }`,
 })
 export class WikiJobs {
   private api = inject(Api);

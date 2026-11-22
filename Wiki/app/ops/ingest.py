@@ -12,7 +12,7 @@ import numpy as np
 from psycopg.types.json import Jsonb
 
 from .. import llm, prompts
-from . import concepts, fixpass, pagecheck
+from . import concepts, fixpass, pagecheck, stale
 from ..config import get_settings
 from ..db import get_pool
 from ..jobs import JobContext
@@ -1456,6 +1456,16 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
         await ctx.progress(schema_errors=schema_errors)
     if chk.missing:
         log.info("ingest: the schema's Checks section has no list for %s; what uses them is off", ", ".join(chk.missing))
+    # a newer version of an earlier source (Checks: Newer version): the pages citing what it changes, read before any
+    # page is written; a report only
+    try:
+        newer_version = await stale.report(wiki_id, source, ex.text, ex.meta, chk)
+    except Exception as e:  # a report: it never stops the upload
+        log.warning("ingest: stale-claim check failed: %s", e)
+        newer_version = {"error": f"{type(e).__name__}: {e}"}
+    if newer_version and "error" not in newer_version:
+        await ctx.progress(newer_version={k: newer_version[k] for k in ("earlier", "changed", "removed")}
+                           | {"pages": len(newer_version["pages"])})
 
     # 1. Notes per section
     await ctx.progress(stage="notes", sections=len(ex.sections))
@@ -2542,13 +2552,17 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
             f"- {x['section']} ({x['by']}): " + ", ".join(f"[[{p['slug']}]] ({p['paragraphs']} paragraphs, {p['source_words']} source words)"
                                                      for p in x["pages"]) for x in splits)
         await ctx.progress(splits=splits)
+    if newer_version and "error" not in newer_version:
+        detail += (f"\n\nNewer version of [[{newer_version['earlier']['slug']}]]: {newer_version['changed']} paragraph(s) changed, "
+                   f"{newer_version['removed']} removed; cited on {len(newer_version['pages'])} page(s): "
+                   + ", ".join(f"[[{p['slug']}]]" for p in newer_version["pages"]))
     await store.add_log(wiki_id, "ingest", ex.title, detail + f"\n\nMode: {mode} ({result['status']})")
     label = lambda i: _ref(paras[i]) or f"paragraph {i + 1}"
     routing = {f"{x['num']:02d} {x['name']}": [label(i) for i in own.get(x["num"], [])] for x in sections} if owner else {}
     subtopics = {sl: [label(i) for i in sub["paras"]] for sl, sub in sub_of.items()}
     also_recorded = {f"{x['num']:02d} {x['name']}": [label(i) for i in also[x["num"]]] for x in sections if x["num"] in also}
     return {"source": source["slug"], "mode": mode, "failed_sections": failed, "failed_pages": failed_pages, "empty_retries": empty_retries, "check_fixes": check_fixes, "routing": routing, "subtopics": subtopics, "splits": splits, "unassigned": unassigned, "stubs": [_ref(paras[i]) for i in sorted(stubs)],
-            "also_recorded": also_recorded, "also_declined": declined, "missed_paragraphs": missed, "restored": restored, "resplit": resplit, "citations": citations, "fill_passes": fill_passes, "unchanged_skipped": unchanged, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
+            "also_recorded": also_recorded, "also_declined": declined, "missed_paragraphs": missed, "restored": restored, "resplit": resplit, "citations": citations, "fill_passes": fill_passes, "unchanged_skipped": unchanged, "newer_version": newer_version, "pages": [{"op": o.op, "slug": o.slug} for o in ops], **json.loads(json.dumps(result, default=str))}
 
 
 async def _without_unchanged(wiki_id, ops: list[Op], failing: dict) -> tuple[list[Op], list[str]]:
