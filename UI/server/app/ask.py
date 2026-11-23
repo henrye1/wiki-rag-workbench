@@ -3,15 +3,20 @@ asked, the Sources setting and the answers. A follow-up is rewritten into a full
 questions only (never its answers); RAG and the wiki only ever receive that full question, one at a time."""
 import asyncio
 import json
+import time
 from typing import Literal
 from uuid import UUID
 
 import psycopg
-from fastapi import APIRouter, HTTPException
+from urllib.parse import quote
+
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
+from . import chat_export
 from .config import get_settings
 from .proxy import client
 
@@ -22,6 +27,13 @@ Use the earlier questions only to work out what the follow-up refers to (pronoun
 Keep the follow-up's meaning, scope and wording as far as possible; do not answer it, and do not add facts, conditions or
 assumptions that are not in the questions. If the follow-up is already complete on its own, return it unchanged."""
 REWRITE_SCHEMA = {"type": "object", "properties": {"question": {"type": "string"}}, "required": ["question"]}
+
+SUMMARY_SYSTEM = """You write the verdict of an evaluation from the answers to its questions, which were asked one by one.
+Use only those answers: do not add facts, figures or sources that are not in them, and keep any citations they carry.
+Where a question has no answer, say so and say what that leaves open. Follow the evaluation's instructions and its
+summary instruction below."""
+DEFAULT_SUMMARY = ("Give an overall assessment from these answers: the main findings, where answers are weak or disagree, "
+                   "and what is missing.")
 
 
 def _q(sql: str, params: tuple = (), one: bool = False):
@@ -68,6 +80,35 @@ async def get_chat(chat_id: UUID):
     return {**chat, "messages": msgs}
 
 
+EXPORTS = {  # format: (extension, media type, download as a file)
+    "md": ("md", "text/markdown; charset=utf-8", True),
+    "docx": ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", True),
+    "xlsx": ("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", True),
+    "pdf": ("html", "text/html; charset=utf-8", False),  # a print-ready page; the browser's Save as PDF makes the file
+}
+
+
+@router.get("/chats/{chat_id}/export")
+async def export_chat(chat_id: UUID, format: Literal["md", "docx", "xlsx", "pdf"] = "docx",
+                      sides: Literal["rag", "wiki", "both"] = "both",
+                      seq: list[int] | None = Query(None, description="The messages to export, by seq; left out = all")):
+    """The chat's chosen messages with the chosen side(s), each answer with its sources or pages read."""
+    chat = await _chat(chat_id)
+    msgs = await _q("select * from ask.messages where chat_id = %s order by seq", (chat_id,))
+    if seq:
+        wanted = set(seq)
+        msgs = [m for m in msgs if m["seq"] in wanted]
+    if not msgs:
+        raise HTTPException(404, "No messages to export")
+    doc = chat_export.build(chat, msgs, ["rag", "wiki"] if sides == "both" else [sides])
+    ext, media, attach = EXPORTS[format]
+    body = {"md": lambda: chat_export.to_markdown(doc).encode("utf-8"), "docx": lambda: chat_export.to_docx(doc),
+            "xlsx": lambda: chat_export.to_xlsx(doc), "pdf": lambda: chat_export.to_print_html(doc)}[format]()
+    name = chat_export.filename(doc["title"], ext)
+    disposition = f"{'attachment' if attach else 'inline'}; filename*=UTF-8''{quote(name)}"
+    return Response(body, media_type=media, headers={"Content-Disposition": disposition})
+
+
 @router.patch("/chats/{chat_id}")
 async def update_chat(chat_id: UUID, body: ChatIn):
     """Rename the chat and/or set its skills (each only when given)."""
@@ -89,19 +130,25 @@ class RewriteIn(BaseModel):
     before_seq: int | None = Field(None, description="Rewrite as of this message (re-asking an earlier one); default: after the last")
 
 
-async def _gemini_json(system: str, prompt: str, schema: dict) -> dict:
+async def _gemini(system: str, prompt: str, schema: dict | None = None, timeout: float = 60) -> str:
+    """One Gemini call (the Workbench's model); JSON when a schema is given, else plain text."""
     s = get_settings()
     if not s.gemini_api_key:
         raise RuntimeError("GEMINI_API_KEY is not set for the Workbench server")
+    config = {"temperature": 0} | ({"responseMimeType": "application/json", "responseJsonSchema": schema} if schema else {})
     r = await client().post(
         f"https://generativelanguage.googleapis.com/v1beta/models/{s.gemini_model}:generateContent",
         headers={"x-goog-api-key": s.gemini_api_key},
         json={"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-              "generationConfig": {"responseMimeType": "application/json", "responseJsonSchema": schema, "temperature": 0}},
-        timeout=60,
+              "generationConfig": config},
+        timeout=timeout,
     )
     r.raise_for_status()
-    return json.loads(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+    return "".join(p.get("text", "") for p in r.json()["candidates"][0]["content"]["parts"])
+
+
+async def _gemini_json(system: str, prompt: str, schema: dict) -> dict:
+    return json.loads(await _gemini(system, prompt, schema))
 
 
 @router.post("/chats/{chat_id}/rewrite")
@@ -110,7 +157,7 @@ async def rewrite(chat_id: UUID, body: RewriteIn):
     await _chat(chat_id)
     n = get_settings().ask_history_questions
     where, params = ("and seq < %s", (chat_id, body.before_seq, n)) if body.before_seq is not None else ("", (chat_id, n))
-    rows = await _q(f"select searched from ask.messages where chat_id = %s {where} order by seq desc limit %s", params)
+    rows = await _q(f"select searched from ask.messages where chat_id = %s and kind = 'question' {where} order by seq desc limit %s", params)
     earlier = [r["searched"] for r in reversed(rows)]
     q = body.question.strip()
     if not earlier:
@@ -141,6 +188,15 @@ class MessageIn(BaseModel):
     rag: Side | None = None
     wiki: Side | None = None
     seq: int | None = Field(None, description="Replace this message (asked again after editing 'Searched for')")
+    run_id: UUID | None = Field(None, description="The skill run this question belongs to (Run on Ask); none for typed questions")
+    skill_id: UUID | None = Field(None, description="The skill of that run")
+
+
+async def _insert_message(chat_id: UUID, vals: tuple, kind: str, run_id: UUID | None, skill_id: UUID | None) -> dict:
+    return await _q(
+        """insert into ask.messages (chat_id, seq, question, searched, mode, sources, rag_collection, wiki_slug, rag, wiki, kind, run_id, skill_id)
+           values (%s, (select coalesce(max(seq), 0) + 1 from ask.messages where chat_id = %s), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+           returning *""", (chat_id, chat_id, *vals, kind, run_id, skill_id), one=True)
 
 
 @router.post("/chats/{chat_id}/messages", status_code=201)
@@ -152,14 +208,69 @@ async def save_message(chat_id: UUID, body: MessageIn):
     if body.seq is not None:
         row = await _q(
             """update ask.messages set question=%s, searched=%s, mode=%s, sources=%s, rag_collection=%s, wiki_slug=%s, rag=%s, wiki=%s,
-               created_at=now() where chat_id=%s and seq=%s returning *""", (*vals, chat_id, body.seq), one=True)
+               created_at=now() where chat_id=%s and seq=%s and kind = 'question' returning *""", (*vals, chat_id, body.seq), one=True)
         if not row:
             raise HTTPException(404, "Message not found")
     else:
-        row = await _q(
-            """insert into ask.messages (chat_id, seq, question, searched, mode, sources, rag_collection, wiki_slug, rag, wiki)
-               values (%s, (select coalesce(max(seq), 0) + 1 from ask.messages where chat_id = %s), %s, %s, %s, %s, %s, %s, %s, %s)
-               returning *""", (chat_id, chat_id, *vals), one=True)
+        row = await _insert_message(chat_id, vals, "question", body.run_id, body.skill_id if body.run_id else None)
     title = chat["title"] or " ".join(body.question.split())[:80]  # a new chat is named after its first question
     await _q("update ask.chats set title = %s, updated_at = now() where id = %s", (title, chat_id))
+    return row
+
+
+def summary_prompt(rows: list[dict], side: str) -> str:
+    """The run's questions with one side's answers, in order; a question without an answer says why."""
+    parts = []
+    for i, r in enumerate(rows, 1):
+        p = r.get(side) or {}
+        answer = (p.get("answer") or "").strip()
+        if not answer:
+            answer = f"(No answer: {p.get('error') or 'nothing was returned'})"
+        parts.append(f"### Question {i}\n{r['searched']}\n\n#### Answer {i}\n{answer}")
+    return "The evaluation's questions and answers, in order:\n\n" + "\n\n".join(parts)
+
+
+def summary_system(skill: dict) -> str:
+    return (f"{SUMMARY_SYSTEM}\n\n<evaluation_instructions>\n{skill['instructions']}\n</evaluation_instructions>\n\n"
+            f"<summary_instruction>\n{skill['summary'] or DEFAULT_SUMMARY}\n</summary_instruction>")
+
+
+async def _summarise(system: str, rows: list[dict], side: str) -> dict:
+    t0 = time.perf_counter()
+    try:
+        answer = (await _gemini(system, summary_prompt(rows, side), timeout=180)).strip()
+        return {"answer": answer, "sources": [], "pages": [], "ms": round((time.perf_counter() - t0) * 1000), "error": ""}
+    except Exception as e:  # the side shows the error; the other side's summary is still saved
+        return {"answer": "", "sources": [], "pages": [], "ms": round((time.perf_counter() - t0) * 1000), "error": f"Could not summarise: {e}"}
+
+
+class SummaryIn(BaseModel):
+    skill_id: UUID
+
+
+@router.post("/chats/{chat_id}/runs/{run_id}/summary", status_code=201)
+async def summarise_run(chat_id: UUID, run_id: UUID, body: SummaryIn):
+    """The run's verdict, one per side, each from that side's answers only (the same model for both, so it stays a fair
+    comparison). Saved as the run's summary message; asked again, it replaces it."""
+    await _chat(chat_id)
+    skill = await _q("select * from ask.skills where id = %s", (body.skill_id,), one=True)
+    if not skill:
+        raise HTTPException(404, "Skill not found: it may have been deleted")
+    rows = await _q("select * from ask.messages where chat_id = %s and run_id = %s and kind = 'question' order by seq", (chat_id, run_id))
+    if not rows:
+        raise HTTPException(404, "This run has no answered questions")
+    first, system = rows[0], summary_system(skill)
+    sides = [s for s in ("rag", "wiki") if first["mode"] in (s, "both")]
+    done = dict(zip(sides, await asyncio.gather(*(_summarise(system, rows, s) for s in sides))))
+    title = f"Summary: {skill['name']}"
+    vals = (title, title, first["mode"], first["sources"], first["rag_collection"] if "rag" in done else None,
+            first["wiki_slug"] if "wiki" in done else None, Jsonb(done["rag"]) if "rag" in done else None,
+            Jsonb(done["wiki"]) if "wiki" in done else None)
+    row = await _q(
+        """update ask.messages set question=%s, searched=%s, mode=%s, sources=%s, rag_collection=%s, wiki_slug=%s, rag=%s, wiki=%s,
+           skill_id=%s, created_at=now() where chat_id=%s and run_id=%s and kind = 'summary' returning *""",
+        (*vals, body.skill_id, chat_id, run_id), one=True)
+    if not row:
+        row = await _insert_message(chat_id, vals, "summary", run_id, body.skill_id)
+    await _q("update ask.chats set updated_at = now() where id = %s", (chat_id,))
     return row

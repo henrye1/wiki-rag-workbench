@@ -6,6 +6,7 @@ import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
+import { MatMenuModule } from '@angular/material/menu';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
@@ -45,6 +46,9 @@ interface Msg {
   editing?: boolean;
   editText?: string;
   note?: string;
+  kind?: 'question' | 'summary'; // a summary is a skill run's verdict, written from the run's answers
+  run_id?: string | null; // the skill run a message belongs to (Run skill); none for typed questions
+  skill_id?: string | null;
 }
 
 const pane = (): Pane => ({ answer: '', running: true, error: '', sources: [], pages: [], ms: null });
@@ -54,7 +58,7 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
 @Component({
   selector: 'app-ask',
   imports: [FormsModule, RouterLink, DatePipe, MatFormFieldModule, MatInputModule, MatButtonModule, MatButtonToggleModule, MatSelectModule,
-    MatIconModule, MatProgressBarModule, Markdown],
+    MatIconModule, MatMenuModule, MatProgressBarModule, Markdown],
   template: `
     <div class="ask">
       <aside class="chats">
@@ -106,6 +110,14 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
               @for (s of skills(); track s.id) { <mat-option [value]="s.id" [title]="s.description">{{ s.name }}</mat-option> }
               @empty { <mat-option disabled>No skills yet: add them on the Skills page</mat-option> }
             </mat-select></mat-form-field>
+          <button mat-stroked-button [matMenuTriggerFor]="runMenu" [disabled]="busy() || !canAsk() || !runnable().length"
+                  [title]="runnable().length ? 'Start a new chat that asks a skill\\'s questions one by one, then writes a summary' : 'No skill has questions: add them on the Skills page'">
+            <mat-icon>play_arrow</mat-icon> Run skill</button>
+          <mat-menu #runMenu="matMenu">
+            @for (s of runnable(); track s.id) {
+              <button mat-menu-item (click)="runSkill(s)" [title]="s.description">{{ s.name }} · {{ s.questions.length }} question(s)</button>
+            }
+          </mat-menu>
           <div class="sources" title="Which documents RAG and the wiki may use, for the next message">
             <span class="muted">Sources</span>
             <mat-button-toggle-group [(ngModel)]="sources" hideSingleSelectionIndicator>
@@ -125,7 +137,43 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
             @if (s.needs_checking) { <span class="pill bad" title="Ask and the benchmark do not read it until it is saved again with no citation problems">needs checking: {{ s.problems.length }} citation problem(s)</span> }
           }
           @if (synthError()) { <span class="error">{{ synthError() }}</span> }
+          <span class="grow"></span>
+          <button mat-stroked-button (click)="toggleExport()" [disabled]="!saved().length"
+                  [title]="saved().length ? 'Download this chat, or chosen messages, as Word, Markdown, Excel or PDF' : 'Nothing to export yet'">
+            <mat-icon>download</mat-icon> Export</button>
         </div>
+        @if (exporting()) {
+          <div class="card exportbox">
+            <div class="row"><b class="grow">Export</b>
+              <button mat-button (click)="pickAll(true)">All</button><button mat-button (click)="pickAll(false)">None</button></div>
+            <div class="picklist">
+              @for (m of saved(); track m.seq) {
+                <label><input type="checkbox" [checked]="picked().has(m.seq!)" (change)="pick(m.seq!)" />
+                  <span [class.sumq]="m.kind === 'summary'">{{ m.question }}</span></label>
+              }
+            </div>
+            <div class="row">
+              @if (hasBoth()) {
+                <span class="muted">Answers</span>
+                <mat-button-toggle-group [(ngModel)]="exportSides" hideSingleSelectionIndicator>
+                  <mat-button-toggle value="rag">RAG</mat-button-toggle>
+                  <mat-button-toggle value="wiki">Wiki</mat-button-toggle>
+                  <mat-button-toggle value="both">Both</mat-button-toggle>
+                </mat-button-toggle-group>
+              }
+              <span class="grow"></span>
+              <span class="muted small">{{ picked().size }} of {{ saved().length }} message(s)</span>
+            </div>
+            <div class="row">
+              <a mat-flat-button [href]="exportUrl('docx')" download [class.off]="!picked().size"><mat-icon>description</mat-icon> Word</a>
+              <a mat-stroked-button [href]="exportUrl('md')" download [class.off]="!picked().size"><mat-icon>notes</mat-icon> Markdown</a>
+              <a mat-stroked-button [href]="exportUrl('xlsx')" download [class.off]="!picked().size"><mat-icon>table_chart</mat-icon> Excel</a>
+              <a mat-stroked-button [href]="exportUrl('pdf')" target="_blank" rel="noopener" [class.off]="!picked().size"
+                 title="Opens a print-ready page: choose Save as PDF in the print dialog"><mat-icon>picture_as_pdf</mat-icon> PDF</a>
+              <span class="muted small">Each answer comes with its sources (RAG) or pages read (wiki).</span>
+            </div>
+          </div>
+        }
         @if (draft(); as d) {
           <div class="card draft">
             <div class="row"><h3 class="grow">Synthesis draft · {{ d.wiki }}</h3>
@@ -168,13 +216,18 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
 
         <div class="thread">
           @for (m of messages(); track $index; let i = $index) {
-            <div class="msg">
+            <div class="msg" [class.summary]="m.kind === 'summary'">
               <div class="q"><b>{{ m.question }}</b></div>
               <div class="meta muted small">
                 <span class="pill">{{ modeLabel[m.mode] }}</span><span class="pill">{{ m.sources === 'standard' ? 'Standard only' : 'All' }}</span>
-                @if (m.created_at) { answered {{ m.created_at | date: 'd MMM y, HH:mm' }} }
+                @if (m.kind === 'summary') { <span class="pill">from this run's answers</span> }
+                @if (m.created_at) { {{ m.kind === 'summary' ? 'written' : 'answered' }} {{ m.created_at | date: 'd MMM y, HH:mm' }} }
+                @if (m.kind === 'summary' && !busy() && m.created_at) {
+                  <button mat-button (click)="summarise(i)" title="Write the summary again from the run's current answers"><mat-icon>refresh</mat-icon> Summarise again</button>
+                }
               </div>
-              @if (m.editing) {
+              @if (m.kind === 'summary') {
+              } @else if (m.editing) {
                 <div class="row searched">
                   <mat-form-field class="grow" appearance="outline" subscriptSizing="dynamic"><mat-label>Searched for</mat-label>
                     <input matInput [(ngModel)]="m.editText" (keydown.enter)="askAgain(i)" /></mat-form-field>
@@ -206,7 +259,7 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
                   <div class="pane card">
                     <header class="row"><h3 class="grow">Wiki · {{ m.wiki_slug }}</h3>@if (p.ms) { <span class="muted">{{ p.ms / 1000 }} s</span> }
                       <button mat-icon-button (click)="copyAnswer(wikiAns, i, 'wiki')" [disabled]="p.running || !p.answer" [title]="copied() === i + 'wiki' ? 'Copied' : 'Copy the answer as shown'"><mat-icon>{{ copied() === i + 'wiki' ? 'check' : 'content_copy' }}</mat-icon></button>
-                      <button mat-stroked-button (click)="openAdd(i)" [disabled]="p.running || !p.answer || !!p.error || !m.created_at || synthBusy() || !!draft()"
+                      <button mat-stroked-button [hidden]="m.kind === 'summary'" (click)="openAdd(i)" [disabled]="p.running || !p.answer || !!p.error || !m.created_at || synthBusy() || !!draft()"
                               title="Put this one answer into a synthesis page: a new page of its own, or added to an existing one"><mat-icon>add</mat-icon> Synthesis</button></header>
                     @if (addFor()?.i === i) {
                       <div class="addbox">
@@ -252,11 +305,13 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
               </div>
             </div>
           } @empty {
-            <p class="muted">Ask a question. Follow-ups in the same chat are rewritten into full questions from the earlier questions (never the answers); "Searched for" shows what was sent, and you can edit it.</p>
+            <p class="muted">Ask a question. Follow-ups in the same chat are rewritten into full questions from the earlier questions (never the answers); "Searched for" shows what was sent, and you can edit it.
+              Or use Run skill: a new chat asks the skill's questions one by one, then writes a summary from the answers.</p>
           }
         </div>
 
         @if (error()) { <p class="error">{{ error() }}</p> }
+        @if (progress(); as pr) { <p class="muted small">Running {{ pr.name }}: {{ pr.step }}</p> }
         <div class="composer">
           <mat-form-field class="full" appearance="outline" subscriptSizing="dynamic">
             <mat-label>{{ messages().length ? 'Follow-up question' : 'Question' }}</mat-label>
@@ -285,6 +340,7 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
     .sources { display: flex; align-items: center; gap: 8px; }
     .thread { margin-top: 16px; display: flex; flex-direction: column; gap: 24px; }
     .msg .q { font-size: 15.5px; }
+    .msg.summary { border-left: 3px solid var(--mat-sys-primary); padding-left: 12px; }
     .meta { margin: 2px 0 4px; }
     .searched { display: flex; align-items: center; gap: 6px; } .sq { font-style: italic; }
     .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 8px; }
@@ -295,6 +351,12 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
     .chip { border: 1px solid var(--mat-sys-outline-variant); background: var(--mat-sys-surface-container); color: inherit; border-radius: 12px; padding: 2px 10px; cursor: pointer; font-size: 12.5px; }
     .chip.dim { opacity: .6; } .chip.saved { border-style: dashed; }
     .synth { margin-top: 12px; gap: 12px; align-items: center; }
+    .exportbox { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .exportbox .row { gap: 8px; align-items: center; flex-wrap: wrap; }
+    .picklist { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow: auto; font-size: 14px; }
+    .picklist label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+    .sumq { font-weight: 600; }
+    .off { pointer-events: none; opacity: .4; }
     .draft { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
     .addbox { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; padding: 10px 12px; border: 1px solid var(--mat-sys-outline-variant); border-radius: 8px; font-size: 14px; }
     .addbox select { max-width: 100%; padding: 4px; }
@@ -338,7 +400,12 @@ export class Ask {
   readonly error = signal('');
   readonly renaming = signal<string | null>(null);
   readonly deleting = signal<string | null>(null);
+  readonly progress = signal<{ name: string; step: string } | null>(null); // a skill run in progress
+  readonly exporting = signal(false); // the Export panel is open
+  readonly picked = signal<Set<number>>(new Set()); // the messages (seq) to export
+  exportSides: Mode = 'both';
   private abort?: AbortController;
+  private stopped = false; // Stop pressed: also ends a skill run after the current question
 
   constructor() {
     void this.cols.refresh();
@@ -374,8 +441,35 @@ export class Ask {
     this.skillIds = [];
     this.draft.set(null);
     this.synthSaved.set(null);
+    this.exporting.set(false);
     this.question = '';
     this.error.set('');
+  }
+
+  /** Saved messages (they have a seq): what an export can contain. */
+  saved() { return this.messages().filter((m) => m.seq != null && m.created_at); }
+
+  hasBoth() { return this.saved().some((m) => m.rag) && this.saved().some((m) => m.wiki); }
+
+  toggleExport() {
+    if (this.exporting()) { this.exporting.set(false); return; }
+    this.picked.set(new Set(this.saved().map((m) => m.seq!)));
+    this.exportSides = 'both';
+    this.exporting.set(true);
+  }
+
+  pick(seq: number) {
+    this.picked.update((s) => { const n = new Set(s); n.has(seq) ? n.delete(seq) : n.add(seq); return n; });
+  }
+
+  pickAll(on: boolean) { this.picked.set(new Set(on ? this.saved().map((m) => m.seq!) : [])); }
+
+  /** The export's download link; all messages are left out of the link when all are picked. */
+  exportUrl(format: string) {
+    const all = this.picked().size === this.saved().length;
+    const seqs = all ? '' : [...this.picked()].sort((a, b) => a - b).map((s) => `&seq=${s}`).join('');
+    const sides = this.hasBoth() ? this.exportSides : 'both';
+    return `/api/ask/chats/${enc(this.chatId() ?? '')}/export?format=${format}&sides=${sides}${seqs}`;
   }
 
   /** The chat's skills changed: saved on the chat at once (a new chat gets them when it is created). */
@@ -402,6 +496,7 @@ export class Ask {
       this.skillIds = c.skill_ids ?? [];
       this.draft.set(null);
       this.synthSaved.set(null);
+      this.exporting.set(false);
       this.messages.set(c.messages.map((m: any) => ({ ...m, rag: stored(m.rag), wiki: stored(m.wiki) })));
       const last = c.messages[c.messages.length - 1];
       if (last) {  // carry on with the last message's settings
@@ -432,7 +527,73 @@ export class Ask {
     } catch (e) { this.error.set(errMsg(e)); }
   }
 
-  stop() { this.abort?.abort(); }
+  stop() { this.stopped = true; this.abort?.abort(); }
+
+  /** Skills that can be run: those with questions. */
+  runnable() { return this.skills().filter((s) => s.questions?.length); }
+
+  /** Run a skill: a new chat with the skill on it asks each of its questions as its own message (as written, no rewrite),
+   * with the current side(s), sources, wiki and collection; a failed answer is kept and the run goes on. Then the summary.
+   * Afterwards it is an ordinary chat: follow-ups are rewritten from the run's questions. */
+  async runSkill(s: any) {
+    if (this.busy() || !this.canAsk()) return;
+    this.newChat();
+    this.skillIds = [s.id];
+    this.stopped = false;
+    this.busy.set(true);
+    const runId = crypto.randomUUID(), total = s.questions.length;
+    try {
+      const id = (await this.api.post<any>('/api/ask/chats', { title: s.name, skill_ids: this.skillIds })).id as string;
+      this.chatId.set(id);
+      this.remember(id);
+      for (const [n, q] of (s.questions as string[]).entries()) {
+        if (this.stopped) break;
+        this.progress.set({ name: s.name, step: `question ${n + 1} of ${total}` });
+        this.messages.update((ms) => [...ms, {
+          question: q, searched: q, rewritten: false, mode: this.mode, sources: this.sources,
+          rag_collection: this.mode !== 'wiki' ? this.cols.current() : null, wiki_slug: this.mode !== 'rag' ? this.wiki : null,
+          rag: null, wiki: null, kind: 'question', run_id: runId, skill_id: s.id,
+        }]);
+        await this.run(this.messages().length - 1, false);
+      }
+      if (this.stopped) {
+        this.error.set('Run stopped: no summary was written. The answers so far are saved in the chat.');
+        return;
+      }
+      this.progress.set({ name: s.name, step: 'writing the summary' });
+      const first = this.messages()[0];
+      this.messages.update((ms) => [...ms, {
+        question: `Summary: ${s.name}`, searched: '', mode: first.mode, sources: first.sources,
+        rag_collection: first.rag_collection, wiki_slug: first.wiki_slug,
+        rag: first.mode !== 'wiki' ? pane() : null, wiki: first.mode !== 'rag' ? pane() : null,
+        kind: 'summary', run_id: runId, skill_id: s.id,
+      }]);
+      await this.summarise(this.messages().length - 1, true);
+    } catch (e) {
+      this.error.set(errMsg(e));
+    } finally {
+      this.progress.set(null);
+      this.busy.set(false);
+    }
+  }
+
+  /** Write (or write again) a run's summary from its saved answers; it replaces message i. */
+  async summarise(i: number, inRun = false) {
+    const m = this.messages()[i];
+    if (!m.run_id || !m.skill_id || (!inRun && this.busy())) return;
+    if (!inRun) this.busy.set(true);
+    this.patch(i, (x) => ({ ...x, rag: x.rag ? pane() : null, wiki: x.wiki ? pane() : null, created_at: undefined }));
+    try {
+      const r = await this.api.post<any>(`/api/ask/chats/${enc(this.chatId()!)}/runs/${enc(m.run_id)}/summary`, { skill_id: m.skill_id });
+      this.patch(i, () => ({ ...r, rag: stored(r.rag), wiki: stored(r.wiki) }));
+      await this.loadChats();
+    } catch (e) {
+      const err = errMsg(e);
+      this.patch(i, (x) => ({ ...x, rag: x.rag && { ...x.rag, running: false, error: err }, wiki: x.wiki && { ...x.wiki, running: false, error: err } }));
+    } finally {
+      if (!inRun) this.busy.set(false);
+    }
+  }
 
   private patch(i: number, f: (m: Msg) => Msg) {
     this.messages.update((ms) => ms.map((m, j) => (j === i ? f(m) : m)));
@@ -443,6 +604,7 @@ export class Ask {
     const q = this.question.trim();
     if (!q || this.busy() || !this.canAsk()) return;
     this.error.set('');
+    this.stopped = false;
     this.busy.set(true);
     try {
       let id = this.chatId();
@@ -494,7 +656,7 @@ export class Ask {
     const saved = await this.api.post<any>(`/api/ask/chats/${enc(this.chatId()!)}/messages`, {
       question: done.question, searched: done.searched, mode: done.mode, sources: done.sources,
       rag_collection: done.rag_collection, wiki_slug: done.wiki_slug, rag: side(done.rag), wiki: side(done.wiki),
-      seq: replace ? done.seq : null,
+      seq: replace ? done.seq : null, run_id: done.run_id ?? null, skill_id: done.skill_id ?? null,
     });
     this.patch(i, (x) => ({ ...x, seq: saved.seq, created_at: saved.created_at }));
     await this.loadChats();
@@ -518,7 +680,7 @@ export class Ask {
 
   /** The chat's wiki answers for a synthesis: the latest wiki's, oldest first; RAG-only and failed answers are skipped. */
   synthAnswers() {
-    const ok = this.messages().filter((m) => m.wiki && !m.wiki.running && !m.wiki.error && m.wiki.answer.trim() && m.created_at);
+    const ok = this.messages().filter((m) => m.kind !== 'summary' && m.wiki && !m.wiki.running && !m.wiki.error && m.wiki.answer.trim() && m.created_at);
     const wiki = ok.length ? ok[ok.length - 1].wiki_slug : null;
     const mine = ok.filter((m) => m.wiki_slug === wiki);
     return {
