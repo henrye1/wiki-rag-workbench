@@ -137,7 +137,43 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
             @if (s.needs_checking) { <span class="pill bad" title="Ask and the benchmark do not read it until it is saved again with no citation problems">needs checking: {{ s.problems.length }} citation problem(s)</span> }
           }
           @if (synthError()) { <span class="error">{{ synthError() }}</span> }
+          <span class="grow"></span>
+          <button mat-stroked-button (click)="toggleExport()" [disabled]="!saved().length"
+                  [title]="saved().length ? 'Download this chat, or chosen messages, as Word, Markdown, Excel or PDF' : 'Nothing to export yet'">
+            <mat-icon>download</mat-icon> Export</button>
         </div>
+        @if (exporting()) {
+          <div class="card exportbox">
+            <div class="row"><b class="grow">Export</b>
+              <button mat-button (click)="pickAll(true)">All</button><button mat-button (click)="pickAll(false)">None</button></div>
+            <div class="picklist">
+              @for (m of saved(); track m.seq) {
+                <label><input type="checkbox" [checked]="picked().has(m.seq!)" (change)="pick(m.seq!)" />
+                  <span [class.sumq]="m.kind === 'summary'">{{ m.question }}</span></label>
+              }
+            </div>
+            <div class="row">
+              @if (hasBoth()) {
+                <span class="muted">Answers</span>
+                <mat-button-toggle-group [(ngModel)]="exportSides" hideSingleSelectionIndicator>
+                  <mat-button-toggle value="rag">RAG</mat-button-toggle>
+                  <mat-button-toggle value="wiki">Wiki</mat-button-toggle>
+                  <mat-button-toggle value="both">Both</mat-button-toggle>
+                </mat-button-toggle-group>
+              }
+              <span class="grow"></span>
+              <span class="muted small">{{ picked().size }} of {{ saved().length }} message(s)</span>
+            </div>
+            <div class="row">
+              <a mat-flat-button [href]="exportUrl('docx')" download [class.off]="!picked().size"><mat-icon>description</mat-icon> Word</a>
+              <a mat-stroked-button [href]="exportUrl('md')" download [class.off]="!picked().size"><mat-icon>notes</mat-icon> Markdown</a>
+              <a mat-stroked-button [href]="exportUrl('xlsx')" download [class.off]="!picked().size"><mat-icon>table_chart</mat-icon> Excel</a>
+              <a mat-stroked-button [href]="exportUrl('pdf')" target="_blank" rel="noopener" [class.off]="!picked().size"
+                 title="Opens a print-ready page: choose Save as PDF in the print dialog"><mat-icon>picture_as_pdf</mat-icon> PDF</a>
+              <span class="muted small">Each answer comes with its sources (RAG) or pages read (wiki).</span>
+            </div>
+          </div>
+        }
         @if (draft(); as d) {
           <div class="card draft">
             <div class="row"><h3 class="grow">Synthesis draft · {{ d.wiki }}</h3>
@@ -315,6 +351,12 @@ const MODE_LABEL: Record<Mode, string> = { rag: 'RAG only', wiki: 'Wiki only', b
     .chip { border: 1px solid var(--mat-sys-outline-variant); background: var(--mat-sys-surface-container); color: inherit; border-radius: 12px; padding: 2px 10px; cursor: pointer; font-size: 12.5px; }
     .chip.dim { opacity: .6; } .chip.saved { border-style: dashed; }
     .synth { margin-top: 12px; gap: 12px; align-items: center; }
+    .exportbox { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .exportbox .row { gap: 8px; align-items: center; flex-wrap: wrap; }
+    .picklist { display: flex; flex-direction: column; gap: 4px; max-height: 260px; overflow: auto; font-size: 14px; }
+    .picklist label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+    .sumq { font-weight: 600; }
+    .off { pointer-events: none; opacity: .4; }
     .draft { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
     .addbox { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; padding: 10px 12px; border: 1px solid var(--mat-sys-outline-variant); border-radius: 8px; font-size: 14px; }
     .addbox select { max-width: 100%; padding: 4px; }
@@ -359,6 +401,9 @@ export class Ask {
   readonly renaming = signal<string | null>(null);
   readonly deleting = signal<string | null>(null);
   readonly progress = signal<{ name: string; step: string } | null>(null); // a skill run in progress
+  readonly exporting = signal(false); // the Export panel is open
+  readonly picked = signal<Set<number>>(new Set()); // the messages (seq) to export
+  exportSides: Mode = 'both';
   private abort?: AbortController;
   private stopped = false; // Stop pressed: also ends a skill run after the current question
 
@@ -396,8 +441,35 @@ export class Ask {
     this.skillIds = [];
     this.draft.set(null);
     this.synthSaved.set(null);
+    this.exporting.set(false);
     this.question = '';
     this.error.set('');
+  }
+
+  /** Saved messages (they have a seq): what an export can contain. */
+  saved() { return this.messages().filter((m) => m.seq != null && m.created_at); }
+
+  hasBoth() { return this.saved().some((m) => m.rag) && this.saved().some((m) => m.wiki); }
+
+  toggleExport() {
+    if (this.exporting()) { this.exporting.set(false); return; }
+    this.picked.set(new Set(this.saved().map((m) => m.seq!)));
+    this.exportSides = 'both';
+    this.exporting.set(true);
+  }
+
+  pick(seq: number) {
+    this.picked.update((s) => { const n = new Set(s); n.has(seq) ? n.delete(seq) : n.add(seq); return n; });
+  }
+
+  pickAll(on: boolean) { this.picked.set(new Set(on ? this.saved().map((m) => m.seq!) : [])); }
+
+  /** The export's download link; all messages are left out of the link when all are picked. */
+  exportUrl(format: string) {
+    const all = this.picked().size === this.saved().length;
+    const seqs = all ? '' : [...this.picked()].sort((a, b) => a - b).map((s) => `&seq=${s}`).join('');
+    const sides = this.hasBoth() ? this.exportSides : 'both';
+    return `/api/ask/chats/${enc(this.chatId() ?? '')}/export?format=${format}&sides=${sides}${seqs}`;
   }
 
   /** The chat's skills changed: saved on the chat at once (a new chat gets them when it is created). */
@@ -424,6 +496,7 @@ export class Ask {
       this.skillIds = c.skill_ids ?? [];
       this.draft.set(null);
       this.synthSaved.set(null);
+      this.exporting.set(false);
       this.messages.set(c.messages.map((m: any) => ({ ...m, rag: stored(m.rag), wiki: stored(m.wiki) })));
       const last = c.messages[c.messages.length - 1];
       if (last) {  // carry on with the last message's settings

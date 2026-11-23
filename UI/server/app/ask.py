@@ -8,11 +8,15 @@ from typing import Literal
 from uuid import UUID
 
 import psycopg
-from fastapi import APIRouter, HTTPException
+from urllib.parse import quote
+
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
+from . import chat_export
 from .config import get_settings
 from .proxy import client
 
@@ -74,6 +78,35 @@ async def get_chat(chat_id: UUID):
     chat = await _chat(chat_id)
     msgs = await _q("select * from ask.messages where chat_id = %s order by seq", (chat_id,))
     return {**chat, "messages": msgs}
+
+
+EXPORTS = {  # format: (extension, media type, download as a file)
+    "md": ("md", "text/markdown; charset=utf-8", True),
+    "docx": ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", True),
+    "xlsx": ("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", True),
+    "pdf": ("html", "text/html; charset=utf-8", False),  # a print-ready page; the browser's Save as PDF makes the file
+}
+
+
+@router.get("/chats/{chat_id}/export")
+async def export_chat(chat_id: UUID, format: Literal["md", "docx", "xlsx", "pdf"] = "docx",
+                      sides: Literal["rag", "wiki", "both"] = "both",
+                      seq: list[int] | None = Query(None, description="The messages to export, by seq; left out = all")):
+    """The chat's chosen messages with the chosen side(s), each answer with its sources or pages read."""
+    chat = await _chat(chat_id)
+    msgs = await _q("select * from ask.messages where chat_id = %s order by seq", (chat_id,))
+    if seq:
+        wanted = set(seq)
+        msgs = [m for m in msgs if m["seq"] in wanted]
+    if not msgs:
+        raise HTTPException(404, "No messages to export")
+    doc = chat_export.build(chat, msgs, ["rag", "wiki"] if sides == "both" else [sides])
+    ext, media, attach = EXPORTS[format]
+    body = {"md": lambda: chat_export.to_markdown(doc).encode("utf-8"), "docx": lambda: chat_export.to_docx(doc),
+            "xlsx": lambda: chat_export.to_xlsx(doc), "pdf": lambda: chat_export.to_print_html(doc)}[format]()
+    name = chat_export.filename(doc["title"], ext)
+    disposition = f"{'attachment' if attach else 'inline'}; filename*=UTF-8''{quote(name)}"
+    return Response(body, media_type=media, headers={"Content-Disposition": disposition})
 
 
 @router.patch("/chats/{chat_id}")
