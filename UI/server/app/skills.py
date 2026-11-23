@@ -1,5 +1,6 @@
 """Skills: named instructions a chat on the Ask screen can use. A chat's chosen skills (ask.chats.skill_ids) are added
-to the answer instruction of both RAG and the wiki; they never change what is searched. Optional: a chat starts with none."""
+to the answer instruction of both RAG and the wiki; they never change what is searched. Optional: a chat starts with none.
+A skill may also carry questions: Run on Ask asks each as its own message in a new chat, then writes a summary (ask.py)."""
 from uuid import UUID
 
 import psycopg
@@ -11,17 +12,27 @@ from .ask import _q
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
 
+MAX_QUESTIONS, MAX_QUESTION = 50, 2000
+
+
 class SkillIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     description: str = Field("", max_length=300)
     instructions: str = Field(min_length=1, max_length=20000)
+    questions: list[str] = Field(default_factory=list, description="Asked one by one, in order, when the skill is run on Ask")
+    summary: str = Field("", max_length=4000, description="How to write the run's verdict from the answers; empty = the default")
 
 
-def _clean(body: SkillIn) -> tuple[str, str, str]:
+def _clean(body: SkillIn) -> tuple[str, str, str, list[str], str]:
     name, instructions = body.name.strip(), body.instructions.strip()
     if not name or not instructions:
         raise HTTPException(422, "A skill needs a name and instructions")
-    return name, body.description.strip(), instructions
+    questions = [q.strip() for q in body.questions if q.strip()]
+    if len(questions) > MAX_QUESTIONS:
+        raise HTTPException(422, f"A skill can have at most {MAX_QUESTIONS} questions")
+    if any(len(q) > MAX_QUESTION for q in questions):
+        raise HTTPException(422, f"A question can be at most {MAX_QUESTION} characters")
+    return name, body.description.strip(), instructions, questions, body.summary.strip()
 
 
 async def _write(sql: str, params: tuple):
@@ -38,7 +49,8 @@ async def list_skills():
 
 @router.post("", status_code=201)
 async def create_skill(body: SkillIn):
-    return await _write("insert into ask.skills (name, description, instructions) values (%s, %s, %s) returning *", _clean(body))
+    return await _write("""insert into ask.skills (name, description, instructions, questions, summary)
+                           values (%s, %s, %s, %s, %s) returning *""", _clean(body))
 
 
 @router.get("/{skill_id}")
@@ -51,8 +63,8 @@ async def get_skill(skill_id: UUID):
 
 @router.put("/{skill_id}")
 async def update_skill(skill_id: UUID, body: SkillIn):
-    row = await _write("""update ask.skills set name = %s, description = %s, instructions = %s, updated_at = now()
-                          where id = %s returning *""", (*_clean(body), skill_id))
+    row = await _write("""update ask.skills set name = %s, description = %s, instructions = %s, questions = %s, summary = %s,
+                          updated_at = now() where id = %s returning *""", (*_clean(body), skill_id))
     if not row:
         raise HTTPException(404, "Skill not found")
     return row

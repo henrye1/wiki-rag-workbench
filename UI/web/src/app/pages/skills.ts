@@ -13,9 +13,12 @@ interface Skill {
   name: string;
   description: string;
   instructions: string;
+  questions: string[]; // asked one by one when the skill is run on Ask; empty = no Run
+  summary: string; // how to write the run's verdict; empty = the default
+  questionsText?: string; // the questions while editing, one per line
 }
 
-const blank = (): Skill => ({ name: '', description: '', instructions: '' });
+const blank = (): Skill => ({ name: '', description: '', instructions: '', questions: [], summary: '', questionsText: '' });
 
 /** Skills: named instructions a chat on the Ask screen can use (optional). A chat's chosen skills are added to how RAG
  * and the wiki answer; they never change what is searched. */
@@ -29,7 +32,8 @@ const blank = (): Skill => ({ name: '', description: '', instructions: '' });
         @if (!draft()) { <button mat-flat-button (click)="edit(null)"><mat-icon>add</mat-icon> New skill</button> }
       </div>
       <p class="muted intro">Instructions you can add to a chat on the Ask screen, such as an answer format or a tone. Choose them per chat
-        under "Skills (optional)": RAG and the wiki get the same text. They change how the answer is written, never what is searched.</p>
+        under "Skills (optional)": RAG and the wiki get the same text. They change how the answer is written, never what is searched.
+        A skill with questions, such as an evaluation, can also be run: Run skill asks its questions one by one, then writes a summary.</p>
 
       @if (draft(); as d) {
         <div class="card editor">
@@ -44,6 +48,18 @@ const blank = (): Skill => ({ name: '', description: '', instructions: '' });
             <textarea matInput rows="12" [(ngModel)]="d.instructions" maxlength="20000"
                       placeholder="e.g. Answer in at most three bullet points, then a one-line conclusion."></textarea>
           </mat-form-field>
+          <mat-form-field appearance="outline" class="full"><mat-label>Questions (optional, one per line)</mat-label>
+            <textarea matInput rows="6" [(ngModel)]="d.questionsText"
+                      placeholder="e.g. Does the entity apply the simplified approach to trade receivables?"></textarea>
+            <mat-hint>With questions, Run skill on Ask asks each one in turn in a new chat, then writes a summary. Each question is searched on its own, so write it to stand alone.</mat-hint>
+          </mat-form-field>
+          @if (d.questionsText?.trim()) {
+            <mat-form-field appearance="outline" class="full"><mat-label>Summary instruction (optional)</mat-label>
+              <textarea matInput rows="3" [(ngModel)]="d.summary" maxlength="4000"
+                        placeholder="Give an overall assessment from these answers: the main findings, where answers are weak or disagree, and what is missing."></textarea>
+              <mat-hint>How the summary is written from the run's answers. Left empty, the text shown here is used.</mat-hint>
+            </mat-form-field>
+          }
           <div class="row">
             <button mat-flat-button (click)="save()" [disabled]="busy() || !d.name.trim() || !d.instructions.trim()">Save</button>
             <button mat-button (click)="draft.set(null)">Cancel</button>
@@ -66,6 +82,7 @@ const blank = (): Skill => ({ name: '', description: '', instructions: '' });
             <h3>{{ s.name }}</h3>
             @if (s.description) { <p class="muted desc">{{ s.description }}</p> }
             <p class="preview">{{ s.instructions }}</p>
+            @if (s.questions.length) { <p class="muted small"><mat-icon inline>play_arrow</mat-icon> {{ s.questions.length }} question(s): can be run on Ask</p> }
           </div>
         } @empty {
           @if (!draft()) { <p class="muted empty">No skills yet. Add one with New skill.</p> }
@@ -110,7 +127,7 @@ export class Skills {
   }
 
   edit(s: Skill | null) {
-    this.draft.set(s ? { ...s } : blank());
+    this.draft.set(s ? { ...s, questionsText: s.questions.join('\n') } : blank());
     this.msg.set('');
     this.error.set('');
   }
@@ -121,7 +138,8 @@ export class Skills {
     this.busy.set(true);
     this.error.set('');
     try {
-      const body = { name: d.name, description: d.description, instructions: d.instructions };
+      const questions = (d.questionsText ?? '').split('\n').map((q) => q.trim()).filter(Boolean);
+      const body = { name: d.name, description: d.description, instructions: d.instructions, questions, summary: d.summary };
       const saved = d.id
         ? await this.api.put<Skill>(`/api/skills/${enc(d.id)}`, body)
         : await this.api.post<Skill>('/api/skills', body);
