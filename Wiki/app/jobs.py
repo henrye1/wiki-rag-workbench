@@ -22,6 +22,7 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
+from . import llm
 from .config import get_settings
 from .db import get_pool
 
@@ -57,6 +58,10 @@ class JobContext:
         """Record progress; a new stage also records when it started (stage_times: stage -> time), so where an upload
         spends its time can be read from the job."""
         at = {kw["stage"]: datetime.now(timezone.utc).isoformat()} if "stage" in kw else {}
+        if "stage" in kw:  # the calls that follow are recorded under this step, and the tokens used so far kept
+            llm.set_stage(kw["stage"])
+            if usage := llm.usage_summary():
+                kw = {**kw, "usage": usage}
         async with get_pool().connection() as conn:
             await conn.execute(
                 """update wiki.jobs set progress = progress || %s
@@ -164,12 +169,19 @@ async def _run(job_id: UUID, wiki_id: UUID, fn):
         if not started:
             log.info("Job %s is no longer queued; not started", job_id)
             return
+        # the job's model calls: their token use per step, in its result and progress; at its spending cap it stops
+        calls = llm.track_usage(get_settings().job_spend_cap_usd)
         try:
             result = await fn(JobContext(job_id))
             status, error = "succeeded", None
+            if isinstance(result, dict) and calls:
+                result = {**result, "usage": llm.usage_summary(calls)}
+        except llm.SpendCapReached as e:  # nothing of the job is saved: it stops before its last step
+            log.warning("Job %s stopped: %s", job_id, e)
+            result, status, error = {"usage": llm.usage_summary(calls), "spend_cap_usd": get_settings().job_spend_cap_usd}, "failed", str(e)
         except Exception as e:
             log.error("Job %s failed: %s", job_id, traceback.format_exc())
-            result, status, error = None, "failed", f"{type(e).__name__}: {e}"
+            result, status, error = ({"usage": llm.usage_summary(calls)} if calls else None), "failed", f"{type(e).__name__}: {e}"
         async with get_pool().connection() as conn:
             await conn.execute(
                 "update wiki.jobs set status=%s, result=%s, error=%s, finished_at=now() where id=%s",

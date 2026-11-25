@@ -420,6 +420,30 @@ class LabelsAndKeptCitations(unittest.TestCase):
                                                  clause=lambda c: True))
         finally:
             fixpass.llm.generate_json = real
-        self.assertIn(f"[[{S}|36]]", out)
+        self.assertEqual(out, page)  # the rewrite dropped 36, so it went; the round fixed nothing: no second round
+        self.assertEqual(len(prompts_seen), 1)
+        self.assertEqual(rec[0]["rounds"][-1]["stopped"], "failures did not go down")
+
+    def test_dropped_citation_named_next_round_after_a_round_that_fixed_something(self):
+        import asyncio
+        kinds = {"B1": GUIDE_KIND}
+        page = f"X says [[{S}|B1]] and more [[{S}|36]].\n\nY says [[{S}|B1]] and more [[{S}|36]]."
+        chk = lambda x: checks.section_failures(x, [], kinds, S, CHK, covers, {"B1", "36"})
+        prompts_seen = []
+
+        async def fake(system, prompt, schema):  # Y is fixed at once; X drops 36 the first time, keeps it once told to
+            prompts_seen.append(prompt)
+            who = "Y" if "<paragraph>\nY" in prompt else "X"
+            told = "Keep the citation" in prompt
+            return {"content_md": f"{GUIDE_OPENER} that {who} says [[{S}|B1]]."
+                    + (f" More [[{S}|36]]." if told or who == "Y" else "")}
+        real = fixpass.llm.generate_json
+        fixpass.llm.generate_json = fake
+        try:
+            out = asyncio.run(fixpass.fix_rounds(schema="", slug="p", title="P", text=page, check=chk, sources_text="",
+                                                 linkable="", parse=lambda r: r, kind="section", record=[],
+                                                 clause=lambda c: True))
+        finally:
+            fixpass.llm.generate_json = real
         self.assertIn("Keep the citation", prompts_seen[-1])
         self.assertEqual(chk(out), [])

@@ -9,7 +9,7 @@ from .. import jobs, llm, prompts, storage
 from ..config import get_settings
 from ..db import get_pool
 from ..ops import ingest, rename
-from ..sources import extract
+from ..sources import extract, llm_reader
 from ..wiki import checks, store
 from .deps import Mode, wiki_dep
 
@@ -62,6 +62,7 @@ async def _resume_ingest(job: dict):
 @router.post("/wikis/{w}/sources/describe")
 async def describe_file(file: UploadFile, wiki: dict = Depends(wiki_dep)):
     """Suggested issuer, edition and part for a file, read from its opening pages, for the user to confirm before upload."""
+    llm.use("suggest")  # the model this request's calls use (MODEL_JOBS)
     s = get_settings()
     data = await file.read()
     if len(data) > s.max_upload_mb * 1024 * 1024:
@@ -71,19 +72,23 @@ async def describe_file(file: UploadFile, wiki: dict = Depends(wiki_dep)):
         opening = await asyncio.to_thread(extract.opening_text, name, data)
     except ValueError as e:
         raise HTTPException(415, str(e))
+    # the LLM reader is suggested for a PDF the PDF reader cannot read the layout of (no model call to tell)
+    suggest = name.lower().endswith(".pdf") and not await asyncio.to_thread(extract.has_known_layout, data)
     if not opening.strip():
-        return {"issuer": "", "edition": "", "part": ""}
+        return {"issuer": "", "edition": "", "part": "", "llm_reader_suggested": suggest}
     out = await llm.generate_json(prompts.MAINTAINER_SYSTEM, prompts.describe_prompt(name, opening), prompts.DESCRIBE_SCHEMA)
-    return {k: (out.get(k) or "").strip() for k in ("issuer", "edition", "part")}
+    return {**{k: (out.get(k) or "").strip() for k in ("issuer", "edition", "part")}, "llm_reader_suggested": suggest}
 
 
 @router.post("/wikis/{w}/sources", status_code=202)
 async def add_file(file: UploadFile, mode: Mode = MODE_Q, wiki: dict = Depends(wiki_dep),
                    issuer: str = Form(""), edition: str = Form(""), part: str = Form(""), status: str = Form(""),
-                   title: str = Form("")):
+                   title: str = Form(""), reader: str = Form("")):
     """Upload a source file (.pdf, .docx, .md, .txt), with its issuer, edition, part and (optional) status, such as
     Draft or Approved, as confirmed by the user, and (optional) its title, which then names the source instead of the
     title the reader finds.
+    reader: "llm" reads a PDF with the LLM reader (PARSER_MODEL marks its headings, paragraphs and kinds; the text is
+    kept word for word); otherwise the PDF reader reads it.
     Ingest runs as a background job."""
     s = get_settings()
     data = await file.read()
@@ -92,8 +97,13 @@ async def add_file(file: UploadFile, mode: Mode = MODE_Q, wiki: dict = Depends(w
     name = file.filename or "upload.txt"
     try:
         chk = checks.load(wiki.get("schema_md") or "")
-        ex = await asyncio.to_thread(lambda: extract.from_upload(name, data, s.section_words, client=issuer.strip(),
-                                                                  **extract.schema_options(chk)))
+        if reader == "llm":
+            if not name.lower().endswith(".pdf"):
+                raise ValueError("The LLM reader reads PDF files only")
+            ex = await llm_reader.from_pdf(name, data, s.section_words, chk, title.strip() or None)
+        else:
+            ex = await asyncio.to_thread(lambda: extract.from_upload(name, data, s.section_words, client=issuer.strip(),
+                                                                      **extract.schema_options(chk)))
     except ValueError as e:
         raise HTTPException(415, str(e))
     if title.strip():

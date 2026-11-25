@@ -137,7 +137,7 @@ async def _gemini(system: str, prompt: str, schema: dict | None = None, timeout:
         raise RuntimeError("GEMINI_API_KEY is not set for the Workbench server")
     config = {"temperature": 0} | ({"responseMimeType": "application/json", "responseJsonSchema": schema} if schema else {})
     r = await client().post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{s.gemini_model}:generateContent",
+        f"https://generativelanguage.googleapis.com/v1beta/models/{s.answer_model}:generateContent",
         headers={"x-goog-api-key": s.gemini_api_key},
         json={"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "user", "parts": [{"text": prompt}]}],
               "generationConfig": config},

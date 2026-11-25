@@ -39,6 +39,12 @@ import { FileDrop } from '../../shared/file-drop';
               <mat-form-field appearance="outline" class="grow" subscriptSizing="dynamic"><mat-label>Status (optional)</mat-label><input matInput [(ngModel)]="status" placeholder="e.g. Draft, Approved" /></mat-form-field>
               <mat-icon class="muted" title="Read from the file's opening pages where they state it. Check each field before ingesting; leave a field blank if the document does not state it. The source page is checked against these values.">info</mat-icon>
             </div>
+            @if (isPdf()) {
+              <label class="reader" title="The LLM reader marks the PDF's headings, paragraphs and lists with the parser model; the text is kept word for word from the PDF. Ticked for you when the PDF reader cannot read the PDF's layout.">
+                <input type="checkbox" [(ngModel)]="llmReader" /> Read with the LLM
+                @if (llmSuggested) { <span class="muted">(suggested: the PDF reader cannot read this PDF's layout)</span> }
+              </label>
+            }
             @if (describing()) { <p class="muted">Reading the title page…</p> }
           }
         </mat-tab>
@@ -83,7 +89,7 @@ import { FileDrop } from '../../shared/file-drop';
       </tbody>
     </table>
   `,
-  styles: `.pad { padding: 12px 0; } .actions { white-space: nowrap; } .doc { gap: 12px; align-items: center; padding-bottom: 8px; }`,
+  styles: ` .reader { display: block; margin: 8px 0; }.pad { padding: 12px 0; } .actions { white-space: nowrap; } .doc { gap: 12px; align-items: center; padding-bottom: 8px; }`,
 })
 export class WikiSources {
   private api = inject(Api);
@@ -106,6 +112,9 @@ export class WikiSources {
   part = '';
   status = '';
   fileTitle = '';
+  llmReader = false; // read the PDF with the LLM reader
+  llmSuggested = false;
+  isPdf() { return /\.pdf$/i.test(this.file()?.name ?? ''); }
 
   constructor() { effect(() => { void this.load(this.w()); }); }
 
@@ -129,11 +138,15 @@ export class WikiSources {
   async pick(f: File | null) {
     this.file.set(f);
     this.issuer = this.edition = this.part = this.status = this.fileTitle = '';
+    this.llmReader = this.llmSuggested = false;
     if (!f) return;
     this.describing.set(true);
     try {
       const d = await this.api.upload(`/api/wiki/wikis/${enc(this.w())}/sources/describe`, f);
-      if (this.file() === f) ({ issuer: this.issuer, edition: this.edition, part: this.part } = d);
+      if (this.file() === f) {
+        ({ issuer: this.issuer, edition: this.edition, part: this.part } = d);
+        this.llmReader = this.llmSuggested = !!d.llm_reader_suggested;
+      }
     } catch {
       // no suggestion: the fields stay empty for the user to fill in
     } finally {
@@ -143,7 +156,8 @@ export class WikiSources {
   submitFile() {
     return this.submit(async () => {
       const r = await this.api.upload(`/api/wiki/wikis/${enc(this.w())}/sources`, this.file()!, { mode: this.mode },
-        { issuer: this.issuer, edition: this.edition, part: this.part, status: this.status, title: this.fileTitle });
+        { issuer: this.issuer, edition: this.edition, part: this.part, status: this.status, title: this.fileTitle,
+          reader: this.isPdf() && this.llmReader ? 'llm' : '' });
       this.file.set(null);
       this.issuer = this.edition = this.part = this.status = this.fileTitle = '';
       this.drop()?.reset();

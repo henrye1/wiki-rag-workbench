@@ -1,6 +1,7 @@
 """Lint: structural checks (SQL), the schema's Maintain checks it can run (Checks: Lint checks), an optional LLM
 health-check, and optional fixes. Lint reports: a link it would add or remove is a proposal, with the page and the
 link, and no page is changed for it. Saved answers are never its material."""
+import logging
 import re
 from uuid import UUID
 
@@ -11,6 +12,8 @@ from ..jobs import JobContext
 from ..wiki import checks, store
 from ..wiki.store import slugify
 from . import answering, fixpass, pagecheck
+
+log = logging.getLogger(__name__)
 
 async def structural(wiki_id: UUID, chk: checks.Checks) -> dict:
     """The SQL checks. chk: the schema's Checks; a page holding only its Empty section text is not a thin page."""
@@ -194,6 +197,10 @@ async def maintain(wiki: dict) -> dict:
 
 
 async def run(ctx: JobContext, wiki: dict, use_llm: bool, do_fix: bool) -> dict:
+    used = llm.use("lint")
+    if use_llm or do_fix:
+        await ctx.progress(models={"lint": used})
+        log.info("lint: model %s", used)
     await ctx.progress(stage="structural")
     report = await structural(wiki["id"], checks.load(wiki["schema_md"]))
     await ctx.progress(stage="maintain")

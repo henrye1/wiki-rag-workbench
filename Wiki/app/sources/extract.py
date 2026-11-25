@@ -204,6 +204,11 @@ async def from_url(url: str, max_words: int) -> Extracted:
     return Extracted(title, "url", text, _pack(_blocks(text), max_words), {"url": url, "content_type": ctype})
 
 
+def has_known_layout(data: bytes) -> bool:
+    """Whether the PDF reader recognises the PDF's layout (its paragraph numbering)."""
+    return pdf_ifrs.looks_like_ifrs(pymupdf.open(stream=data, filetype="pdf"))
+
+
 def schema_options(chk) -> dict:
     """What the reader takes from a wiki's schema (its Checks): example labels, stub forms, citation forms and the
     kinds it leaves out; for from_upload, after the name, data and section size."""

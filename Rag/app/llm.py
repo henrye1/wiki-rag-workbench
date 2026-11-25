@@ -50,7 +50,7 @@ def _record(entry: dict) -> None:
 
 def _record_generation(step: str, resp) -> None:
     u = getattr(resp, "usage_metadata", None)
-    _record({"step": step, "model": get_settings().gemini_chat_model,
+    _record({"step": step, "model": get_settings().rag_answer_model,
              "input_tokens": getattr(u, "prompt_token_count", None), "output_tokens": getattr(u, "candidates_token_count", None),
              "thinking_tokens": getattr(u, "thoughts_token_count", None)})
 
@@ -85,7 +85,7 @@ def _cfg(system: str, **kw) -> types.GenerateContentConfig:
 async def generate(system: str, prompt: str, schema: dict | None = None) -> str:
     kw = {"response_mime_type": "application/json", "response_json_schema": schema} if schema else {}
     resp = await _retry(
-        lambda: client().aio.models.generate_content(model=get_settings().gemini_chat_model, contents=prompt, config=_cfg(system, **kw))
+        lambda: client().aio.models.generate_content(model=get_settings().rag_answer_model, contents=prompt, config=_cfg(system, **kw))
     )
     _record_generation("answer" if not schema else "json", resp)
     return resp.text or ""
@@ -93,7 +93,7 @@ async def generate(system: str, prompt: str, schema: dict | None = None) -> str:
 
 async def stream(system: str, prompt: str) -> AsyncIterator[str]:
     it = await _retry(
-        lambda: client().aio.models.generate_content_stream(model=get_settings().gemini_chat_model, contents=prompt, config=_cfg(system))
+        lambda: client().aio.models.generate_content_stream(model=get_settings().rag_answer_model, contents=prompt, config=_cfg(system))
     )
     async for chunk in it:
         if chunk.text:

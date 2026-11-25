@@ -74,3 +74,16 @@ envVarGroups:
     envVars:
       - key: DB_POOL_MAX
         value: "4"  # 3 services share the Supabase pooler's client limit
+      # One model per job; a setting left empty falls back to gemini-2.5-flash (shown on the home screen's Models card)
+      - key: PARSER_MODEL  # wiki: reads uploaded files
+        value: gemini-4-hydrogen
+      - key: WRITER_MODEL  # wiki: notes, routing, planning, writing and fixing pages
+        value: gemini-4-carbon
+      - key: ANSWER_MODEL  # wiki: Ask and the wiki answers; workbench: Ask's follow-up rewrite
+        value: gemini-4-carbon
+      - key: LINT_MODEL  # wiki: lint health check
+        value: gemini-4-carbon
+      - key: SUGGEST_MODEL  # wiki: issuer, edition and part suggestions on the upload form
+        value: gemini-4-carbon
+      - key: RAG_ANSWER_MODEL  # rag: the RAG side's answers (Ask, bulk and the benchmark)
+        value: gemini-4-carbon

@@ -5,12 +5,15 @@ from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+FALLBACK_MODEL = "gemini-2.5-flash"  # used where the model setting is given but left empty
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     api_key: str
     gemini_api_key: str
-    gemini_chat_model: str = "gemini-2.5-flash"
+    rag_answer_model: str = "gemini-4-carbon"  # RAG_ANSWER_MODEL: the RAG side's answers (Ask, bulk and the benchmark)
     gemini_embed_model: str = "gemini-embedding-001"
     embed_dim: int = 768  # must match vector(768) in migration
     embed_batch: int = 100
@@ -26,6 +29,11 @@ class Settings(BaseSettings):
     bulk_concurrency: int = 3
     bulk_k_per_query: int = 6
     bulk_max_chunks: int = 30
+
+    @field_validator("rag_answer_model", mode="before")
+    @classmethod
+    def _model_or_fallback(cls, v):
+        return v.strip() if isinstance(v, str) and v.strip() else FALLBACK_MODEL
 
     @field_validator("database_url")
     @classmethod
