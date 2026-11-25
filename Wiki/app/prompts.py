@@ -213,6 +213,67 @@ def write_page_prompt(
     )
 
 
+READER_SYSTEM = """You read the text lines of pages of a document and mark its structure: where each heading and
+each paragraph starts, the label a paragraph is printed with, its kind, and the lines that are page furniture. You never
+rewrite, shorten, translate or correct the text: the text is kept exactly as the lines give it, and you only mark lines."""
+
+READER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "marks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "line": {"type": "string", "description": "The line's id, exactly as given"},
+                    "role": {"type": "string", "enum": ["heading", "paragraph", "item", "drop"]},
+                    "level": {"type": "integer", "description": "A heading's level: 1 for the document's top headings"},
+                    "label": {"type": "string", "description": "The label the paragraph is printed with at its start "
+                              "(its number or letter), exactly as printed; empty where it has none"},
+                    "kind": {"type": "string", "description": "One of the kinds listed, or empty for the document's own text"},
+                },
+                "required": ["line", "role"],
+            },
+        }
+    },
+    "required": ["marks"],
+}
+
+
+def reader_prompt(title: str, pages: str, kinds: list[tuple[str, str]], heading_trail: list[str], lines: str) -> str:
+    """kinds: (the reader's name, what the wiki calls it) for each kind of passage the wiki's schema lists;
+    heading_trail: the headings in force where these pages start (top first), from the pages before them."""
+    listed = "\n".join(f"- {k} = {v}" for k, v in kinds) or "(none: every paragraph is the document's own text)"
+    trail = " > ".join(heading_trail) or "(none yet)"
+    return f"""Document: {title}
+Pages: {pages}
+Headings in force where these pages start: {trail}
+
+Each line below is "<id> | <font size>[ bold] | <text>", in reading order.
+
+Mark the line that starts each element; a line you do not mark continues the element before it:
+- heading: a line that starts a heading (a title of what follows, not a sentence of it), with its level (1 for the
+  document's top headings, 2 under them, and so on, consistent with the headings in force above). A heading printed
+  over two lines is marked once, on its first line.
+- paragraph: a line that starts a new paragraph; with the label it is printed with at its very start (e.g. a
+  paragraph number), exactly as printed, or empty; and its kind: one of the kinds below where the text is printed as
+  that kind of passage, or empty for the document's own text.
+- item: a line that starts a bullet or list item, or a table row. A list or table belongs to the paragraph that
+  introduces it: its items are part of that paragraph, not paragraphs of their own. A list or table with no lead-in
+  of its own starts with a paragraph mark on its first line, and its other items are marked item.
+  A figure's or table's caption belongs to the figure's or table's own text (its description, its labels, its rows):
+  they are one paragraph. Mark whichever of them comes first paragraph, and the others item.
+- drop: a line of page furniture only — a running header or footer, a page number, a line repeated on every page.
+  Mark each such line; a drop never continues.
+The first line of these pages, if you do not mark it, continues the element the pages before ended with.
+
+Kinds:
+{listed}
+
+Lines:
+{lines}"""
+
+
 DESCRIBE_SCHEMA = {
     "type": "object",
     "properties": {

@@ -45,6 +45,16 @@ import { WikiNames } from '../core/wiki-names';
             <div class="row actions"><a mat-flat-button routerLink="/ask"><mat-icon>forum</mat-icon> Ask a question</a></div>
           </div>
         </div>
+        @if (s.models?.length) {
+          <div class="card models">
+            <h3>Models</h3>
+            <table class="simple"><thead><tr><th>Job</th><th>Model</th><th>Setting</th><th>Service</th></tr></thead><tbody>
+              @for (m of s.models; track m.service + m.job) {
+                <tr><td>{{ m.does }}</td><td class="mono">{{ m.model }}</td><td class="mono muted">{{ m.setting }}</td><td class="muted">{{ m.service }}</td></tr>
+              }
+            </tbody></table>
+          </div>
+        }
         @if (!s.rag.ok || !s.wiki.ok) {
           <p class="error">Service down: {{ !s.rag.ok ? 'RAG (' + s.rag.url + ') ' : '' }}{{ !s.wiki.ok ? 'Wiki (' + s.wiki.url + ')' : '' }}. Start it with its run.py.</p>
         }
@@ -56,6 +66,7 @@ import { WikiNames } from '../core/wiki-names';
     .dot.up { background: #2e9e4f; }
     .actions { margin-top: 8px; }
     .small { font-size: 14px; }
+    .models { margin-top: 16px; }
   `,
 })
 export class Home {

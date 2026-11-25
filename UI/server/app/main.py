@@ -13,7 +13,8 @@ logging.basicConfig(level=logging.INFO)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    get_settings()
+    s = get_settings()
+    logging.getLogger("app.models").info("ANSWER_MODEL (Ask's follow-up rewrite): %s", s.answer_model)
     yield
     await proxy.close()
 
@@ -36,9 +37,15 @@ async def status():
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}", "url": base}
 
-    rag_health, rag_docs, rag_cols, wiki_health, wikis = await asyncio.gather(
-        check("rag", "/health"), check("rag", "/documents"), check("rag", "/collections"), check("wiki", "/health"), check("wiki", "/wikis")
+    rag_health, rag_docs, rag_cols, wiki_health, wikis, wiki_models, rag_models = await asyncio.gather(
+        check("rag", "/health"), check("rag", "/documents"), check("rag", "/collections"), check("wiki", "/health"), check("wiki", "/wikis"),
+        check("wiki", "/models"), check("rag", "/models"),
     )
+    # each model job, the service that runs it, its setting and the model it uses now
+    models = ([{"job": j, "service": "wiki", **m} for j, m in (wiki_models.get("data") or {}).items()]
+              + [{"job": j, "service": "rag", **m} for j, m in (rag_models.get("data") or {}).items()]
+              + [{"job": "ask_rewrite", "service": "workbench", "does": "Ask's follow-up rewrite", "setting": "ANSWER_MODEL",
+                  "model": s.answer_model}])
     try:
         runs = await bench.list_runs()
     except Exception:
@@ -47,6 +54,7 @@ async def status():
         "rag": {"ok": rag_health["ok"], "url": rag_health["url"], "documents": rag_docs.get("data") or [],
                 "collections": rag_cols.get("data") or []},
         "wiki": {"ok": wiki_health["ok"], "url": wiki_health["url"], "wikis": wikis.get("data") or []},
+        "models": models,
         "benchmark": {"ok": await bench.db_ok() and s.bench_python_path().exists(), "runs": len(runs), "latest": runs[0] if runs else None},
     }
 

@@ -1,4 +1,4 @@
-import { DatePipe, JsonPipe } from '@angular/common';
+import { DatePipe, DecimalPipe, JsonPipe } from '@angular/common';
 import { Component, effect, inject, input, signal } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
@@ -8,7 +8,7 @@ import { poller } from '../../shared/poll';
 
 @Component({
   selector: 'app-wiki-jobs',
-  imports: [DatePipe, JsonPipe, RouterLink, MatButtonModule, MatProgressBarModule],
+  imports: [DatePipe, DecimalPipe, JsonPipe, RouterLink, MatButtonModule, MatProgressBarModule],
   template: `
     <p class="muted">Ingest and LLM lint run as background jobs (one at a time per wiki). Uploads to a wiki take turns: each
       starts once the one before it is applied or discarded, so it is written against the wiki as it then stands. This list
@@ -23,6 +23,8 @@ import { poller } from '../../shared/poll';
             <td class="prog">
               @if (j.status === 'running' || j.status === 'queued') { <mat-progress-bar mode="indeterminate" /> }
               <span class="muted">{{ stage(j) }}</span>
+              @if (j.progress?.usage?.total; as u) { <div class="muted small">Tokens: {{ u.input_tokens | number }} in · {{ u.output_tokens | number }} out · {{ u.thinking_tokens | number }} thinking ({{ u.calls }} calls)</div> }
+              @if (j.progress?.models; as ms) { <div class="muted small">Model: @for (m of modelList(ms); track m[0]) { {{ m[0] }} {{ m[1] }}@if (!$last) {, } }</div> }
               @if (j.status === 'queued' && j.progress?.waiting; as wt) {
                 <div class="muted">{{ wt.message }}
                   @if (wt.changeset) { <a [routerLink]="['..', 'changesets', wt.changeset]">review it →</a> }</div>
@@ -89,7 +91,7 @@ import { poller } from '../../shared/poll';
       </tbody>
     </table>
   `,
-  styles: `.prog { min-width: 180px; } .stale td { vertical-align: top; font-size: 13px; } pre { white-space: pre-wrap; max-height: 300px; overflow: auto; }`,
+  styles: `.prog { min-width: 180px; } .small { font-size: 12px; } .stale td { vertical-align: top; font-size: 13px; } pre { white-space: pre-wrap; max-height: 300px; overflow: auto; }`,
 })
 export class WikiJobs {
   private api = inject(Api);
@@ -103,6 +105,9 @@ export class WikiJobs {
   }, 3000);
 
   constructor() { effect(() => { this.w(); this.poll.start(); }); }
+
+  /** The models a job used, by job (writer, parser, lint). */
+  modelList(ms: Record<string, string>): [string, string][] { return Object.entries(ms ?? {}); }
 
   stage(j: any) {
     const p = j.progress ?? {};

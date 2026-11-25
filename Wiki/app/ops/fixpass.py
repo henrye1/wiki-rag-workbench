@@ -1,14 +1,36 @@
 """The check-and-fix pass shared by ingest and re-check: check a page, send it back with the list of failures (at most
 twice), keep a rewrite only when it is better, then quote in full what still fails. The words the checks look for come from the schema (wiki/checks.py)."""
+import contextvars
 import logging
 import re
 from uuid import UUID
 
 from .. import llm, prompts
+from ..config import get_settings
 from ..db import get_pool
 from ..wiki import checks, citecheck, store
 
 log = logging.getLogger(__name__)
+# Fix rounds used per page in this job (track_rounds): a page has at most FIX_ROUNDS_PER_PAGE, over all its checks
+_rounds_used: contextvars.ContextVar[dict | None] = contextvars.ContextVar("fix_rounds_used", default=None)
+
+
+def track_rounds() -> None:
+    """Count fix rounds per page from here (a job): each page has at most FIX_ROUNDS_PER_PAGE over all its checks."""
+    _rounds_used.set({})
+
+
+def _take_round(slug: str) -> bool:
+    """Whether the page has a fix round left (one is used if so); without track_rounds, each check has two."""
+    used = _rounds_used.get()
+    if used is None:
+        return True
+    if used.get(slug, 0) >= get_settings().fix_rounds_per_page:
+        return False
+    used[slug] = used.get(slug, 0) + 1
+    return True
+
+
 LABEL_RE = re.compile(r"^\[([^\]\n]+)\]", re.M)
 SOURCE_SLUG = "source-"  # a source page's slug opens with this (the schema's Slugs and links: source-<source-name>)
 
@@ -181,7 +203,8 @@ def move_claims(slug: str, text: str, home, holds, record: list, names: set[str]
 async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, sources_text: str, linkable: str, parse,
                      kind: str, record: list, out_schema=prompts.PAGE_SCHEMA, ok=lambda old, new: True,
                      may_shrink: bool = False, may_grow: bool = False, clause=lambda cite: True, quote=None) -> str:
-    """Check the page; if anything fails, send it back with the list, at most twice. A rewrite is kept when it has fewer
+    """Check the page; if anything fails, send it back with the list, at most twice, and not again once a round leaves
+    as many failures as it found (in a job, at most FIX_ROUNDS_PER_PAGE rounds per page over all its checks). A rewrite is kept when it has fewer
     failures, loses no citation of a source paragraph (clause tells one from a broken link, which a fix may repair;
     may_shrink when a failure asks for something to be taken out) and passes ok. A paragraph whose write-up still fails
     after the second return is then quoted in full (quote, where the caller gives one): the quote itself becomes the
@@ -199,6 +222,9 @@ async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, so
     for rnd in (1, 2):
         failures = check(text)
         if not failures:
+            break
+        if not _take_round(slug):  # the page's fix rounds are used up (FIX_ROUNDS_PER_PAGE): it stays as it is
+            rounds.append({"round": rnd, "failures": failures, "kept": False, "skipped": "no fix rounds left for this page"})
             break
         rec = {"round": rnd, "failures": failures}
         try:
@@ -230,6 +256,9 @@ async def fix_rounds(*, schema: str, slug: str, title: str, text: str, check, so
             log.warning("page %s %s check, round %s failed: %s", slug, kind, rnd, e)
             rec["error"] = f"{type(e).__name__}: {e}"
         rounds.append(rec)
+        if len(check(text)) >= len(failures):  # the round fixed nothing: another would not either
+            rec["stopped"] = "failures did not go down"
+            break
     if rounds and quote and (left := check(text)):  # still failing after the two returns: the quote becomes the claim
         text = _quote_failing(text, left, check, quote, rounds)
     if rounds:

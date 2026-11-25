@@ -10,6 +10,9 @@ SERVER_DIR = pathlib.Path(__file__).resolve().parent.parent
 PROJECT = SERVER_DIR.parent.parent
 
 
+FALLBACK_MODEL = "gemini-2.5-flash"  # used where the model setting is given but left empty
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=SERVER_DIR / ".env", extra="ignore")
 
@@ -25,12 +28,17 @@ class Settings(BaseSettings):
     default_query_set: pathlib.Path = PROJECT / "Docs" / "IFRS9_Requirement_Query_Set_BULK_5.txt"  # optional
     # Ask screen: rewriting a chat's follow-up into a full question (the same Gemini key RAG and the wiki use)
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    answer_model: str = "gemini-4-carbon"  # ANSWER_MODEL, as the wiki's: Ask's follow-up rewrite is part of answering
     ask_history_questions: int = 6  # at most this many earlier questions are used to rewrite a follow-up
     # Shared-password login; leave empty for local use without login
     ui_password: str = ""
     session_secret: str = ""
     web_dist: pathlib.Path = SERVER_DIR.parent / "web" / "dist" / "web" / "browser"
+
+    @field_validator("answer_model", mode="before")
+    @classmethod
+    def _model_or_fallback(cls, v):
+        return v.strip() if isinstance(v, str) and v.strip() else FALLBACK_MODEL
 
     @field_validator("rag_url", "wiki_url")
     @classmethod

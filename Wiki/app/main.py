@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI
 from fastapi.responses import RedirectResponse
 
-from . import db, jobs
+from . import db, jobs, llm
 from .auth import require_api_key
 from .config import get_settings
 from .routers import ops, pages, sources, view, wikis
@@ -15,6 +15,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(name
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     get_settings()  # fail fast on missing env
+    for job, m in llm.models().items():  # which model each job uses, in the service log at every start
+        logging.getLogger("app.models").info("%s (%s): %s", m["setting"], m["does"], m["model"])
     await db.open_pool()
     await jobs.recover()
     yield
@@ -31,6 +33,12 @@ app.include_router(view.router)  # public, read-only
 @app.get("/", include_in_schema=False)
 async def root():
     return RedirectResponse("/view")
+
+
+@app.get("/models", dependencies=auth)
+async def models():
+    """Each model job, what it does, its setting and the model it uses now."""
+    return llm.models()
 
 
 @app.get("/health")

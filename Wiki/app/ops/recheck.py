@@ -23,6 +23,10 @@ async def run(ctx: JobContext, wiki: dict, mode: str = "auto", only: list[str] |
     """only: the pages to check (every page when None); the others are read as they stand. A page's checks still
     failing go with the changeset (held for review, and flagged on the page once applied); a page flagged before that
     now passes, unchanged, is saved as it is so its flag clears."""
+    used = llm.use("writer")  # fixing pages
+    fixpass.track_rounds()  # each page's fix rounds over all its checks (FIX_ROUNDS_PER_PAGE)
+    await ctx.progress(models={"writer": used})
+    log.info("recheck: writer model %s", used)
     wiki_id, schema = wiki["id"], wiki["schema_md"]
     chk = checks.load(schema)
     use_schema_headings(chk)

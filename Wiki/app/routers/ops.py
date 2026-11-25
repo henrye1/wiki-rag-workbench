@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from .. import jobs
+from .. import jobs, llm
 from ..db import get_pool
 from ..ops import composed, ingest, lint, query, recheck, summaries, synthesis, watchdog
 from ..wiki import checks, store
@@ -62,6 +62,7 @@ class SynthSaveIn(SynthCheckIn):
 async def synthesis_draft(body: SynthDraftIn, wiki: dict = Depends(wiki_dep)):
     """Draft one synthesis page from a chat's wiki answers, or from one of them (answer_seq) as its own page or added to
     an existing synthesis page (into), with its citation problems. Nothing is saved."""
+    llm.use("writer")  # the model this request's calls use (MODEL_JOBS)
     try:
         return await synthesis.draft(wiki, body.chat_id, body.chat_title, [a.model_dump() for a in body.answers],
                                      body.answer_seq, body.into)
@@ -72,6 +73,7 @@ async def synthesis_draft(body: SynthDraftIn, wiki: dict = Depends(wiki_dep)):
 @router.post("/wikis/{w}/synthesis/check")
 async def synthesis_check(body: SynthCheckIn, wiki: dict = Depends(wiki_dep)):
     """Check an (edited) draft again. Nothing is saved."""
+    llm.use("writer")  # the model this request's calls use (MODEL_JOBS)
     try:
         return await synthesis.check(wiki, body.content_md, [a.model_dump() for a in body.answers], body.into)
     except ValueError as e:
@@ -81,6 +83,7 @@ async def synthesis_check(body: SynthCheckIn, wiki: dict = Depends(wiki_dep)):
 @router.post("/wikis/{w}/synthesis", status_code=201)
 async def synthesis_save(body: SynthSaveIn, wiki: dict = Depends(wiki_dep)):
     """Save the draft as a synthesis page (a saved answer); the same chat updates the same page."""
+    llm.use("writer")  # the model this request's calls use (MODEL_JOBS)
     try:
         return await synthesis.save(wiki, body.model_dump(exclude={"answers", "into"}), [a.model_dump() for a in body.answers], body.into)
     except ValueError as e:
@@ -100,6 +103,7 @@ class ReadTextIn(BaseModel):
 @router.post("/wikis/{w}/read-text")
 async def read_text(body: ReadTextIn, wiki: dict = Depends(wiki_dep)):
     """The exact text an earlier answer read (for checking an answer against what it read). Changes nothing."""
+    llm.use("answer")  # the model this request's calls use (MODEL_JOBS)
     try:
         return await query.read_text(wiki, body.read, body.sources)
     except query.NoStandardOnly as e:
@@ -108,6 +112,7 @@ async def read_text(body: ReadTextIn, wiki: dict = Depends(wiki_dep)):
 
 @router.post("/wikis/{w}/query")
 async def ask(body: QueryIn, wiki: dict = Depends(wiki_dep)):
+    llm.use("answer")  # the model this request's calls use (MODEL_JOBS)
     try:
         return await query.answer(wiki, body.question, body.save, body.mode, body.sources, body.use_saved, body.instructions)
     except query.NoStandardOnly as e:
@@ -116,6 +121,7 @@ async def ask(body: QueryIn, wiki: dict = Depends(wiki_dep)):
 
 @router.post("/wikis/{w}/query/stream")
 async def ask_stream(body: QueryIn, wiki: dict = Depends(wiki_dep)):
+    llm.use("answer")  # the model this request's calls use (MODEL_JOBS)
     try:
         pages, tokens, report = await query.stream_answer(wiki, body.question, body.sources, body.use_saved, body.instructions)
     except query.NoStandardOnly as e:
@@ -325,6 +331,7 @@ class StatementIn(BaseModel):
 async def check_statement(body: StatementIn, wiki: dict = Depends(wiki_dep)):
     """Check a client statement (the watchdog): one verdict from the schema's Client-statement verdicts, each clause
     cited and quoted, recorded as an open finding for a named reviewer. Changes no page."""
+    llm.use("answer")  # the model this request's calls use (MODEL_JOBS)
     try:
         return await watchdog.check_statement(wiki, body.statement, body.sources)
     except (watchdog.NoVerdicts, query.NoStandardOnly) as e:

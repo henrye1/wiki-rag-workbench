@@ -5,16 +5,36 @@ from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+FALLBACK_MODEL = "gemini-2.5-flash"  # used where a model setting is given but left empty
+MODEL_JOBS = {  # job -> what it does; each job's model is its own setting (<JOB>_MODEL), shown on the admin screen
+    "parser": "reads uploaded files", "writer": "notes, routing, planning, writing and fixing pages",
+    "answer": "Ask and the wiki answers", "lint": "lint health check",
+    "suggest": "issuer, edition and part suggestions on the upload form",
+}
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     api_key: str
     gemini_api_key: str
-    gemini_chat_model: str = "gemini-2.5-flash"
+    parser_model: str = "gemini-4-hydrogen"
+    writer_model: str = "gemini-4-carbon"
+    answer_model: str = "gemini-4-carbon"
+    lint_model: str = "gemini-4-carbon"
+    suggest_model: str = "gemini-4-carbon"
+    parser_thinking_budget: int = 2048  # the most thinking tokens one parser call may use (0: the model's own setting)
     gemini_embed_model: str = "gemini-embedding-001"
     embed_dim: int = 768  # must match vector(768) in migrations
     embed_batch: int = 100
     temperature: float = 0.1
+    # A job's spending cap in US dollars (0: none): the job stops, failed, once its model calls have cost this much.
+    # Worked out from MODEL_PRICES: "<model>=<$ per million input tokens>/<$ per million output tokens>", comma
+    # separated; thinking tokens are billed as output. With a cap set, a call to a model with no price is refused.
+    job_spend_cap_usd: float = 0
+    fix_rounds_per_page: int = 2  # fix rounds a page may have in one job, over all the checks it goes through
+    model_prices: str = ""
+    llm_timeout_s: int = 600  # the longest one model call may take; a call over it is tried again (without a limit a stalled connection waits forever)
     database_url: str = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"  # local Supabase
     # Original uploads in Supabase Storage (off unless the secret key is set; the URL defaults to DATABASE_URL's project)
     supabase_url: str = ""
@@ -37,6 +57,23 @@ class Settings(BaseSettings):
     shortlist_size: int = 15  # pages the search lists for the model to choose from when answering
     lint_batch_pages: int = 12
     max_upload_mb: int = 50
+
+    @field_validator(*(f"{j}_model" for j in MODEL_JOBS), mode="before")
+    @classmethod
+    def _model_or_fallback(cls, v):
+        return v.strip() if isinstance(v, str) and v.strip() else FALLBACK_MODEL
+
+    def model_for(self, job: str) -> str:
+        return getattr(self, f"{job}_model")
+
+    def prices(self) -> dict[str, tuple[float, float]]:
+        """model -> ($ per million input tokens, $ per million output tokens), from MODEL_PRICES."""
+        out = {}
+        for item in (x.strip() for x in self.model_prices.split(",") if x.strip()):
+            name, _, rates = item.partition("=")
+            inp, _, outp = rates.partition("/")
+            out[name.strip()] = (float(inp), float(outp))
+        return out
 
     @field_validator("database_url")
     @classmethod

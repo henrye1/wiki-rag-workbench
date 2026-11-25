@@ -369,7 +369,7 @@ async def stream_answer(wiki: dict, question: str, sources: str = "all",
         return pages + extra, _once(text), report
     await store.add_log(wiki["id"], "query", question[:200], _log_md(wiki, sources, pages, extra, rounds))
     pages = await _with_maps(wiki, pages)
-    return pages + extra, llm.stream(_plain_system(wiki, instructions), _prompt(wiki, question, pages, extra)), None
+    return pages + extra, llm.stream(_plain_system(wiki, instructions), _prompt(wiki, question, pages, extra), job="answer"), None
 
 
 async def save_answer(wiki: dict, question: str, answer_md: str, mode: str, sources: str = "all") -> dict:

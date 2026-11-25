@@ -385,7 +385,21 @@ def _fix_breaks(text: str) -> str:
     """Put back line breaks the model left out: escaped "\\n" as text, a heading run on after a sentence, or a heading
     run together with the text under it (a heading line that cites something is two lines), or the next paragraph run
     on straight after a citation or a sentence (or a bullet run on after a citation or a heading), or a table's rows
-    run onto one line."""
+    run onto one line. A formula is left as it is ("\\neq", "\\nu" and "\\nabla" are its commands, not line breaks)."""
+    maths: list[str] = []
+
+    def aside(m: re.Match) -> str:  # each formula set aside while the breaks are put back, then returned word for word
+        maths.append(m.group(0))
+        return f"\ue000{len(maths) - 1}\ue001"
+
+    fixed = _fix_breaks_outside(llm.MATH.sub(aside, text))
+    fixed = re.sub("\ue000(\\d+)\ue001", lambda m: maths[int(m.group(1))], fixed)
+    if fixed != text:
+        log.info("ingest: line breaks restored in page text")
+    return fixed
+
+
+def _fix_breaks_outside(text: str) -> str:
     fixed = text.replace("\\n", "\n")
     fixed = HEADING_IN_TEXT.sub(r"\n\n\1", fixed)
     fixed = HEADING_RUN_ON.sub(r"\1\n\2", fixed)
@@ -393,10 +407,7 @@ def _fix_breaks(text: str) -> str:
     fixed = CITE_RUN_ON.sub(r"\1\n\n", fixed)
     fixed = BULLET_RUN_ON.sub(r"\1\n", fixed)
     fixed = TABLE_RUN_ON.sub(_unflatten_table, fixed)
-    fixed = checks.SENTENCE_RUN_ON.sub("\n\n", fixed)
-    if fixed != text:
-        log.info("ingest: line breaks restored in page text")
-    return fixed
+    return checks.SENTENCE_RUN_ON.sub("\n\n", fixed)
 
 
 NUMBERED = re.compile(r"^(?:[A-Z][a-z]+\s+)?(\d+(?:\.\d+)*)\s")  # a numbered heading, "6.4 ..." or "Chapter 6 ..."
@@ -1449,6 +1460,11 @@ async def run(ctx: JobContext, wiki: dict, source: dict, ex: Extracted, mode: st
     s = get_settings()
     wiki_id, schema = wiki["id"], wiki["schema_md"]
     system = prompts.MAINTAINER_SYSTEM
+    used = llm.use("writer")  # notes, routing, planning, writing and fixing pages
+    fixpass.track_rounds()  # each page's fix rounds over all its checks (FIX_ROUNDS_PER_PAGE)
+    read_by = (ex.meta.get("reader") or {}).get("model")  # the parser model, where the file was read by one
+    await ctx.progress(models={"writer": used, **({"parser": read_by} if read_by else {})})
+    log.info("ingest: writer model %s%s", used, f", read by {read_by}" if read_by else "")
     chk = checks.load(schema)  # example routing and the page checks read their words from the schema's Checks section
     use_schema_headings(chk)
     schema_errors = checks.schema_errors(chk)  # a missing or unreadable Checks list: an error that holds the upload
